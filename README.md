@@ -8,6 +8,12 @@ Finds duplicate files — exact copies and similar-looking photos/videos.
 
 One binary, no install. Windows, macOS, Linux.
 
+## Screenshots
+
+| Light | Dark | Delete confirm |
+| --- | --- | --- |
+| ![GUI in light theme](docs/gui-light.png) | ![GUI in dark theme](docs/gui-dark.png) | ![Delete confirmation dialog](docs/gui-delete-confirm.png) |
+
 ## GUI
 
 ```sh
