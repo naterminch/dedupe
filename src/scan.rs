@@ -286,11 +286,14 @@ mod tests {
             ..zero_cli()
         };
         let result = scan(&cli, 0, 0);
-        let names: Vec<String> = result
+        // Walkdir yields entries in filesystem order (NTFS vs ext4 vs
+        // APFS differ), so sort before comparing.
+        let mut names: Vec<String> = result
             .entries
             .iter()
             .map(|e| e.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
+        names.sort();
         assert_eq!(names, vec!["a.txt", "notes.txt"]);
         assert_eq!(result.dirs_skipped, 1);
         let _ = fs::remove_dir_all(&dir);
