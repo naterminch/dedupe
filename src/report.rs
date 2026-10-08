@@ -61,9 +61,12 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     if reclaim > 0 {
         println!(
             "{}",
-            style(format!("Reclaimable with --delete: {}", human_bytes(reclaim)))
-                .yellow()
-                .bold()
+            style(format!(
+                "Reclaimable with --delete: {}",
+                human_bytes(reclaim)
+            ))
+            .yellow()
+            .bold()
         );
     }
     if stats.dirs_skipped > 0 || stats.files_skipped > 0 {
@@ -141,11 +144,7 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
             human_bytes(group.dup_bytes()),
         );
         if let Some(info) = &keeper_media {
-            println!(
-                "{} {}",
-                style("  ↳").dim(),
-                style(info.summary()).dim()
-            );
+            println!("{} {}", style("  ↳").dim(), style(info.summary()).dim());
         }
 
         // Align the size column across the group's members.

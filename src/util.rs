@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::process::Command;
 
 /// Spawn a helper process without ever flashing a console window.

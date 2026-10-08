@@ -45,7 +45,11 @@ fn finds_duplicates_recursively_including_subfolders() {
     fs::write(dir.join("unique.txt"), b"totally unique").unwrap();
 
     let (out, stdout) = run(&["--json", dir.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     assert_eq!(parsed["duplicate_groups"], 1);
@@ -90,8 +94,18 @@ fn delete_with_yes_removes_duplicates_keeps_one() {
     fs::write(&alpha, b"same payload").unwrap();
     fs::write(&beta, b"same payload").unwrap();
 
-    let (out, _) = run(&["--delete", "--yes", "--keep-smaller", "--quiet", dir.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let (out, _) = run(&[
+        "--delete",
+        "--yes",
+        "--keep-smaller",
+        "--quiet",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // Exactly one copy survives.
     assert!(alpha.exists() ^ beta.exists());
@@ -123,7 +137,11 @@ fn human_output_shows_styled_group_report() {
     fs::write(dir.join("unique.txt"), b"totally unique").unwrap();
 
     let (out, stdout) = run(&[dir.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // Styled report markers (glyphs survive even when piped; only ANSI codes
     // are suppressed, and JSON output is never styled).
@@ -132,7 +150,10 @@ fn human_output_shows_styled_group_report() {
     assert!(stdout.contains("✗ DUP"), "stdout: {stdout}");
     assert!(stdout.contains("Tip:"), "stdout: {stdout}");
     // No ANSI escape codes when output is piped.
-    assert!(!stdout.contains('\u{1b}'), "ANSI escapes leaked into piped stdout: {stdout:?}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "ANSI escapes leaked into piped stdout: {stdout:?}"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -216,14 +237,28 @@ fn similar_mode_finds_reencoded_video_in_different_container() {
     // Deterministic synthetic source, then a re-encode into a different
     // container: same content, different bytes.
     let src = Proc::new("ffmpeg")
-        .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10"])
+        .args([
+            "-y",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=2:size=320x240:rate=10",
+        ])
         .args(["-pix_fmt", "yuv420p", mp4.to_str().unwrap()])
         .status()
         .expect("ffmpeg source encode failed");
     assert!(src.success());
     let re = Proc::new("ffmpeg")
         .args(["-y", "-loglevel", "error", "-i", mp4.to_str().unwrap()])
-        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", mov.to_str().unwrap()])
+        .args([
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            mov.to_str().unwrap(),
+        ])
         .status()
         .expect("ffmpeg re-encode failed");
     assert!(re.success(), "re-encode to .mov failed");
@@ -339,10 +374,7 @@ fn fingerprint_cache_is_persisted_and_reused_across_runs() {
 
     // --no-cache ignores the cache and leaves it untouched.
     let before = fs::read(&cache_file).unwrap();
-    let (out3, _) = run_with_env(
-        &["--json", "--no-cache", dir.to_str().unwrap()],
-        &envs,
-    );
+    let (out3, _) = run_with_env(&["--json", "--no-cache", dir.to_str().unwrap()], &envs);
     assert!(out3.status.success());
     assert_eq!(
         fs::read(&cache_file).unwrap(),
@@ -396,7 +428,11 @@ fn reference_dir_is_protected_from_deletion() {
         backup.to_str().unwrap(),
         dir.to_str().unwrap(),
     ]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let members = parsed["groups"][0]["members"].as_array().unwrap();
     assert_eq!(members.len(), 2);
@@ -414,7 +450,11 @@ fn reference_dir_is_protected_from_deletion() {
         ])
         .output()
         .expect("failed to run dedupe binary");
-    assert!(del.status.success(), "stderr: {}", String::from_utf8_lossy(&del.stderr));
+    assert!(
+        del.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&del.stderr)
+    );
     assert!(backup.join("z.txt").exists(), "reference copy must survive");
     assert!(!incoming.join("a.txt").exists(), "unprotected copy deleted");
 
@@ -431,7 +471,11 @@ fn dry_run_deletes_nothing() {
         .args(["--delete", "--yes", "--dry-run", dir.to_str().unwrap()])
         .output()
         .expect("failed to run dedupe binary");
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Dry run"), "stdout: {stdout}");
     assert!(dir.join("a.txt").exists());
@@ -455,7 +499,11 @@ fn keep_newest_prefers_recently_modified() {
         .unwrap();
 
     let (out, stdout) = run(&["--json", "--keep-newest", dir.to_str().unwrap()]);
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
     let members = parsed["groups"][0]["members"].as_array().unwrap();
     assert!(members[0]["keep"].as_bool().unwrap());

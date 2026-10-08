@@ -70,8 +70,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
             );
         }
     };
-    let out =
-        pipeline::run_scan(cli, progress_bar.as_ref(), similar_bar.as_ref(), &on_phase)?;
+    let out = pipeline::run_scan(cli, progress_bar.as_ref(), similar_bar.as_ref(), &on_phase)?;
 
     if out.needs_ffprobe_note && !cli.quiet && !cli.json {
         eprintln!(
@@ -87,10 +86,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
     }
     if !out.cache_save_errors.is_empty() && !cli.quiet && !cli.json {
         for e in &out.cache_save_errors {
-            eprintln!(
-                "{} could not write {e}",
-                style("⚠").yellow()
-            );
+            eprintln!("{} could not write {e}", style("⚠").yellow());
         }
     }
 
@@ -150,7 +146,11 @@ fn run(cli: &cli::Cli) -> Result<()> {
             }
             let deletion =
                 dedupe::actions::delete_duplicates(&out.groups, &engine, cli.yes, disposition)?;
-            let verb = if cli.trash { "Moved to trash" } else { "Deleted" };
+            let verb = if cli.trash {
+                "Moved to trash"
+            } else {
+                "Deleted"
+            };
             println!(
                 "{} {verb} {} file(s) ({} freed); {} skipped.",
                 style("✔").green().bold(),

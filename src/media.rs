@@ -52,9 +52,7 @@ impl MediaInfo {
     }
 
     pub fn summary(&self) -> String {
-        let res = self
-            .resolution()
-            .unwrap_or_else(|| "?x?".to_string());
+        let res = self.resolution().unwrap_or_else(|| "?x?".to_string());
         match self.duration_ms {
             Some(ms) => format!("{res}, {}", format_duration_ms(ms)),
             None => res,

@@ -63,11 +63,7 @@ pub fn run_scan(
             cli.similarity
         );
     }
-    let keep_modes = [
-        cli.keep_smaller,
-        cli.keep_newest,
-        cli.keep_oldest,
-    ];
+    let keep_modes = [cli.keep_smaller, cli.keep_newest, cli.keep_oldest];
     if keep_modes.iter().filter(|&&b| b).count() > 1 {
         anyhow::bail!("--keep-smaller, --keep-newest and --keep-oldest conflict; pick one");
     }
@@ -123,12 +119,8 @@ pub fn run_scan(
     } else {
         Some(cache::HashCache::load())
     };
-    let (groups, hardlinks_skipped) = hashing::find_duplicate_groups(
-        entries,
-        &engine,
-        hash_cache.as_mut(),
-        progress,
-    )?;
+    let (groups, hardlinks_skipped) =
+        hashing::find_duplicate_groups(entries, &engine, hash_cache.as_mut(), progress)?;
     if let Some(c) = &hash_cache
         && let Err(e) = c.save()
     {

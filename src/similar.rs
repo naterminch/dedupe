@@ -124,7 +124,10 @@ struct ImageFp {
 /// Read only the image header (no pixel decode) — cheap enough to run for
 /// every image so we can bucket by aspect ratio before decoding anything.
 fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
-    let reader = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?;
+    let reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
     let (w, h) = reader.into_dimensions().ok()?;
     if w == 0 || h == 0 {
         return None;
@@ -313,7 +316,11 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
         if !out.status.success() || out.stdout.len() < FRAME_W * FRAME_H {
             return None;
         }
-        hashes.push(dhash_gray(FRAME_W, FRAME_H, &out.stdout[..FRAME_W * FRAME_H]));
+        hashes.push(dhash_gray(
+            FRAME_W,
+            FRAME_H,
+            &out.stdout[..FRAME_W * FRAME_H],
+        ));
     }
     Some(hashes)
 }
@@ -322,7 +329,15 @@ fn extract_frames_oneshot(path: &Path) -> Option<Vec<u64>> {
     let out = crate::util::quiet_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
-        .args(["-vf", "scale=9:8,fps=1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
+        .args([
+            "-vf",
+            "scale=9:8,fps=1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
+            "-",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -399,11 +414,7 @@ fn make_video_group(fps: &[VideoFp], cluster: Vec<usize>) -> SimilarGroup {
         .into_iter()
         .map(|i| SimilarMember {
             entry: fps[i].entry.clone(),
-            similarity: frame_seq_similarity(
-                &fps[i].frames,
-                &fps[keeper].frames,
-                2,
-            ),
+            similarity: frame_seq_similarity(&fps[i].frames, &fps[keeper].frames, 2),
             w: fps[i].w,
             h: fps[i].h,
         })
@@ -464,7 +475,10 @@ pub fn find_similar(
             cache.and_then(|c| c.get(&e.path, e.size, e.mtime_secs))
         {
             cached_img.insert(i, (*w, *h, *hash));
-            aspect_buckets.entry(aspect_key(*w, *h)).or_default().push(i);
+            aspect_buckets
+                .entry(aspect_key(*w, *h))
+                .or_default()
+                .push(i);
             continue;
         }
         if let Some((w, h)) = image_dimensions(&e.path) {
@@ -553,10 +567,11 @@ pub fn find_similar(
         let mut res_buckets: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
         let mut unprobed: Vec<usize> = Vec::new();
         for (i, e) in videos.iter().enumerate() {
-            let res = cached_vid
-                .get(&i)
-                .map(|v| (v.0, v.1))
-                .or_else(|| probe_map.get(&e.path).and_then(|m| Some((m.width?, m.height?))));
+            let res = cached_vid.get(&i).map(|v| (v.0, v.1)).or_else(|| {
+                probe_map
+                    .get(&e.path)
+                    .and_then(|m| Some((m.width?, m.height?)))
+            });
             match res {
                 Some((w, h)) => res_buckets.entry((w, h)).or_default().push(i),
                 None => unprobed.push(i),
@@ -578,9 +593,11 @@ pub fn find_similar(
                 .collect();
             for (k, &i) in idxs.iter().enumerate() {
                 let Some(di) = dur[k] else { continue };
-                if dur.iter().enumerate().any(|(j, dj)| {
-                    j != k && dj.is_some_and(|d| durations_close(di, d))
-                }) {
+                if dur
+                    .iter()
+                    .enumerate()
+                    .any(|(j, dj)| j != k && dj.is_some_and(|d| durations_close(di, d)))
+                {
                     cand.insert(i);
                 }
             }
@@ -770,25 +787,22 @@ fn best_similar_keep(members: &[SimilarMember], pool: &[usize], keep: KeepMode) 
                             && (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path))
                 }
                 (Some(_), None) => true,
-                (None, None) => {
-                    (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path)
-                }
+                (None, None) => (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path),
                 (None, Some(_)) => false,
             },
-            KeepMode::Newest => (
-                m.entry.mtime_secs.unwrap_or(i64::MIN),
-                std::cmp::Reverse(&m.entry.path),
-            ) > (
-                b.entry.mtime_secs.unwrap_or(i64::MIN),
-                std::cmp::Reverse(&b.entry.path),
-            ),
-            KeepMode::Oldest => (
-                m.entry.mtime_secs.unwrap_or(i64::MAX),
-                &m.entry.path,
-            ) < (
-                b.entry.mtime_secs.unwrap_or(i64::MAX),
-                &b.entry.path,
-            ),
+            KeepMode::Newest => {
+                (
+                    m.entry.mtime_secs.unwrap_or(i64::MIN),
+                    std::cmp::Reverse(&m.entry.path),
+                ) > (
+                    b.entry.mtime_secs.unwrap_or(i64::MIN),
+                    std::cmp::Reverse(&b.entry.path),
+                )
+            }
+            KeepMode::Oldest => {
+                (m.entry.mtime_secs.unwrap_or(i64::MAX), &m.entry.path)
+                    < (b.entry.mtime_secs.unwrap_or(i64::MAX), &b.entry.path)
+            }
         };
         if better {
             best = i;
@@ -871,7 +885,10 @@ mod tests {
             sim_member("/media/low.jpg", 200_000, 1280, 720),
             sim_member("/media/high.png", 8_000_000, 3840, 2160),
         ];
-        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
+            1
+        );
     }
 
     #[test]
@@ -882,7 +899,10 @@ mod tests {
             sim_member("/media/a.png", 5_000_000, 1920, 1080),
             sim_member("/media/b.png", 3_000_000, 1920, 1080),
         ];
-        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 2);
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
+            2
+        );
     }
 
     #[test]
@@ -893,7 +913,10 @@ mod tests {
             sim_member("/media/b.mp4", 5_000_000, 0, 0),
             sim_member("/media/c.mp4", 8_000_000, 0, 0),
         ];
-        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
+            1
+        );
     }
 
     #[test]
@@ -903,7 +926,10 @@ mod tests {
             sim_member("/media/tiny.jpg", 50_000, 0, 0),
             sim_member("/media/known.png", 900_000, 1920, 1080),
         ];
-        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
+            1
+        );
     }
 
     #[test]
@@ -921,12 +947,16 @@ mod tests {
         });
         img.save(&png).unwrap();
         // JPEG re-encode of the same pixels.
-        img.save_with_format(&jpg, image::ImageFormat::Jpeg).unwrap();
+        img.save_with_format(&jpg, image::ImageFormat::Jpeg)
+            .unwrap();
 
         let f1 = image_fingerprint(entry(&png, 0)).expect("png decodes");
         let f2 = image_fingerprint(entry(&jpg, 0)).expect("jpg decodes");
         let sim = hash_similarity(f1.hash, f2.hash);
-        assert!(sim >= DEFAULT_SIMILARITY_PCT / 100.0, "png/jpg similarity {sim} < 0.97");
+        assert!(
+            sim >= DEFAULT_SIMILARITY_PCT / 100.0,
+            "png/jpg similarity {sim} < 0.97"
+        );
         assert_eq!(aspect_key(f1.w, f1.h), aspect_key(f2.w, f2.h));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -939,11 +969,10 @@ mod tests {
 
         let make = |name: &str, f: fn(u32, u32) -> u8| {
             let path = dir.join(name);
-            let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> =
-                ImageBuffer::from_fn(64, 64, |x, y| {
-                    let c = f(x, y);
-                    image::Rgb([c, c, c])
-                });
+            let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(64, 64, |x, y| {
+                let c = f(x, y);
+                image::Rgb([c, c, c])
+            });
             img.save(&path).unwrap();
             path
         };

@@ -36,8 +36,17 @@ pub const HASH_CACHE_MIN_SIZE: u64 = 256 * 1024;
 /// A stored perceptual fingerprint, mirroring the runtime types in `similar`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CacheFp {
-    Image { w: u32, h: u32, hash: u64 },
-    Video { w: u32, h: u32, duration_ms: u64, frames: Vec<u64> },
+    Image {
+        w: u32,
+        h: u32,
+        hash: u64,
+    },
+    Video {
+        w: u32,
+        h: u32,
+        duration_ms: u64,
+        frames: Vec<u64>,
+    },
 }
 
 /// A cached fingerprint. The file path is the map key; `size` + `mtime_secs`
@@ -131,8 +140,11 @@ impl FingerprintCache {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let mut entries: Vec<(PathBuf, CacheEntry)> =
-            self.map.iter().map(|(p, e)| (p.clone(), e.clone())).collect();
+        let mut entries: Vec<(PathBuf, CacheEntry)> = self
+            .map
+            .iter()
+            .map(|(p, e)| (p.clone(), e.clone()))
+            .collect();
         if entries.len() > MAX_ENTRIES {
             entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             entries.truncate(MAX_ENTRIES);
@@ -236,7 +248,15 @@ impl HashCache {
     /// Store a newly computed hash. Files below [`HASH_CACHE_MIN_SIZE`] and
     /// entries without an mtime are not stored. Partial and full hashes
     /// merge: storing one never drops the other.
-    pub fn insert(&mut self, path: PathBuf, size: u64, mtime_secs: Option<i64>, algo: String, partial: Option<String>, full: Option<String>) {
+    pub fn insert(
+        &mut self,
+        path: PathBuf,
+        size: u64,
+        mtime_secs: Option<i64>,
+        algo: String,
+        partial: Option<String>,
+        full: Option<String>,
+    ) {
         let Some(mtime_secs) = mtime_secs else {
             return;
         };
@@ -271,8 +291,11 @@ impl HashCache {
         let Some(path) = &self.path else {
             return Ok(());
         };
-        let mut entries: Vec<(PathBuf, HashCacheEntry)> =
-            self.map.iter().map(|(p, e)| (p.clone(), e.clone())).collect();
+        let mut entries: Vec<(PathBuf, HashCacheEntry)> = self
+            .map
+            .iter()
+            .map(|(p, e)| (p.clone(), e.clone()))
+            .collect();
         if entries.len() > MAX_ENTRIES {
             entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             entries.truncate(MAX_ENTRIES);
@@ -314,10 +337,7 @@ mod tests {
     use super::*;
 
     fn tmp_path(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "dedupe-cache-{tag}-{}.bin",
-            std::process::id()
-        ))
+        std::env::temp_dir().join(format!("dedupe-cache-{tag}-{}.bin", std::process::id()))
     }
 
     #[test]
@@ -423,7 +443,10 @@ mod tests {
         let hit = c.get(&p, HASH_CACHE_MIN_SIZE, Some(7), "blake3").unwrap();
         assert_eq!(hit.full.as_deref(), Some("full"));
         assert_eq!(hit.partial.as_deref(), Some("partial"));
-        assert!(c.get(&p, HASH_CACHE_MIN_SIZE + 1, Some(7), "blake3").is_none());
+        assert!(
+            c.get(&p, HASH_CACHE_MIN_SIZE + 1, Some(7), "blake3")
+                .is_none()
+        );
         assert!(c.get(&p, HASH_CACHE_MIN_SIZE, Some(8), "blake3").is_none());
         assert!(c.get(&p, HASH_CACHE_MIN_SIZE, Some(7), "sha256").is_none());
         assert!(c.get(&p, HASH_CACHE_MIN_SIZE, None, "blake3").is_none());

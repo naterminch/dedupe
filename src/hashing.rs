@@ -295,7 +295,10 @@ pub fn find_duplicate_groups(
             by_full
                 .into_iter()
                 .filter(|(_, files)| files.len() >= 2)
-                .map(|(hash, files)| DuplicateGroup { hash, members: files })
+                .map(|(hash, files)| DuplicateGroup {
+                    hash,
+                    members: files,
+                })
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -349,7 +352,8 @@ mod tests {
         let (groups, _) = find_duplicate_groups(entries, &engine, None, None).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
-        let mut paths: Vec<&std::path::Path> = groups[0].members.iter().map(|m| m.path.as_path()).collect();
+        let mut paths: Vec<&std::path::Path> =
+            groups[0].members.iter().map(|m| m.path.as_path()).collect();
         paths.sort();
         assert_eq!(paths, vec![a.as_path(), b.as_path()]);
 

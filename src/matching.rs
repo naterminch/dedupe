@@ -88,7 +88,9 @@ pub fn is_under_ref(path: &Path, reference_dirs: &[PathBuf]) -> bool {
         let lower = path.to_string_lossy().to_ascii_lowercase();
         reference_dirs.iter().any(|r| {
             let rl = r.to_string_lossy().to_ascii_lowercase();
-            lower == rl || lower.starts_with(&format!("{rl}\\")) || lower.starts_with(&format!("{rl}/"))
+            lower == rl
+                || lower.starts_with(&format!("{rl}\\"))
+                || lower.starts_with(&format!("{rl}/"))
         })
     }
     #[cfg(not(windows))]
@@ -171,13 +173,16 @@ pub fn assemble_groups(
             let mut ordered = vec![keeper];
             ordered.extend(rest);
 
-            (index, Group {
+            (
                 index,
-                hash: group.hash,
-                media_kind,
-                similarity: None,
-                members: ordered,
-            })
+                Group {
+                    index,
+                    hash: group.hash,
+                    media_kind,
+                    similarity: None,
+                    members: ordered,
+                },
+            )
         })
         .collect();
 
@@ -212,12 +217,7 @@ fn ref_pool(members: &[GroupMember]) -> Vec<usize> {
 /// Best index among `pool`. `resolution` selects the similar-media rule
 /// (highest fingerprint resolution wins `Smallest`) over the plain
 /// smallest-file rule.
-fn choose_best(
-    members: &[GroupMember],
-    pool: &[usize],
-    keep: KeepMode,
-    resolution: bool,
-) -> usize {
+fn choose_best(members: &[GroupMember], pool: &[usize], keep: KeepMode, resolution: bool) -> usize {
     let mut best = pool[0];
     for &i in &pool[1..] {
         let better = if resolution {
@@ -262,9 +262,7 @@ fn is_better_keep_res(a: &GroupMember, b: &GroupMember, keep: KeepMode) -> bool 
             .map(|(w, h)| w as u64 * h as u64)
     };
     match (area(a), area(b)) {
-        (Some(x), Some(y)) => {
-            x > y || (x == y && (a.size, &a.path) < (b.size, &b.path))
-        }
+        (Some(x), Some(y)) => x > y || (x == y && (a.size, &a.path) < (b.size, &b.path)),
         (Some(_), None) => true,
         (None, None) => (a.size, &a.path) < (b.size, &b.path),
         (None, Some(_)) => false,
@@ -279,20 +277,14 @@ fn is_better_keep(a: &GroupMember, b: &GroupMember, keep: KeepMode) -> bool {
         KeepMode::Smallest => (a.size, &a.path) < (b.size, &b.path),
         // Unknown mtime sorts as oldest (Newest) / newest (Oldest): files
         // we know nothing about never win on a time rule.
-        KeepMode::Newest => (
-            a.mtime_secs.unwrap_or(i64::MIN),
-            std::cmp::Reverse(&a.path),
-        ) > (
-            b.mtime_secs.unwrap_or(i64::MIN),
-            std::cmp::Reverse(&b.path),
-        ),
-        KeepMode::Oldest => (
-            a.mtime_secs.unwrap_or(i64::MAX),
-            &a.path,
-        ) < (
-            b.mtime_secs.unwrap_or(i64::MAX),
-            &b.path,
-        ),
+        KeepMode::Newest => {
+            (a.mtime_secs.unwrap_or(i64::MIN), std::cmp::Reverse(&a.path))
+                > (b.mtime_secs.unwrap_or(i64::MIN), std::cmp::Reverse(&b.path))
+        }
+        KeepMode::Oldest => {
+            (a.mtime_secs.unwrap_or(i64::MAX), &a.path)
+                < (b.mtime_secs.unwrap_or(i64::MAX), &b.path)
+        }
     }
 }
 
@@ -369,27 +361,25 @@ mod tests {
         // Force distinct mtimes (filesystem granularity varies).
         let old_t = SystemTime::now() - std::time::Duration::from_secs(3600);
         filetime_set(&dir.join("old.txt"), old_t);
-        let mk = || {
-            DuplicateGroup {
-                hash: "abc".into(),
-                members: paths
-                    .iter()
-                    .map(|name| {
-                        let path = dir.join(name);
-                        let mtime = fs::metadata(&path)
-                            .unwrap()
-                            .modified()
-                            .ok()
-                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs() as i64);
-                        FileEntry {
-                            path,
-                            size: 1,
-                            mtime_secs: mtime,
-                        }
-                    })
-                    .collect(),
-            }
+        let mk = || DuplicateGroup {
+            hash: "abc".into(),
+            members: paths
+                .iter()
+                .map(|name| {
+                    let path = dir.join(name);
+                    let mtime = fs::metadata(&path)
+                        .unwrap()
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64);
+                    FileEntry {
+                        path,
+                        size: 1,
+                        mtime_secs: mtime,
+                    }
+                })
+                .collect(),
         };
         let groups = assemble_groups(vec![mk()], KeepMode::Newest, &no_refs(), false);
         assert_eq!(
@@ -450,12 +440,18 @@ mod tests {
         // a.txt sorts first and is smallest; b.txt is biggest.
         let group = fake_group(&dir, &[("b.txt", 20), ("a.txt", 5)]);
         let mut groups = assemble_groups(vec![group], KeepMode::First, &no_refs(), false);
-        assert_eq!(groups[0].members.first().unwrap().path.file_name().unwrap(), "a.txt");
+        assert_eq!(
+            groups[0].members.first().unwrap().path.file_name().unwrap(),
+            "a.txt"
+        );
 
         // Switch to Smallest: still a.txt here (it is both first and
         // smallest), so build a reversed case via Newest/Oldest on mtime.
         reassign_keepers(&mut groups, KeepMode::Smallest);
-        assert_eq!(groups[0].members.first().unwrap().path.file_name().unwrap(), "a.txt");
+        assert_eq!(
+            groups[0].members.first().unwrap().path.file_name().unwrap(),
+            "a.txt"
+        );
         assert!(groups[0].members.first().unwrap().keep);
         assert_eq!(groups[0].members.iter().filter(|m| m.keep).count(), 1);
 
@@ -495,10 +491,16 @@ mod tests {
         };
         let refs = canonicalize_refs(&[backup.display().to_string()]);
         let mut groups = assemble_groups(vec![group], KeepMode::First, &refs, false);
-        assert_eq!(groups[0].members.first().unwrap().path.file_name().unwrap(), "z.txt");
+        assert_eq!(
+            groups[0].members.first().unwrap().path.file_name().unwrap(),
+            "z.txt"
+        );
         // Reassigning another mode must not dethrone the protected keeper.
         reassign_keepers(&mut groups, KeepMode::Smallest);
-        assert_eq!(groups[0].members.first().unwrap().path.file_name().unwrap(), "z.txt");
+        assert_eq!(
+            groups[0].members.first().unwrap().path.file_name().unwrap(),
+            "z.txt"
+        );
         assert!(groups[0].members.first().unwrap().keep);
         let _ = fs::remove_dir_all(&dir);
     }

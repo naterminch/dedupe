@@ -81,7 +81,9 @@ pub fn delete_targets(
                 eprintln!(
                     "{} {}: {}",
                     style("⚠").yellow(),
-                    style("changed since the scan, skipping (not deleted)").yellow().bold(),
+                    style("changed since the scan, skipping (not deleted)")
+                        .yellow()
+                        .bold(),
                     style(target.path.display()).dim()
                 );
                 outcome.skipped.push(target.path.clone());
@@ -126,10 +128,7 @@ pub fn delete_duplicates(
                 path: m.path.clone(),
                 // Similar groups share no content hash, so each file is
                 // verified against its own hash recorded during the scan.
-                expected_hash: m
-                    .content_hash
-                    .clone()
-                    .unwrap_or_else(|| group.hash.clone()),
+                expected_hash: m.content_hash.clone().unwrap_or_else(|| group.hash.clone()),
                 size: m.size,
             })
             .collect();

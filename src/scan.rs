@@ -98,9 +98,7 @@ pub fn scan(cli: &Cli, size_min: u64, size_max: u64) -> ScanResult {
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
-                    result
-                        .dir_read_errors
-                        .push(format!("cannot read: {err}"));
+                    result.dir_read_errors.push(format!("cannot read: {err}"));
                     continue;
                 }
             };
@@ -342,7 +340,10 @@ mod tests {
         };
         let result = scan(&cli, 0, 0);
         assert_eq!(result.entries.len(), 1);
-        assert_eq!(result.entries[0].path.file_name().unwrap(), "report-final.txt");
+        assert_eq!(
+            result.entries[0].path.file_name().unwrap(),
+            "report-final.txt"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

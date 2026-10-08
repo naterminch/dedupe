@@ -7,11 +7,14 @@
 //! Layout: a left settings sidebar (every CLI option), a main results pane
 //! with one collapsible section per duplicate group, and a status bar.
 
-use crate::{actions, cli, hashing, media, pipeline, poster, report, util};use gpui_kit::component::progress::Progress;
+use crate::{actions, cli, hashing, media, pipeline, poster, report, util};
+use gpui_kit::base::{Disableable as _, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::progress::Progress;
 use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_kit::component::{ActiveTheme, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
@@ -20,8 +23,6 @@ use gpui_kit::{
     Render, SharedString, Size, Styled as _, StyledImage as _, Subscription, TitlebarOptions,
     Window, WindowOptions, div, img, px,
 };
-use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::base::{Disableable as _, h_flex, v_flex};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -231,7 +232,13 @@ impl DedupeView {
             window,
             |this, state, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    size_text_to_slider(&state.read(cx).value(), true, &this.min_size_slider, window, cx);
+                    size_text_to_slider(
+                        &state.read(cx).value(),
+                        true,
+                        &this.min_size_slider,
+                        window,
+                        cx,
+                    );
                 }
             },
         ));
@@ -240,7 +247,13 @@ impl DedupeView {
             window,
             |this, state, event, window, cx| {
                 if matches!(event, InputEvent::Change) {
-                    size_text_to_slider(&state.read(cx).value(), false, &this.max_size_slider, window, cx);
+                    size_text_to_slider(
+                        &state.read(cx).value(),
+                        false,
+                        &this.max_size_slider,
+                        window,
+                        cx,
+                    );
                 }
             },
         ));
@@ -249,9 +262,7 @@ impl DedupeView {
         cx.spawn(async move |this, cx: &mut gpui_kit::AsyncApp| {
             let (ffmpeg_ok, ffprobe_ok) = cx
                 .background_executor()
-                .spawn(
-                    async move { (media::ffmpeg_available(), media::ffprobe_available()) },
-                )
+                .spawn(async move { (media::ffmpeg_available(), media::ffprobe_available()) })
                 .await;
             this.update(cx, |view: &mut Self, cx| {
                 view.ffmpeg_ok = ffmpeg_ok;
@@ -290,7 +301,9 @@ impl DedupeView {
                 .map_err(|_| "Similarity must be a number between 0 and 100.".to_string())?
         };
         if !(0.0..=100.0).contains(&similarity) {
-            return Err(format!("Similarity must be between 0 and 100 (got {similarity})."));
+            return Err(format!(
+                "Similarity must be between 0 and 100 (got {similarity})."
+            ));
         }
         let max_depth_raw = val(&self.max_depth_input).trim().to_string();
         let max_depth: Option<usize> = if max_depth_raw.is_empty() {
@@ -388,16 +401,11 @@ impl DedupeView {
             let out = cx
                 .background_executor()
                 .spawn(async move {
-                    pipeline::run_scan(
-                        &opts,
-                        Some(&hash_bar),
-                        Some(&sim_bar),
-                        &|p| {
-                            if let Ok(mut s) = phase_write.lock() {
-                                *s = p;
-                            }
-                        },
-                    )
+                    pipeline::run_scan(&opts, Some(&hash_bar), Some(&sim_bar), &|p| {
+                        if let Ok(mut s) = phase_write.lock() {
+                            *s = p;
+                        }
+                    })
                 })
                 .await;
             this.update(cx, |view: &mut Self, cx| {
@@ -426,12 +434,9 @@ impl DedupeView {
                                 .map(|s| *s)
                                 .unwrap_or(pipeline::ScanPhase::Scanning);
                             let (label, done, total, determinate) = match ph {
-                                pipeline::ScanPhase::Scanning => (
-                                    pipeline::phase_label(ph).to_string(),
-                                    0,
-                                    0,
-                                    false,
-                                ),
+                                pipeline::ScanPhase::Scanning => {
+                                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
+                                }
                                 pipeline::ScanPhase::Hashing => {
                                     let (d, t) = bar_pos(&hash_bar_poll);
                                     (format!("Hashing {d} of {t}"), d, t, true)
@@ -440,12 +445,9 @@ impl DedupeView {
                                     let (d, t) = bar_pos(&sim_bar_poll);
                                     (format!("Comparing media {d} of {t}"), d, t, true)
                                 }
-                                pipeline::ScanPhase::Finishing => (
-                                    pipeline::phase_label(ph).to_string(),
-                                    0,
-                                    0,
-                                    false,
-                                ),
+                                pipeline::ScanPhase::Finishing => {
+                                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
+                                }
                             };
                             view.status = label;
                             view.scan_done = done;
@@ -489,12 +491,7 @@ impl DedupeView {
             .map(|m| m.path.clone())
             .collect();
         // Expand the first few groups; huge result sets stay navigable.
-        self.expanded = self
-            .groups
-            .iter()
-            .take(10)
-            .map(|g| g.index)
-            .collect();
+        self.expanded = self.groups.iter().take(10).map(|g| g.index).collect();
         let dups: u64 = self
             .groups
             .iter()
@@ -559,7 +556,11 @@ impl DedupeView {
 
     /// Add folders to the scan list (deduplicated, in order).
     fn add_folders(&mut self, raw: &str, cx: &mut Context<Self>) {
-        for p in raw.split([';', '\n']).map(str::trim).filter(|p| !p.is_empty()) {
+        for p in raw
+            .split([';', '\n'])
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
             if !self.folders.iter().any(|f| f.path == p) {
                 self.folders.push(FolderEntry {
                     path: p.to_string(),
@@ -633,7 +634,10 @@ impl DedupeView {
         crate::matching::reassign_keepers(&mut self.groups, keep);
         self.reselect_all_dups();
         let name = ["First found", "Smallest", "Newest", "Oldest"][index.min(3)];
-        self.status = format!("Keep mode: {name} applied to {} group(s).", self.groups.len());
+        self.status = format!(
+            "Keep mode: {name} applied to {} group(s).",
+            self.groups.len()
+        );
         cx.notify();
     }
 
@@ -646,10 +650,7 @@ impl DedupeView {
                 if !m.keep && self.selected.contains(&m.path) {
                     out.push(actions::DeleteTarget {
                         path: m.path.clone(),
-                        expected_hash: m
-                            .content_hash
-                            .clone()
-                            .unwrap_or_else(|| g.hash.clone()),
+                        expected_hash: m.content_hash.clone().unwrap_or_else(|| g.hash.clone()),
                         size: m.size,
                     });
                 }
@@ -680,7 +681,11 @@ impl DedupeView {
         for p in &outcome.deleted {
             self.selected.remove(p);
         }
-        let verb = if self.trash { "Moved to trash" } else { "Deleted" };
+        let verb = if self.trash {
+            "Moved to trash"
+        } else {
+            "Deleted"
+        };
         self.status = format!(
             "{verb} {} file(s) ({} freed); {} skipped.",
             outcome.deleted.len(),
@@ -767,26 +772,19 @@ impl DedupeView {
                         h_flex()
                             .gap_2()
                             .child(div().flex_1().child(Input::new(&self.folder_input)))
-                            .child(
-                                Button::new("add-folder")
-                                    .label("Add")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        let raw = this
-                                            .folder_input
-                                            .read(cx)
-                                            .value()
-                                            .trim()
-                                            .to_string();
-                                        this.add_folders(&raw, cx);
-                                        this.folder_input.update(cx, |input, cx| {
-                                            input.set_value(
-                                                SharedString::from(String::new()),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    })),
-                            )
+                            .child(Button::new("add-folder").label("Add").on_click(cx.listener(
+                                |this, _, window, cx| {
+                                    let raw = this.folder_input.read(cx).value().trim().to_string();
+                                    this.add_folders(&raw, cx);
+                                    this.folder_input.update(cx, |input, cx| {
+                                        input.set_value(
+                                            SharedString::from(String::new()),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                },
+                            )))
                             .child(
                                 Button::new("browse")
                                     .icon(IconName::FolderOpen)
@@ -798,103 +796,101 @@ impl DedupeView {
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .overflow_y_scrollbar()
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .px_4()
-                            .py_2()
-                            .child(self.sidebar_field(
-                                "FILE TYPES (EMPTY = ALL)",
-                                Input::new(&self.types_input),
-                                cx,
-                            ))
-                            .child(self.sidebar_section("HASH ALGORITHM", cx))
-                            .child(
-                                RadioGroup::new("hash")
-                                    .children(["blake3", "sha256", "md5"])
-                                    .selected_index(self.hash_index)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.hash_index = Some(*value);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(hash_caption(self.hash_index)),
-                            )
-                            .child(self.sidebar_field(
-                                "SIMILARITY % FOR IMAGES / VIDEO",
-                                Input::new(&self.similarity_input),
-                                cx,
-                            ))
-                            .child(
-                                Checkbox::new("exact")
-                                    .label("Exact duplicates only")
-                                    .checked(self.exact)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.exact = *value;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Checkbox::new("no-cache")
-                                    .label("Skip caches (hash + fingerprint)")
-                                    .checked(self.no_cache)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.no_cache = *value;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Checkbox::new("trash")
-                                    .label("Move to trash (recoverable)")
-                                    .checked(self.trash)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.trash = *value;
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(self.render_size_row(
-                                "MIN SIZE",
-                                &self.min_size_slider,
-                                &self.min_size_input,
-                                cx,
-                            ))
-                            .child(self.render_size_row(
-                                "MAX SIZE",
-                                &self.max_size_slider,
-                                &self.max_size_input,
-                                cx,
-                            ))
-                            .child(self.sidebar_field(
-                                "MAX DEPTH (EMPTY = UNLIMITED)",
-                                Input::new(&self.max_depth_input),
-                                cx,
-                            ))
-                            .child(self.sidebar_field(
-                                "SKIP DIRECTORIES (; SEPARATED)",
-                                Input::new(&self.exclude_dir_input),
-                                cx,
-                            ))
-                            .child(self.sidebar_field(
-                                "SKIP PATHS CONTAINING (; SEPARATED)",
-                                Input::new(&self.exclude_path_input),
-                                cx,
-                            )),
-                    ),
+                div().flex_1().w_full().overflow_y_scrollbar().child(
+                    v_flex()
+                        .gap_3()
+                        .px_4()
+                        .py_2()
+                        .child(self.sidebar_field(
+                            "FILE TYPES (EMPTY = ALL)",
+                            Input::new(&self.types_input),
+                            cx,
+                        ))
+                        .child(self.sidebar_section("HASH ALGORITHM", cx))
+                        .child(
+                            RadioGroup::new("hash")
+                                .children(["blake3", "sha256", "md5"])
+                                .selected_index(self.hash_index)
+                                .on_change(cx.listener(|this, value, _, cx| {
+                                    this.hash_index = Some(*value);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(hash_caption(self.hash_index)),
+                        )
+                        .child(self.sidebar_field(
+                            "SIMILARITY % FOR IMAGES / VIDEO",
+                            Input::new(&self.similarity_input),
+                            cx,
+                        ))
+                        .child(
+                            Checkbox::new("exact")
+                                .label("Exact duplicates only")
+                                .checked(self.exact)
+                                .on_change(cx.listener(|this, value, _, cx| {
+                                    this.exact = *value;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("no-cache")
+                                .label("Skip caches (hash + fingerprint)")
+                                .checked(self.no_cache)
+                                .on_change(cx.listener(|this, value, _, cx| {
+                                    this.no_cache = *value;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Checkbox::new("trash")
+                                .label("Move to trash (recoverable)")
+                                .checked(self.trash)
+                                .on_change(cx.listener(|this, value, _, cx| {
+                                    this.trash = *value;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(self.render_size_row(
+                            "MIN SIZE",
+                            &self.min_size_slider,
+                            &self.min_size_input,
+                            cx,
+                        ))
+                        .child(self.render_size_row(
+                            "MAX SIZE",
+                            &self.max_size_slider,
+                            &self.max_size_input,
+                            cx,
+                        ))
+                        .child(self.sidebar_field(
+                            "MAX DEPTH (EMPTY = UNLIMITED)",
+                            Input::new(&self.max_depth_input),
+                            cx,
+                        ))
+                        .child(self.sidebar_field(
+                            "SKIP DIRECTORIES (; SEPARATED)",
+                            Input::new(&self.exclude_dir_input),
+                            cx,
+                        ))
+                        .child(self.sidebar_field(
+                            "SKIP PATHS CONTAINING (; SEPARATED)",
+                            Input::new(&self.exclude_path_input),
+                            cx,
+                        )),
+                ),
             )
             .child(
-                div().p_4().pt_2().border_t_1().border_color(cx.theme().border).child(
-                    v_flex()
-                        .gap_2()
-                        .child(self.render_media_status(cx))
-                        .child(
+                div()
+                    .p_4()
+                    .pt_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        v_flex().gap_2().child(self.render_media_status(cx)).child(
                             Button::new("scan")
                                 .primary()
                                 .icon(IconName::Search)
@@ -909,7 +905,7 @@ impl DedupeView {
                                     this.start_scan(cx);
                                 })),
                         ),
-                ),
+                    ),
             )
     }
 
@@ -926,7 +922,8 @@ impl DedupeView {
                         .child("Checking for ffmpeg…"),
                 )
                 .into_any_element();
-        }        let (icon, text, color) = match (self.ffmpeg_ok, self.ffprobe_ok) {
+        }
+        let (icon, text, color) = match (self.ffmpeg_ok, self.ffprobe_ok) {
             (true, true) => (
                 IconName::CircleCheck,
                 "ffmpeg ready — video compare on",
@@ -1042,12 +1039,9 @@ impl DedupeView {
             list = list.child(self.render_stat_chips(cx));
         }
         if self.ffprobe_note {
-            list = list.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().warning)
-                    .child("⚠ ffprobe not found on PATH — install FFmpeg for media resolution/duration."),
-            );
+            list = list.child(div().text_xs().text_color(cx.theme().warning).child(
+                "⚠ ffprobe not found on PATH — install FFmpeg for media resolution/duration.",
+            ));
         }
         if self.has_scanned && self.groups.is_empty() {
             list = list.child(
@@ -1062,11 +1056,7 @@ impl DedupeView {
             order.push(gi);
         }
         if self.sort_biggest {
-            order.sort_by(|&a, &b| {
-                self.groups[b]
-                    .dup_bytes()
-                    .cmp(&self.groups[a].dup_bytes())
-            });
+            order.sort_by(|&a, &b| self.groups[b].dup_bytes().cmp(&self.groups[a].dup_bytes()));
         }
         for gi in order {
             list = list.child(self.render_group(gi, cx));
@@ -1077,13 +1067,7 @@ impl DedupeView {
             .gap_3()
             .p_4()
             .child(header)
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .overflow_y_scrollbar()
-                    .child(list),
-            )
+            .child(div().flex_1().w_full().overflow_y_scrollbar().child(list))
     }
 
     /// Live scan progress card: phase label with "N of M" counts plus a
@@ -1113,10 +1097,7 @@ impl DedupeView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} file(s) scanned",
-                                self.files_scanned
-                            )),
+                            .child(format!("{} file(s) scanned", self.files_scanned)),
                     ),
             );
         if self.scan_determinate {
@@ -1154,19 +1135,23 @@ impl DedupeView {
                         .child(label),
                 )
         };
-        h_flex().gap_2().child(chip(
-            self.files_scanned.to_string(),
-            "FILES SCANNED",
-            cx.theme().foreground,
-        )).child(chip(
-            self.groups.len().to_string(),
-            "GROUPS",
-            cx.theme().accent,
-        )).child(chip(
-            util::human_bytes(self.reclaim_bytes),
-            "RECLAIMABLE",
-            cx.theme().success,
-        ))
+        h_flex()
+            .gap_2()
+            .child(chip(
+                self.files_scanned.to_string(),
+                "FILES SCANNED",
+                cx.theme().foreground,
+            ))
+            .child(chip(
+                self.groups.len().to_string(),
+                "GROUPS",
+                cx.theme().accent,
+            ))
+            .child(chip(
+                util::human_bytes(self.reclaim_bytes),
+                "RECLAIMABLE",
+                cx.theme().success,
+            ))
     }
 
     /// Bulk selection: one "Select all" checkbox (toggle all/none).
@@ -1263,8 +1248,7 @@ impl DedupeView {
             this.update(cx, |view, cx| {
                 match outcome {
                     Ok(()) => {
-                        view.status =
-                            format!("Saved report to {}.", file.path().display());
+                        view.status = format!("Saved report to {}.", file.path().display());
                     }
                     Err(e) => {
                         view.status = format!("Could not save report: {e}");
@@ -1362,7 +1346,14 @@ impl DedupeView {
             for (mi, member) in snapshot.members.iter().enumerate() {
                 let checked = self.selected.contains(&member.path);
                 let thumb = self.thumb_for(member);
-                card = card.child(render_member(snapshot.index, mi, member, checked, &thumb, cx));
+                card = card.child(render_member(
+                    snapshot.index,
+                    mi,
+                    member,
+                    checked,
+                    &thumb,
+                    cx,
+                ));
             }
         }
         card
@@ -1442,11 +1433,15 @@ fn bar_pos(bar: &indicatif::ProgressBar) -> (u64, u64) {
 /// Cap a display string, keeping the tail — filenames live at the end of
 /// paths, so a truncated middle would hide the useful part. Paired with
 /// `.truncate()` (ellipsis) on the element for pixel-level clipping.
-fn fit_text(s: &str, max_chars: usize) -> String {    let count = s.chars().count();
+fn fit_text(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
     if count <= max_chars {
         return s.to_string();
     }
-    format!("…{}", s.chars().skip(count - max_chars + 1).collect::<String>())
+    format!(
+        "…{}",
+        s.chars().skip(count - max_chars + 1).collect::<String>()
+    )
 }
 
 /// What preview a member row shows: none, the image itself, a generated
@@ -1521,7 +1516,11 @@ fn size_text_to_slider(
 
 /// Thumbnail box for a member row: the image itself, a video poster, a
 /// placeholder while the poster extracts, or nothing for plain files.
-fn render_thumb(path: &std::path::Path, thumb: &Thumb, cx: &mut Context<DedupeView>) -> impl IntoElement {
+fn render_thumb(
+    path: &std::path::Path,
+    thumb: &Thumb,
+    cx: &mut Context<DedupeView>,
+) -> impl IntoElement {
     match thumb {
         Thumb::None => div().into_any_element(),
         Thumb::Image => fixed_thumb(img(path)),
@@ -1709,7 +1708,11 @@ impl Render for DedupeView {
                             .label(if dark { "Light" } else { "Dark" })
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 Theme::change(
-                                    if dark { ThemeMode::Light } else { ThemeMode::Dark },
+                                    if dark {
+                                        ThemeMode::Light
+                                    } else {
+                                        ThemeMode::Dark
+                                    },
                                     None,
                                     cx,
                                 );
@@ -1755,7 +1758,8 @@ mod tests {
     /// clamps on every builder call, so max() has to precede min() —
     /// min(1024) with the default max(100) panics inside f32::clamp.
     #[test]
-    fn size_sliders_build_without_panic() {        for default in [SIZE_SLIDER_MIN, SIZE_SLIDER_MAX] {
+    fn size_sliders_build_without_panic() {
+        for default in [SIZE_SLIDER_MIN, SIZE_SLIDER_MAX] {
             let s = SliderState::new()
                 .max(SIZE_SLIDER_MAX)
                 .min(SIZE_SLIDER_MIN)
