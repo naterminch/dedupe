@@ -1,0 +1,69 @@
+name: Release binaries
+
+# When a GitHub Release is published (tag it, e.g. v0.1.0, then
+# "Publish release"), build optimized binaries for every OS and attach
+# them as downloadable assets (dedupe CLI + dedupe-gui per platform).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev \
+            libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libssl-dev libzstd-dev
+
+      - name: Build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path dist | Out-Null
+          Compress-Archive -LiteralPath `
+            "target/${{ matrix.target }}/release/dedupe.exe", `
+            "target/${{ matrix.target }}/release/dedupe-gui.exe" `
+            -DestinationPath "dist/$name.zip"
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
+          mkdir -p dist
+          tar -czf "dist/$name.tar.gz" -C "target/${{ matrix.target }}/release" dedupe dedupe-gui
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
