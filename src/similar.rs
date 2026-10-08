@@ -284,7 +284,9 @@ fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
     }
     Some(
         out.stdout
-            .chunks_exact(FRAME_W * FRAME_H)
+            .as_chunks::<{ FRAME_W * FRAME_H }>()
+            .0
+            .iter()
             .map(|f| dhash_gray(FRAME_W, FRAME_H, f))
             .collect(),
     )
@@ -345,7 +347,9 @@ fn extract_frames_oneshot(path: &Path) -> Option<Vec<u64>> {
     }
     let mut all: Vec<u64> = out
         .stdout
-        .chunks_exact(FRAME_W * FRAME_H)
+        .as_chunks::<{ FRAME_W * FRAME_H }>()
+        .0
+        .iter()
         .map(|f| dhash_gray(FRAME_W, FRAME_H, f))
         .collect();
     if all.is_empty() {

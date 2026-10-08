@@ -8,14 +8,18 @@ use std::process::Command;
 /// blink a terminal. `CREATE_NO_WINDOW` suppresses that. All our children
 /// have piped output, so this is also harmless for the CLI binary.
 pub fn quiet_command(program: &str) -> Command {
-    let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         // CREATE_NO_WINDOW
+        let mut cmd = Command::new(program);
         cmd.creation_flags(0x0800_0000);
+        cmd
     }
-    cmd
+    #[cfg(not(windows))]
+    {
+        Command::new(program)
+    }
 }
 
 /// Format a byte count as a human-readable string (decimal units).
