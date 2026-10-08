@@ -1695,6 +1695,12 @@ impl Render for DedupeView {
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(cx.theme().accent)
                                     .child("◆ dedupe"),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
                             ),
                     )
                     .child(

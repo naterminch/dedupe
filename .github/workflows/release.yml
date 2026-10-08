@@ -1,8 +1,9 @@
 name: Release binaries
 
 # When a GitHub Release is published (tag it, e.g. v0.1.0, then
-# "Publish release"), build optimized binaries for every OS and attach
-# them as downloadable assets (dedupe CLI + dedupe-gui per platform).
+# "Publish release"): bump Cargo.toml/Cargo.lock to the tag version, then
+# build optimized binaries for every OS and attach them as downloadable
+# assets (dedupe CLI + dedupe-gui per platform).
 on:
   release:
     types: [published]
@@ -10,9 +11,49 @@ on:
 permissions:
   contents: write
 
+# Serialize release runs so two publishes can't race the version commit.
+concurrency:
+  group: release-flow
+  cancel-in-progress: false
+
 jobs:
+  bump-version:
+    name: Bump version to tag
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.bump.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Bump Cargo.toml and lockfile to tag version
+        id: bump
+        run: |
+          TAG='${{ github.event.release.tag_name }}'
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must look like v1.2.3 (got '$TAG')" >&2
+            exit 1
+          fi
+          VER="${TAG#v}"
+          echo "Bumping to $VER"
+          sed -i -E "/^\[package\]/,/^\[/ s/^version = \".*\"/version = \"$VER\"/" Cargo.toml
+          grep -A3 '^\[package\]' Cargo.toml
+          cargo metadata --format-version=1 --no-deps >/dev/null
+          git diff --stat -- Cargo.toml Cargo.lock
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            echo "Version already at $VER, nothing to commit"
+          else
+            git add Cargo.toml Cargo.lock
+            git -c user.name='dedupe-release' -c user.email='dedupe-release@local' \
+              commit -m "Bump version to $VER"
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: [bump-version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,6 +67,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
