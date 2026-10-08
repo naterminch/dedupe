@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
-# Builds dedupe and copies the resulting binary to the project root
+# Builds dedupe and copies the resulting binaries to the project root
 # (the folder that contains this script), next to Cargo.toml:
 #
-#   .\build.ps1           release build -> .\dedupe.exe  (at project root)
-#   .\build.ps1 -Debug    debug build   -> .\dedupe.exe  (same place)
+#   .\build.ps1           release build -> .\dedupe.exe + .\dedupe-gui.exe
+#   .\build.ps1 -Debug    debug build   -> same, from the debug profile
 #
-# Nothing is written outside the project directory: the stderr log lives in
-# ./target and the binary is copied to the project root.
+# dedupe.exe     = console binary (CLI; opens the GUI when run without a path)
+# dedupe-gui.exe = GUI-only binary (no console window ever)
 param(
     [switch]$Debug
 )
@@ -53,14 +53,15 @@ try {
     }
     Remove-Item -LiteralPath $errLog -ErrorAction SilentlyContinue
 
-    # Copy the built binary to the project root (never the user profile root).
-    $source = Join-Path $root "target/$profile/dedupe.exe"
-    $dest = Join-Path $root "dedupe.exe"
-    Copy-Item -LiteralPath $source -Destination $dest -Force
-
+    # Copy the built binaries to the project root (never the user profile root).
     $rootFull = [System.IO.Path]::GetFullPath($root)
-    Write-Host "copied  $source"
-    Write-Host "    to  $dest  (project root: $rootFull)"
+    foreach ($name in @("dedupe", "dedupe-gui")) {
+        $source = Join-Path $root "target/$profile/$name.exe"
+        $dest = Join-Path $root "$name.exe"
+        Copy-Item -LiteralPath $source -Destination $dest -Force
+        Write-Host "copied  $source"
+        Write-Host "    to  $dest  (project root: $rootFull)"
+    }
 }
 finally {
     Pop-Location

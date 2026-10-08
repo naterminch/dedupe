@@ -13,6 +13,39 @@ It finds two kinds of duplicates:
 
 One single binary. No install, no setup. Works on Windows, macOS and Linux.
 
+## Graphical interface
+
+Run **`dedupe-gui`** (no console window) or the console binary without a
+path / with `--gui` (a terminal stays open — normal for console apps):
+
+```sh
+dedupe-gui     # desktop UI, no terminal
+dedupe         # desktop UI + terminal
+dedupe --gui   # same, explicit
+dedupe <path>  # command-line scan (see below)
+```
+
+The GUI mirrors every CLI option: folder list with per-folder **Ref**
+protection toggles (`Add` / `Browse…`), file types, hash algorithm,
+similarity threshold, exact-only, trash, fingerprint cache, size sliders +
+exact boxes, max depth and exclude filters. The **Keep** mode
+(First / Smallest / Newest / Oldest) sits at the top next to Delete and
+reassigns keepers instantly. Press **Scan**, expand a group to inspect its
+files (image thumbnails and video posters included) — each row has a
+**Keep** button for per-group decisions — use the **All** checkbox or
+**Invert** to bulk-select, switch keeper strategy with the **Keep:**
+button, sort biggest-first with **Sort**, save the machine-readable
+report with **Save JSON**, and reveal any file's folder with its
+folder button. Tick the duplicates to remove and press **Delete selected**
+(keepers are never selectable; every file is re-hashed before removal,
+exactly like `--delete`). Deletion moves to the system trash by default
+(toggleable).
+
+> Building the GUI needs the gpui-kit system requirements (Windows: VS 2022
+> C++ workload with an MSVC toolchain; see
+> [installation](https://gpui-kit.com/docs/installation)). The CLI-only
+> code paths have no extra requirements.
+
 ## Build
 
 You need the Rust toolchain (https://rustup.rs).
@@ -45,7 +78,11 @@ the binary with no path just prints the help.
 | --- | --- |
 | `-t, --types EXTS` | Scan only these extensions, comma-separated and case-insensitive, e.g. `--types jpg,png,mp4,txt` |
 | `-k, --keep-smaller` | Mark the smallest file in each duplicate group as the keeper; for similar media, keep the **highest-resolution** version instead |
+| `--keep-newest` / `--keep-oldest` | Keep the most / least recently modified file in each group (conflicts with `--keep-smaller`) |
+| `--reference-dir PATH` | Protect folders (repeatable): files under these dirs are never deleted and win the keep decision — like czkawka reference dirs |
 | `-D, --delete` | Delete the duplicate files. Prompts per group unless `-y` |
+| `--trash` | Move duplicates to the system trash instead of deleting permanently |
+| `--dry-run` | With `--delete`: print what would be removed without removing anything |
 | `-y, --yes` | Assume "yes" for all deletion prompts |
 | `--hash ALGO` | Hash algorithm: `blake3` (default), `sha256`, `md5` |
 | `--exact` | Only byte-identical duplicates. Similar images/videos (same content in a different format, e.g. `.png` vs `.jpg`, `.mp4` vs `.mov`) are detected **by default**; this flag disables that pass |
@@ -80,6 +117,12 @@ dedupe /projects --min-size 1KB --max-size 500MB --exclude-dir node_modules
 # Scriptable output
 dedupe /media --json
 
+# Protect /backup, remove duplicates from /incoming, move to trash
+dedupe /incoming --reference-dir /backup --delete --yes --trash
+
+# Preview what would be deleted, keeping the newest copy
+dedupe /media --keep-newest --delete --dry-run
+
 # Same photo saved as both PNG and JPG (or a video re-encoded as .mov/.avi) —
 # similar-duplicate detection is ON by default
 dedupe /media
@@ -103,7 +146,7 @@ Reclaimable with --delete: 62.10 KB
   ✓ KEEP  /media/clip-backup.mp4                    62.10 KB
   ✗ DUP   /media/clip.mp4                           62.10 KB
 
-Tip: run with --delete to remove the 2 duplicate file(s), or --delete --keep-smaller to prefer the smallest copy.
+Tip: run with --delete to remove the 2 duplicate file(s), or --delete --keep-smaller to keep one copy (smallest; highest-resolution for similar media).
 ```
 
 `✓ KEEP` is the file that stays. `✗ DUP` is the file that `--delete` would
@@ -119,11 +162,16 @@ output stays plain.
    - images get a fingerprint of their brightness pattern,
    - videos get fingerprints of 8 frames, spread evenly over the video.
    A fingerprint match of 97% or more counts as a duplicate (tune with
-   `--similarity`).
-4. **Remember between runs.** Fingerprints are saved in a cache, so the next
-   scan of the same folders is much faster. A cached result is reused only
-   while the file's size and modification time are unchanged, so it never
-   goes stale. `--no-cache` skips it.
+   `--similarity`). With `--keep-smaller`, the **highest-resolution** media
+   version is kept.
+4. **Remember between runs.** Content hashes (files ≥ 256 KB) and media
+   fingerprints are saved in a cache, so the next scan of the same folders
+   is much faster. A cached result is reused only while the file's size and
+   modification time are unchanged, so it never goes stale. `--no-cache`
+   skips it. Cache files live in `~/.dedupe/` (`hashes.bin`,
+   `fingerprints.bin`); `DEDUPE_CACHE` overrides the location.
+5. **Hard links count once.** Two names for the same inode are not two
+   copies, so extra names are skipped (like czkawka).
 
 ## Tests
 

@@ -15,11 +15,13 @@ pub struct ReportContext<'a> {
 
 /// Aggregate counters captured from the scan phase (the entry list itself is
 /// consumed by the hashing pipeline).
+#[derive(Debug, Clone)]
 pub struct ScanStats {
     pub files_scanned: usize,
     pub bytes_scanned: u64,
     pub dirs_skipped: u64,
     pub files_skipped: u64,
+    pub hardlinks_skipped: u64,
     pub dir_read_errors: Vec<String>,
 }
 
@@ -70,6 +72,16 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
             style(format!(
                 "Skipped {} file(s) and {} directory tree(s) via filters.",
                 stats.files_skipped, stats.dirs_skipped
+            ))
+            .dim()
+        );
+    }
+    if stats.hardlinks_skipped > 0 {
+        println!(
+            "{}",
+            style(format!(
+                "Skipped {} hardlink(s): same file under another name, counted once.",
+                stats.hardlinks_skipped
             ))
             .dim()
         );
@@ -144,7 +156,9 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
             .max()
             .unwrap_or(0);
         for member in &group.members {
-            let (glyph, badge, color) = if member.keep {
+            let (glyph, badge, color) = if member.reference && member.keep {
+                ("◈", "REF", console::Style::new().cyan())
+            } else if member.keep {
                 ("✓", "KEEP", console::Style::new().green())
             } else {
                 ("✗", "DUP", console::Style::new().yellow())
@@ -182,7 +196,7 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     if dups > 0 {
         println!();
         println!(
-            "{} run with {} to remove the {} duplicate file(s), or {} to prefer the smallest copy.",
+            "{} run with {} to remove the {} duplicate file(s), or {} to keep one copy (smallest; highest-resolution for similar media).",
             style("Tip:").cyan().bold(),
             style("--delete").green(),
             dups,
@@ -199,6 +213,7 @@ struct JsonReport<'a> {
     bytes_scanned: u64,
     dirs_skipped: u64,
     files_skipped: u64,
+    hardlinks_skipped: u64,
     dir_read_errors: &'a [String],
     duplicate_groups: usize,
     duplicate_files: u64,
@@ -208,6 +223,11 @@ struct JsonReport<'a> {
 }
 
 pub fn print_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
+    println!("{}", to_json(ctx, stats, groups));
+}
+
+/// Serialize the report (also used by the GUI's Save button).
+pub fn to_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) -> String {
     let report = JsonReport {
         hash_algorithm: ctx.hash_algo,
         paths: ctx.paths,
@@ -215,6 +235,7 @@ pub fn print_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
         bytes_scanned: stats.bytes_scanned,
         dirs_skipped: stats.dirs_skipped,
         files_skipped: stats.files_skipped,
+        hardlinks_skipped: stats.hardlinks_skipped,
         dir_read_errors: &stats.dir_read_errors,
         duplicate_groups: groups.len(),
         duplicate_files: dup_file_count(groups),
@@ -222,6 +243,34 @@ pub fn print_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
         ffprobe_used: ctx.ffprobe_used,
         groups,
     };
-    let json = serde_json::to_string(&report).expect("report serialization cannot fail");
-    println!("{json}");
+    serde_json::to_string(&report).expect("report serialization cannot fail")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn to_json_has_expected_shape() {
+        let paths = ["/media".to_string()];
+        let ctx = ReportContext {
+            paths: &paths,
+            hash_algo: "blake3",
+            verbose: false,
+            ffprobe_used: false,
+        };
+        let stats = ScanStats {
+            files_scanned: 2,
+            bytes_scanned: 20,
+            dirs_skipped: 0,
+            files_skipped: 0,
+            hardlinks_skipped: 1,
+            dir_read_errors: Vec::new(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&to_json(&ctx, &stats, &[])).expect("valid JSON");
+        assert_eq!(v["hash_algorithm"], "blake3");
+        assert_eq!(v["hardlinks_skipped"], 1);
+        assert_eq!(v["duplicate_groups"], 0);
+    }
 }

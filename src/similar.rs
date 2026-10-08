@@ -19,15 +19,14 @@
 
 use crate::cache::{CacheFp, CacheWrite, FingerprintCache};
 use crate::hashing::HashEngine;
-use crate::matching::{Group, GroupMember};
+use crate::matching::{self, Group, GroupMember, KeepMode};
 use crate::media::{self, MediaInfo, MediaKind};
 use crate::scan::FileEntry;
 use anyhow::Result;
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 
 /// Default similarity threshold, as a percentage (0-100), surfaced as the
 /// `--similarity` default. >= 97% => duplicates.
@@ -268,7 +267,7 @@ fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
         return None;
     }
     let fps = format!("{SIMILAR_FRAMES}/{dur_secs:.6}");
-    let out = Command::new("ffmpeg")
+    let out = crate::util::quiet_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
         .arg("-vf")
@@ -293,7 +292,7 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
     let mut hashes = Vec::with_capacity(SIMILAR_FRAMES);
     for i in 0..SIMILAR_FRAMES {
         let t = secs * (i as f64 + 0.5) / SIMILAR_FRAMES as f64;
-        let out = Command::new("ffmpeg")
+        let out = crate::util::quiet_command("ffmpeg")
             .args(["-v", "error", "-ss"])
             .arg(format!("{t:.6}"))
             .args(["-i"])
@@ -320,7 +319,7 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
 }
 
 fn extract_frames_oneshot(path: &Path) -> Option<Vec<u64>> {
-    let out = Command::new("ffmpeg")
+    let out = crate::util::quiet_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
         .args(["-vf", "scale=9:8,fps=1", "-f", "rawvideo", "-pix_fmt", "gray", "-"])
@@ -645,7 +644,8 @@ pub fn find_similar(
 /// check). `start_index` continues the numbering after the exact groups.
 pub fn build_similar_groups(
     groups: Vec<SimilarGroup>,
-    keep_smaller: bool,
+    keep: KeepMode,
+    reference_dirs: &[PathBuf],
     probe: bool,
     engine: &HashEngine,
     start_index: usize,
@@ -667,14 +667,23 @@ pub fn build_similar_groups(
             let mut members: Vec<GroupMember> = sg
                 .members
                 .iter()
-                .map(|m| GroupMember {
-                    path: m.entry.path.clone(),
-                    size: m.entry.size,
-                    mtime_secs: m.entry.mtime_secs,
-                    keep: false,
-                    media: None,
-                    similarity: Some(m.similarity),
-                    content_hash: None,
+                .map(|m| {
+                    let reference = !reference_dirs.is_empty()
+                        && matching::is_under_ref(
+                            &matching::canonical_member(&m.entry.path),
+                            reference_dirs,
+                        );
+                    GroupMember {
+                        path: m.entry.path.clone(),
+                        size: m.entry.size,
+                        mtime_secs: m.entry.mtime_secs,
+                        keep: false,
+                        reference,
+                        media: None,
+                        similarity: Some(m.similarity),
+                        content_hash: None,
+                        fingerprint_res: (m.w > 0 && m.h > 0).then_some((m.w, m.h)),
+                    }
                 })
                 .collect();
 
@@ -690,16 +699,31 @@ pub fn build_similar_groups(
                 m.content_hash = engine.full(&m.path).ok();
             }
 
-            // With `--keep-smaller`, prefer the highest-resolution version as
-            // the keeper — a smaller file is usually the re-encoded/lower-res
-            // copy, and the whole point is to keep the best original. Falls
-            // back to the smallest file when no resolution is known (or for
-            // non-media groups).
-            let keep_idx = if keep_smaller {
-                choose_keep_best_resolution(&sg.members)
-            } else {
-                0
+            // Keeper: reference-dir members are protected and win; among
+            // the candidates the keep rule applies — for `Smallest` the
+            // highest-resolution version (a smaller file is usually the
+            // re-encoded/lower-res copy, so the best original is kept),
+            // falling back to smallest size when unknown.
+            let pool: Vec<usize> = {
+                let refs: Vec<usize> = sg
+                    .members
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| {
+                        matching::is_under_ref(
+                            &matching::canonical_member(&m.entry.path),
+                            reference_dirs,
+                        ) && !reference_dirs.is_empty()
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                if refs.is_empty() {
+                    (0..sg.members.len()).collect()
+                } else {
+                    refs
+                }
             };
+            let keep_idx = best_similar_keep(&sg.members, &pool, keep);
             members[keep_idx].keep = true;
             let keeper = members.remove(keep_idx);
             let mut rest = members;
@@ -725,23 +749,46 @@ pub fn build_similar_groups(
     Ok(built)
 }
 
-/// Pick the member to keep when `--keep-smaller` is set: the highest
-/// resolution (width × height) wins, ties broken by smallest size then path.
-/// Members with unknown resolution (0×0, e.g. a video probed without ffprobe)
-/// rank below any member with known resolution; when nobody has a known
-/// resolution, fall back to the smallest file (previous behavior).
-fn choose_keep_best_resolution(members: &[SimilarMember]) -> usize {
+/// Best keeper index among `pool` under `keep`.
+///
+/// `Smallest` prefers the highest resolution (width ? height); members with
+/// unknown resolution (0?0, e.g. a video probed without ffprobe) rank below
+/// any member with known resolution, falling back to smallest size.
+fn best_similar_keep(members: &[SimilarMember], pool: &[usize], keep: KeepMode) -> usize {
     let area = |m: &SimilarMember| -> Option<u64> {
         (m.w > 0 && m.h > 0).then_some(m.w as u64 * m.h as u64)
     };
-    let mut best = 0usize;
-    for (i, m) in members.iter().enumerate().skip(1) {
-        let b = &members[best];
-        let better = match (area(m), area(b)) {
-            (Some(a), Some(ba)) => a > ba || (a == ba && (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path)),
-            (Some(_), None) => true,
-            (None, None) => (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path),
-            (None, Some(_)) => false,
+    let mut best = pool[0];
+    for &i in &pool[1..] {
+        let (m, b) = (&members[i], &members[best]);
+        let better = match keep {
+            KeepMode::First => m.entry.path < b.entry.path,
+            KeepMode::Smallest => match (area(m), area(b)) {
+                (Some(a), Some(ba)) => {
+                    a > ba
+                        || (a == ba
+                            && (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path))
+                }
+                (Some(_), None) => true,
+                (None, None) => {
+                    (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path)
+                }
+                (None, Some(_)) => false,
+            },
+            KeepMode::Newest => (
+                m.entry.mtime_secs.unwrap_or(i64::MIN),
+                std::cmp::Reverse(&m.entry.path),
+            ) > (
+                b.entry.mtime_secs.unwrap_or(i64::MIN),
+                std::cmp::Reverse(&b.entry.path),
+            ),
+            KeepMode::Oldest => (
+                m.entry.mtime_secs.unwrap_or(i64::MAX),
+                &m.entry.path,
+            ) < (
+                b.entry.mtime_secs.unwrap_or(i64::MAX),
+                &b.entry.path,
+            ),
         };
         if better {
             best = i;
@@ -803,6 +850,10 @@ mod tests {
         assert!(sim0 < sim && sim0 < 1.0);
     }
 
+    fn all_idx(members: &[SimilarMember]) -> Vec<usize> {
+        (0..members.len()).collect()
+    }
+
     fn sim_member(path: &str, size: u64, w: u32, h: u32) -> SimilarMember {
         SimilarMember {
             entry: entry(Path::new(path), size),
@@ -820,7 +871,7 @@ mod tests {
             sim_member("/media/low.jpg", 200_000, 1280, 720),
             sim_member("/media/high.png", 8_000_000, 3840, 2160),
         ];
-        assert_eq!(choose_keep_best_resolution(&members), 1);
+        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
     }
 
     #[test]
@@ -831,7 +882,7 @@ mod tests {
             sim_member("/media/a.png", 5_000_000, 1920, 1080),
             sim_member("/media/b.png", 3_000_000, 1920, 1080),
         ];
-        assert_eq!(choose_keep_best_resolution(&members), 2);
+        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 2);
     }
 
     #[test]
@@ -842,7 +893,7 @@ mod tests {
             sim_member("/media/b.mp4", 5_000_000, 0, 0),
             sim_member("/media/c.mp4", 8_000_000, 0, 0),
         ];
-        assert_eq!(choose_keep_best_resolution(&members), 1);
+        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
     }
 
     #[test]
@@ -852,7 +903,7 @@ mod tests {
             sim_member("/media/tiny.jpg", 50_000, 0, 0),
             sim_member("/media/known.png", 900_000, 1920, 1080),
         ];
-        assert_eq!(choose_keep_best_resolution(&members), 1);
+        assert_eq!(best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest), 1);
     }
 
     #[test]

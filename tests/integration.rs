@@ -354,20 +354,9 @@ fn fingerprint_cache_is_persisted_and_reused_across_runs() {
 }
 
 #[test]
-fn bare_invocation_prints_usage_and_fails() {
-    // Running the binary without a path shows how to use the tool and exits
-    // with the standard usage-error code (2), instead of scanning anything.
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
-        .output()
-        .expect("failed to run dedupe binary");
-    assert_eq!(out.status.code(), Some(2), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("Usage:"), "stderr: {stderr}");
-    assert!(stderr.contains("--types"), "stderr: {stderr}");
-    assert!(stderr.contains("--keep-smaller"), "stderr: {stderr}");
-    assert!(stderr.contains("a scan path is required"), "stderr: {stderr}");
-
+fn help_flag_prints_usage_and_succeeds() {
+    // NOTE: a bare `dedupe` invocation now opens the GUI (needs a display),
+    // so it is intentionally not exercised here.
     // `--help` still exits 0 and prints to stdout.
     let help = Command::new(env!("CARGO_BIN_EXE_dedupe"))
         .arg("--help")
@@ -376,4 +365,101 @@ fn bare_invocation_prints_usage_and_fails() {
     assert!(help.status.success());
     let help_stdout = String::from_utf8_lossy(&help.stdout);
     assert!(help_stdout.contains("Usage:"));
+
+    // Unknown flags are still CLI usage errors (exit 2).
+    let bad = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .arg("--no-such-flag")
+        .output()
+        .expect("failed to run dedupe binary");
+    assert_eq!(
+        bad.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&bad.stderr)
+    );
+}
+
+#[test]
+fn reference_dir_is_protected_from_deletion() {
+    let dir = tmpdir("refdir");
+    let incoming = dir.join("incoming");
+    let backup = dir.join("backup");
+    fs::create_dir_all(&incoming).unwrap();
+    fs::create_dir_all(&backup).unwrap();
+    // a.txt sorts first, but the backup copy must be kept instead.
+    fs::write(incoming.join("a.txt"), b"payload").unwrap();
+    fs::write(backup.join("z.txt"), b"payload").unwrap();
+
+    let (out, stdout) = run(&[
+        "--json",
+        "--reference-dir",
+        backup.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let members = parsed["groups"][0]["members"].as_array().unwrap();
+    assert_eq!(members.len(), 2);
+    assert!(members[0]["keep"].as_bool().unwrap());
+    assert!(members[0]["path"].as_str().unwrap().ends_with("z.txt"));
+
+    // Deleting removes only the unprotected copy.
+    let del = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args([
+            "--reference-dir",
+            backup.to_str().unwrap(),
+            "--delete",
+            "--yes",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(del.status.success(), "stderr: {}", String::from_utf8_lossy(&del.stderr));
+    assert!(backup.join("z.txt").exists(), "reference copy must survive");
+    assert!(!incoming.join("a.txt").exists(), "unprotected copy deleted");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dry_run_deletes_nothing() {
+    let dir = tmpdir("dryrun");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args(["--delete", "--yes", "--dry-run", dir.to_str().unwrap()])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Dry run"), "stdout: {stdout}");
+    assert!(dir.join("a.txt").exists());
+    assert!(dir.join("b.txt").exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keep_newest_prefers_recently_modified() {
+    use std::time::{Duration, SystemTime};
+    let dir = tmpdir("keepnew");
+    fs::write(dir.join("old.txt"), b"payload").unwrap();
+    fs::write(dir.join("new.txt"), b"payload").unwrap();
+    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600));
+    fs::File::options()
+        .write(true)
+        .open(dir.join("old.txt"))
+        .unwrap()
+        .set_times(ft)
+        .unwrap();
+
+    let (out, stdout) = run(&["--json", "--keep-newest", dir.to_str().unwrap()]);
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let members = parsed["groups"][0]["members"].as_array().unwrap();
+    assert!(members[0]["keep"].as_bool().unwrap());
+    assert!(members[0]["path"].as_str().unwrap().ends_with("new.txt"));
+
+    let _ = fs::remove_dir_all(&dir);
 }

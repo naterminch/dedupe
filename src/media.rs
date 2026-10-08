@@ -1,7 +1,6 @@
 use crate::util::format_duration_ms;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 
 /// What kind of media a file is, based on its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -89,7 +88,7 @@ struct FfprobeOutput {
 
 /// True when an `ffprobe` executable is reachable on PATH.
 pub fn ffprobe_available() -> bool {
-    Command::new("ffprobe")
+    crate::util::quiet_command("ffprobe")
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -101,7 +100,7 @@ pub fn ffprobe_available() -> bool {
 /// True when an `ffmpeg` executable is reachable on PATH (needed for video
 /// frame sampling in `--similar` mode).
 pub fn ffmpeg_available() -> bool {
-    Command::new("ffmpeg")
+    crate::util::quiet_command("ffmpeg")
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -113,7 +112,7 @@ pub fn ffmpeg_available() -> bool {
 /// Probe width/height/codec (video stream) and duration via `ffprobe`.
 /// Returns `None` on any failure (missing binary, parse error, no video stream).
 pub fn probe_media(path: &Path) -> Option<MediaInfo> {
-    let output = Command::new("ffprobe")
+    let output = crate::util::quiet_command("ffprobe")
         .args([
             "-v",
             "error",

@@ -27,6 +27,12 @@ const CACHE_VERSION: u32 = 1;
 /// Rough cap on stored entries; the file is pruned down to this at save time.
 const MAX_ENTRIES: usize = 50_000;
 
+/// Format version of the content-hash cache (independent from fingerprints).
+const HASH_CACHE_VERSION: u32 = 1;
+/// Files below this size are fast to hash and would only bloat the cache;
+/// their hashes are recomputed every run (same trade-off as czkawka).
+pub const HASH_CACHE_MIN_SIZE: u64 = 256 * 1024;
+
 /// A stored perceptual fingerprint, mirroring the runtime types in `similar`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CacheFp {
@@ -160,6 +166,149 @@ pub fn default_cache_path() -> PathBuf {
     PathBuf::from("fingerprints.bin")
 }
 
+/// A cached content hash (partial and/or full), mirroring `hashing`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HashCacheEntry {
+    pub size: u64,
+    pub mtime_secs: i64,
+    pub algo: String,
+    pub partial: Option<String>,
+    pub full: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct HashCacheFile {
+    version: u32,
+    entries: Vec<(PathBuf, HashCacheEntry)>,
+}
+
+/// Persistent content-hash cache: the biggest repeat-scan win.
+///
+/// Unlike perceptual fingerprints (always cached), content hashes are only
+/// stored for files at or above [`HASH_CACHE_MIN_SIZE`] — small files hash
+/// faster than a cache round-trip is worth. Entries are keyed by path and
+/// validated by size+mtime+algorithm, so stale results are never served.
+#[derive(Debug)]
+pub struct HashCache {
+    path: Option<PathBuf>,
+    map: HashMap<PathBuf, HashCacheEntry>,
+    dirty: bool,
+}
+
+impl HashCache {
+    /// Load from the default location (sibling of the fingerprint cache).
+    pub fn load() -> Self {
+        Self::load_from(default_hash_cache_path())
+    }
+
+    pub fn load_from(path: PathBuf) -> Self {
+        let map = match fs::read(&path) {
+            Ok(bytes) => match bincode::deserialize::<HashCacheFile>(&bytes) {
+                Ok(f) if f.version == HASH_CACHE_VERSION => f.entries.into_iter().collect(),
+                _ => HashMap::new(),
+            },
+            Err(_) => HashMap::new(),
+        };
+        Self {
+            path: Some(path),
+            map,
+            dirty: false,
+        }
+    }
+
+    /// Look up cached hashes valid for `(size, mtime_secs, algo)`.
+    pub fn get(
+        &self,
+        path: &Path,
+        size: u64,
+        mtime_secs: Option<i64>,
+        algo: &str,
+    ) -> Option<&HashCacheEntry> {
+        let entry = self.map.get(path)?;
+        let mtime = mtime_secs?;
+        if entry.size == size && entry.mtime_secs == mtime && entry.algo == algo {
+            Some(entry)
+        } else {
+            None
+        }
+    }
+
+    /// Store a newly computed hash. Files below [`HASH_CACHE_MIN_SIZE`] and
+    /// entries without an mtime are not stored. Partial and full hashes
+    /// merge: storing one never drops the other.
+    pub fn insert(&mut self, path: PathBuf, size: u64, mtime_secs: Option<i64>, algo: String, partial: Option<String>, full: Option<String>) {
+        let Some(mtime_secs) = mtime_secs else {
+            return;
+        };
+        if size < HASH_CACHE_MIN_SIZE || (partial.is_none() && full.is_none()) {
+            return;
+        }
+        let (partial, full) = match self.map.get(&path) {
+            Some(e) if e.size == size && e.mtime_secs == mtime_secs && e.algo == algo => (
+                partial.or_else(|| e.partial.clone()),
+                full.or_else(|| e.full.clone()),
+            ),
+            _ => (partial, full),
+        };
+        self.map.insert(
+            path,
+            HashCacheEntry {
+                size,
+                mtime_secs,
+                algo,
+                partial,
+                full,
+            },
+        );
+        self.dirty = true;
+    }
+
+    /// Persist atomically (temp file + rename); best-effort, never fails scans.
+    pub fn save(&self) -> io::Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        let mut entries: Vec<(PathBuf, HashCacheEntry)> =
+            self.map.iter().map(|(p, e)| (p.clone(), e.clone())).collect();
+        if entries.len() > MAX_ENTRIES {
+            entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            entries.truncate(MAX_ENTRIES);
+        }
+        let file = HashCacheFile {
+            version: HASH_CACHE_VERSION,
+            entries,
+        };
+        let bytes = bincode::serialize(&file).map_err(io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("bin.tmp");
+        fs::write(&tmp, bytes)?;
+        fs::rename(&tmp, path)?;
+        Ok(())
+    }
+}
+
+/// Default content-hash cache location: next to the fingerprint cache.
+pub fn default_hash_cache_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("DEDUPE_CACHE")
+        && !p.is_empty()
+    {
+        let p = PathBuf::from(p);
+        return match p.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join("hashes.bin"),
+            _ => PathBuf::from("hashes.bin"),
+        };
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        return PathBuf::from(home).join(".dedupe").join("hashes.bin");
+    }
+    PathBuf::from("hashes.bin")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,6 +399,61 @@ mod tests {
         c.save().unwrap();
         assert!(path.exists(), "dirty cache is persisted");
 
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hash_cache_roundtrip_and_invalidation() {
+        let path = tmp_path("hash-rt");
+        let _ = fs::remove_file(&path);
+        let p = PathBuf::from("C:\\media\\big.bin");
+        {
+            let mut c = HashCache::load_from(path.clone());
+            c.insert(
+                p.clone(),
+                HASH_CACHE_MIN_SIZE,
+                Some(7),
+                "blake3".into(),
+                Some("partial".into()),
+                Some("full".into()),
+            );
+            c.save().unwrap();
+        }
+        let c = HashCache::load_from(path.clone());
+        let hit = c.get(&p, HASH_CACHE_MIN_SIZE, Some(7), "blake3").unwrap();
+        assert_eq!(hit.full.as_deref(), Some("full"));
+        assert_eq!(hit.partial.as_deref(), Some("partial"));
+        assert!(c.get(&p, HASH_CACHE_MIN_SIZE + 1, Some(7), "blake3").is_none());
+        assert!(c.get(&p, HASH_CACHE_MIN_SIZE, Some(8), "blake3").is_none());
+        assert!(c.get(&p, HASH_CACHE_MIN_SIZE, Some(7), "sha256").is_none());
+        assert!(c.get(&p, HASH_CACHE_MIN_SIZE, None, "blake3").is_none());
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hash_cache_skips_small_and_mtimeless_files() {
+        let path = tmp_path("hash-min");
+        let _ = fs::remove_file(&path);
+        let mut c = HashCache::load_from(path.clone());
+        c.insert(
+            PathBuf::from("tiny.bin"),
+            HASH_CACHE_MIN_SIZE - 1,
+            Some(1),
+            "blake3".into(),
+            Some("p".into()),
+            Some("f".into()),
+        );
+        c.insert(
+            PathBuf::from("nodate.bin"),
+            HASH_CACHE_MIN_SIZE,
+            None,
+            "blake3".into(),
+            Some("p".into()),
+            Some("f".into()),
+        );
+        assert!(!c.dirty, "nothing storable, cache stays clean");
+        c.save().unwrap();
+        assert!(!path.exists());
         let _ = fs::remove_file(&path);
     }
 }

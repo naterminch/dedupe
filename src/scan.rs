@@ -299,6 +299,36 @@ mod tests {
     }
 
     #[test]
+    fn hardlinks_to_same_inode_count_once() {
+        let dir = tmpdir("hardlink");
+        fs::write(dir.join("orig.txt"), b"same inode").unwrap();
+        // Hard-link creation can fail on restricted filesystems; skip then.
+        if fs::hard_link(dir.join("orig.txt"), dir.join("link.txt")).is_err() {
+            eprintln!("skipping: hard links unsupported here");
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        fs::write(dir.join("other.txt"), b"same inode").unwrap();
+
+        let cli = Cli {
+            paths: vec![dir.display().to_string()],
+            max_depth: None,
+            ..zero_cli()
+        };
+        let result = scan(&cli, 0, 0);
+        // Scan sees all three names; the hashing stage filters the
+        // hard link (same inode as orig.txt).
+        assert_eq!(result.entries.len(), 3);
+        let engine = crate::hashing::HashEngine::new(crate::cli::HashAlgo::Blake3);
+        let (groups, hardlinks) =
+            crate::hashing::find_duplicate_groups(result.entries, &engine, None, None).unwrap();
+        assert_eq!(hardlinks, 1);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].members.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn exclude_path_filters_files() {
         let dir = tmpdir("exclude-path");
         fs::write(dir.join("report-final.txt"), b"x").unwrap();
@@ -322,6 +352,11 @@ mod tests {
             max_depth: None,
             types: vec![],
             keep_smaller: false,
+            keep_newest: false,
+            keep_oldest: false,
+            reference_dir: vec![],
+            trash: false,
+            dry_run: false,
             delete: false,
             yes: false,
             hash: crate::cli::HashAlgo::Blake3,
@@ -335,6 +370,7 @@ mod tests {
             json: false,
             verbose: false,
             quiet: true,
+            gui: false,
         }
     }
 }

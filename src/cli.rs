@@ -20,7 +20,7 @@ fn cli_styles() -> Styles {
 /// full content hash (jdupes-style pipeline). Images and videos additionally
 /// have their resolution / duration probed via `ffprobe` when available, and
 /// that metadata is reported alongside each duplicate group.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(
     name = "dedupe",
     version,
@@ -30,8 +30,8 @@ fn cli_styles() -> Styles {
     styles = cli_styles()
 )]
 pub struct Cli {
-    /// Paths to scan (files or directories). At least one is required;
-    /// running the binary without a path prints the usage/help instead.
+    /// Paths to scan (files or directories). Omit to open the graphical
+    /// interface instead (same as --gui).
     #[arg(value_name = "PATH", num_args = 1..)]
     pub paths: Vec<String>,
 
@@ -50,6 +50,29 @@ pub struct Cli {
     /// same resolution -- so the smaller encoding is kept).
     #[arg(short, long)]
     pub keep_smaller: bool,
+
+    /// Within each duplicate group, prefer keeping the most recently
+    /// modified file. Conflicts with --keep-smaller/--keep-oldest.
+    #[arg(long)]
+    pub keep_newest: bool,
+
+    /// Within each duplicate group, prefer keeping the least recently
+    /// modified file. Conflicts with --keep-smaller/--keep-newest.
+    #[arg(long)]
+    pub keep_oldest: bool,
+
+    /// Protect folders: files under these directories are never deleted
+    /// and win the keep decision (repeatable). Like czkawka reference dirs.
+    #[arg(long, value_name = "PATH", action = clap::ArgAction::Append)]
+    pub reference_dir: Vec<String>,
+
+    /// Move duplicates to the system trash instead of deleting permanently.
+    #[arg(long)]
+    pub trash: bool,
+
+    /// With --delete: print what would be removed without removing anything.
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Delete duplicate files. Prompts per group unless --yes is given.
     #[arg(short = 'D', long)]
@@ -111,6 +134,11 @@ pub struct Cli {
     /// Suppress progress output.
     #[arg(short, long)]
     pub quiet: bool,
+
+    /// Open the graphical interface instead of running a command-line scan.
+    /// The GUI also opens when no scan path is given.
+    #[arg(long)]
+    pub gui: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]

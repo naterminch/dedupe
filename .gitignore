@@ -1,2 +1,7 @@
-/target
+# Built binaries (build.ps1 copies them to the project root)
 /dedupe.exe
+/dedupe-gui.exe
+*.exe
+
+# Build output and logs
+/target/

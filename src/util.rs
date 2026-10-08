@@ -1,4 +1,22 @@
 use anyhow::{bail, Result};
+use std::process::Command;
+
+/// Spawn a helper process without ever flashing a console window.
+///
+/// On Windows, child processes of a GUI-subsystem app (dedupe-gui) get
+/// their own console window by default — every ffmpeg/ffprobe probe would
+/// blink a terminal. `CREATE_NO_WINDOW` suppresses that. All our children
+/// have piped output, so this is also harmless for the CLI binary.
+pub fn quiet_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
 
 /// Format a byte count as a human-readable string (decimal units).
 pub fn human_bytes(bytes: u64) -> String {
