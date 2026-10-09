@@ -39,7 +39,8 @@ dedupe /media --json        # scriptable output
 
 Useful flags: `--types jpg,png,mp4` · `--keep-smaller` /
 `--keep-newest` / `--keep-oldest` · `--reference-dir` (protect a folder) ·
-`--trash` · `--dry-run` · `--exact` · `--no-cache` · `-y` (no prompts).
+`--trash` · `--dry-run` · `--exact` · `--no-cache` · `--jobs 2` (limit
+worker threads when scans hog the machine) · `-y` (no prompts).
 Full list: `dedupe --help`.
 
 ```sh

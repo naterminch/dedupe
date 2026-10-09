@@ -374,6 +374,7 @@ mod tests {
             json: false,
             verbose: false,
             quiet: true,
+            jobs: 0,
             gui: false,
         }
     }

@@ -63,6 +63,11 @@ pub fn run_scan(
             cli.similarity
         );
     }
+    // Cap worker threads before any parallel stage runs: hashing,
+    // ffprobe/ffmpeg fingerprinting and group assembly all share rayon's
+    // global pool, so sizing it here throttles every stage at once. The
+    // default leaves one core free for the rest of the system.
+    crate::util::init_thread_pool(cli.jobs);
     let keep_modes = [cli.keep_smaller, cli.keep_newest, cli.keep_oldest];
     if keep_modes.iter().filter(|&&b| b).count() > 1 {
         anyhow::bail!("--keep-smaller, --keep-newest and --keep-oldest conflict; pick one");

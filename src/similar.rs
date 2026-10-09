@@ -297,8 +297,11 @@ fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> 
         return None;
     }
     let fps = format!("{SIMILAR_FRAMES}/{dur_secs:.6}");
+    // `-threads 1`: we already run one ffmpeg per worker thread, so internal
+    // ffmpeg threading would oversubscribe the machine (N processes x M
+    // threads). Single-threaded decode is plenty for 17x16 thumbnails.
     let out = crate::util::quiet_command("ffmpeg")
-        .args(["-v", "error", "-i"])
+        .args(["-v", "error", "-threads", "1", "-i"])
         .arg(path)
         .arg("-vf")
         .arg(format!("scale={FRAME_W}:{FRAME_H},fps={fps}"))
@@ -327,7 +330,7 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> 
         let out = crate::util::quiet_command("ffmpeg")
             .args(["-v", "error", "-ss"])
             .arg(format!("{t:.6}"))
-            .args(["-i"])
+            .args(["-threads", "1", "-i"])
             .arg(path)
             .args([
                 "-frames:v",
@@ -356,7 +359,7 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> 
 
 fn extract_frames_oneshot(path: &Path) -> Option<Vec<FrameHash>> {
     let out = crate::util::quiet_command("ffmpeg")
-        .args(["-v", "error", "-i"])
+        .args(["-v", "error", "-threads", "1", "-i"])
         .arg(path)
         .args([
             "-vf",

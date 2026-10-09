@@ -135,6 +135,12 @@ pub struct Cli {
     #[arg(short, long)]
     pub quiet: bool,
 
+    /// Worker threads for hashing and media fingerprinting (0 = auto:
+    /// all but one core, at least 1). Lower this if scans make the
+    /// system laggy, e.g. --jobs 2 on a big media folder.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub jobs: usize,
+
     /// Open the graphical interface instead of running a command-line scan.
     /// The GUI also opens when no scan path is given.
     #[arg(long)]

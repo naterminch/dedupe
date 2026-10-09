@@ -5,21 +5,47 @@ use std::process::Command;
 ///
 /// On Windows, child processes of a GUI-subsystem app (dedupe-gui) get
 /// their own console window by default — every ffmpeg/ffprobe probe would
-/// blink a terminal. `CREATE_NO_WINDOW` suppresses that. All our children
-/// have piped output, so this is also harmless for the CLI binary.
+/// blink a terminal. `CREATE_NO_WINDOW` suppresses that. Children also run
+/// at below-normal priority so a big media scan stays out of the way of
+/// everything else on the machine. All our children have piped output, so
+/// this is also harmless for the CLI binary.
 pub fn quiet_command(program: &str) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW
+        // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
         let mut cmd = Command::new(program);
-        cmd.creation_flags(0x0800_0000);
+        cmd.creation_flags(0x0800_0000 | 0x0000_4000);
         cmd
     }
     #[cfg(not(windows))]
     {
         Command::new(program)
     }
+}
+
+/// Resolve a `--jobs` value to a concrete worker count: an explicit value
+/// wins, otherwise use all but one core (at least 1) so the machine stays
+/// responsive while a scan saturates the rest.
+pub fn effective_jobs(requested: usize) -> usize {
+    if requested > 0 {
+        return requested;
+    }
+    std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1))
+        .unwrap_or(4)
+}
+
+/// Size rayon's global thread pool for this run. Safe to call on every
+/// scan: only the first call takes effect, later ones are ignored (rayon
+/// forbids re-initialization, which is fine — the pool already exists).
+/// Tests use rayon's default pool; only the real pipeline calls this.
+pub fn init_thread_pool(jobs: usize) {
+    let threads = effective_jobs(jobs);
+    let _ = rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("dedupe-{i}"))
+        .build_global();
 }
 
 /// Format a byte count as a human-readable string (decimal units).
@@ -114,5 +140,13 @@ mod tests {
     fn format_duration() {
         assert_eq!(format_duration_ms(65_000), "1:05");
         assert_eq!(format_duration_ms(3_661_000), "1:01:01");
+    }
+
+    #[test]
+    fn effective_jobs_honors_explicit_and_stays_sane_on_auto() {
+        assert_eq!(effective_jobs(1), 1);
+        assert_eq!(effective_jobs(4), 4);
+        // Auto (0) leaves headroom but never drops to zero workers.
+        assert!(effective_jobs(0) >= 1);
     }
 }
