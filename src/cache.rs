@@ -23,7 +23,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// Format version; bump to invalidate all previously stored fingerprints.
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 2;
 /// Rough cap on stored entries; the file is pruned down to this at save time.
 const MAX_ENTRIES: usize = 50_000;
 
@@ -34,18 +34,20 @@ const HASH_CACHE_VERSION: u32 = 1;
 pub const HASH_CACHE_MIN_SIZE: u64 = 256 * 1024;
 
 /// A stored perceptual fingerprint, mirroring the runtime types in `similar`.
+/// v2: 256-bit dHash (17x16 grid, 4 x u64) - v1 64-bit fingerprints collide
+/// on videos sharing only a coarse layout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum CacheFp {
     Image {
         w: u32,
         h: u32,
-        hash: u64,
+        hash: [u64; 4],
     },
     Video {
         w: u32,
         h: u32,
         duration_ms: u64,
-        frames: Vec<u64>,
+        frames: Vec<[u64; 4]>,
     },
 }
 
@@ -353,9 +355,9 @@ mod tests {
                 size: 100,
                 mtime_secs: 5,
                 fp: CacheFp::Image {
-                    w: 9,
-                    h: 8,
-                    hash: 42,
+                    w: 17,
+                    h: 16,
+                    hash: [42, 0, 0, 0],
                 },
             });
             c.save().unwrap();
@@ -363,9 +365,9 @@ mod tests {
 
         let c = FingerprintCache::load_from(path.clone());
         let expected = CacheFp::Image {
-            w: 9,
-            h: 8,
-            hash: 42,
+            w: 17,
+            h: 16,
+            hash: [42, 0, 0, 0],
         };
         assert_eq!(c.get(&p, 100, Some(5)), Some(&expected));
         assert_eq!(c.get(&p, 101, Some(5)), None, "size changed -> miss");
@@ -410,10 +412,10 @@ mod tests {
             size: 1,
             mtime_secs: 1,
             fp: CacheFp::Video {
-                w: 9,
-                h: 8,
+                w: 17,
+                h: 16,
                 duration_ms: 1000,
-                frames: vec![1, 2, 3],
+                frames: vec![[1, 0, 0, 0], [2, 0, 0, 0]],
             },
         });
         c.save().unwrap();

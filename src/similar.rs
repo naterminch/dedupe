@@ -34,8 +34,16 @@ pub const DEFAULT_SIMILARITY_PCT: f64 = 97.0;
 
 /// Number of frames sampled from each video.
 const SIMILAR_FRAMES: usize = 8;
-const FRAME_W: usize = 9;
-const FRAME_H: usize = 8;
+/// Fingerprint grid: (FRAME_W - 1) * FRAME_H bits = 16 * 16 = 256 bits
+/// (4 x u64). The old 9x8 / 64-bit grid collided on videos sharing only a
+/// coarse layout (e.g. dark sides + bright center skin tones at 9px wide),
+/// grouping completely different clips at 98-100% similar.
+const FRAME_W: usize = 17;
+const FRAME_H: usize = 16;
+/// Bits per frame fingerprint.
+const HASH_BITS: f64 = 256.0;
+/// One frame fingerprint: 256-bit difference hash.
+pub type FrameHash = [u64; 4];
 
 /// Videos longer than this use per-frame `-ss` seeks (decoding the whole
 /// stream to sample 8 frames would be wasteful); shorter ones are decoded
@@ -63,22 +71,22 @@ pub struct SimilarGroup {
     pub members: Vec<SimilarMember>,
 }
 
-/// 64-bit difference hash: for each of the 8 rows, compare the 8
-/// horizontally-adjacent pixel pairs on a 9x8 grid. Only the *relative*
+/// 256-bit difference hash: for each of the 16 rows, compare the 16
+/// horizontally-adjacent pixel pairs on a 17x16 grid. Only the *relative*
 /// brightness order is kept, so the hash is robust to re-encoding, format
 /// changes and slight exposure differences.
-pub fn dhash_gray(w: usize, h: usize, gray: &[u8]) -> u64 {
+pub fn dhash_gray(w: usize, h: usize, gray: &[u8]) -> FrameHash {
     debug_assert!(gray.len() >= w * h);
-    let mut hash = 0u64;
+    let mut hash: FrameHash = [0; 4];
     let mut bit = 0usize;
     'outer: for y in 0..h {
         let row = y * w;
         for x in 0..w.saturating_sub(1) {
             if gray[row + x] > gray[row + x + 1] {
-                hash |= 1 << bit;
+                hash[bit / 64] |= 1u64 << (bit % 64);
             }
             bit += 1;
-            if bit == 64 {
+            if bit == 256 {
                 break 'outer;
             }
         }
@@ -86,28 +94,42 @@ pub fn dhash_gray(w: usize, h: usize, gray: &[u8]) -> u64 {
     hash
 }
 
-/// Fraction of identical bits between two 64-bit hashes (0..=1).
-pub fn hash_similarity(a: u64, b: u64) -> f64 {
-    1.0 - (a ^ b).count_ones() as f64 / 64.0
+/// Fraction of identical bits between two 256-bit hashes (0..=1).
+pub fn hash_similarity(a: &FrameHash, b: &FrameHash) -> f64 {
+    let mut diff = 0u32;
+    for i in 0..4 {
+        diff += (a[i] ^ b[i]).count_ones();
+    }
+    1.0 - diff as f64 / HASH_BITS
 }
 
 /// Mean over `a`'s frames of the best similarity found inside a ±`window`
 /// neighborhood of `b` — tolerates small temporal drift between encodings.
-pub fn frame_seq_similarity(a: &[u64], b: &[u64], window: usize) -> f64 {
+/// NOTE: asymmetric — use [`frame_seq_similarity_sym`] for grouping so a
+/// static clip (all frames identical) cannot score 1.0 against a varied
+/// clip just because its single repeated hash appears in the other.
+pub fn frame_seq_similarity(a: &[FrameHash], b: &[FrameHash], window: usize) -> f64 {
     if a.is_empty() || b.is_empty() {
         return 0.0;
     }
     let mut total = 0.0;
-    for (i, &ha) in a.iter().enumerate() {
+    for (i, ha) in a.iter().enumerate() {
         let lo = i.saturating_sub(window);
         let hi = (i + window + 1).min(b.len());
         let mut best: f64 = 0.0;
-        for &hb in &b[lo..hi] {
+        for hb in &b[lo..hi] {
             best = best.max(hash_similarity(ha, hb));
         }
         total += best;
     }
     total / a.len() as f64
+}
+
+/// Symmetric sequence similarity: min of both directions. Prevents the
+/// false-positive where clip B's uniform frames are all contained in clip A
+/// (B→A = 1.0) while A→B is lower — the pair must match both ways.
+pub fn frame_seq_similarity_sym(a: &[FrameHash], b: &[FrameHash], window: usize) -> f64 {
+    frame_seq_similarity(a, b, window).min(frame_seq_similarity(b, a, window))
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +138,7 @@ pub fn frame_seq_similarity(a: &[u64], b: &[u64], window: usize) -> f64 {
 
 struct ImageFp {
     entry: FileEntry,
-    hash: u64,
+    hash: FrameHash,
     w: u32,
     h: u32,
 }
@@ -142,8 +164,13 @@ fn image_fingerprint(entry: FileEntry) -> Option<ImageFp> {
     if w == 0 || h == 0 {
         return None;
     }
-    let small = image::imageops::resize(&gray, 9, 8, image::imageops::FilterType::Triangle);
-    let hash = dhash_gray(9, 8, small.as_raw());
+    let small = image::imageops::resize(
+        &gray,
+        FRAME_W as u32,
+        FRAME_H as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    let hash = dhash_gray(FRAME_W, FRAME_H, small.as_raw());
     Some(ImageFp { entry, hash, w, h })
 }
 
@@ -169,7 +196,7 @@ fn cluster_images(
         for &i in &idxs {
             let mut joined = None;
             for (gi, &leader) in leaders.iter().enumerate() {
-                if hash_similarity(fps[i].hash, fps[leader].hash) >= threshold {
+                if hash_similarity(&fps[i].hash, &fps[leader].hash) >= threshold {
                     joined = Some(gi);
                     break;
                 }
@@ -198,7 +225,7 @@ fn make_image_group(fps: &[ImageFp], cluster: Vec<usize>) -> SimilarGroup {
         .into_iter()
         .map(|i| SimilarMember {
             entry: fps[i].entry.clone(),
-            similarity: hash_similarity(fps[i].hash, keeper_hash),
+            similarity: hash_similarity(&fps[i].hash, &keeper_hash),
             w: fps[i].w,
             h: fps[i].h,
         })
@@ -218,7 +245,7 @@ struct VideoFp {
     w: u32,
     h: u32,
     duration_ms: u64,
-    frames: Vec<u64>,
+    frames: Vec<FrameHash>,
 }
 
 /// Sample `SIMILAR_FRAMES` evenly-spaced frames. With a known duration we use
@@ -264,7 +291,7 @@ fn video_fingerprint(entry: FileEntry, probe: Option<&MediaInfo>) -> Option<Vide
 /// frames are evenly spaced over the whole clip. One spawn decodes the entire
 /// stream once (cheap for short clips) instead of starting `SIMILAR_FRAMES`
 /// separate ffmpeg processes.
-fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
+fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> {
     let dur_secs = duration_ms as f64 / 1000.0;
     if dur_secs <= 0.0 {
         return None;
@@ -292,7 +319,7 @@ fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
     )
 }
 
-fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
+fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> {
     let secs = duration_ms as f64 / 1000.0;
     let mut hashes = Vec::with_capacity(SIMILAR_FRAMES);
     for i in 0..SIMILAR_FRAMES {
@@ -306,7 +333,7 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
                 "-frames:v",
                 "1",
                 "-vf",
-                "scale=9:8",
+                &format!("scale={FRAME_W}:{FRAME_H}"),
                 "-f",
                 "rawvideo",
                 "-pix_fmt",
@@ -327,13 +354,13 @@ fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<u64>> {
     Some(hashes)
 }
 
-fn extract_frames_oneshot(path: &Path) -> Option<Vec<u64>> {
+fn extract_frames_oneshot(path: &Path) -> Option<Vec<FrameHash>> {
     let out = crate::util::quiet_command("ffmpeg")
         .args(["-v", "error", "-i"])
         .arg(path)
         .args([
             "-vf",
-            "scale=9:8,fps=1",
+            &format!("scale={FRAME_W}:{FRAME_H},fps=1"),
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -345,7 +372,7 @@ fn extract_frames_oneshot(path: &Path) -> Option<Vec<u64>> {
     if !out.status.success() {
         return None;
     }
-    let mut all: Vec<u64> = out
+    let mut all: Vec<FrameHash> = out
         .stdout
         .as_chunks::<{ FRAME_W * FRAME_H }>()
         .0
@@ -389,7 +416,7 @@ fn cluster_videos(
             let mut joined = None;
             for (gi, &leader) in leaders.iter().enumerate() {
                 if duration_close(&fps[i], &fps[leader])
-                    && frame_seq_similarity(&fps[i].frames, &fps[leader].frames, 2) >= threshold
+                    && frame_seq_similarity_sym(&fps[i].frames, &fps[leader].frames, 2) >= threshold
                 {
                     joined = Some(gi);
                     break;
@@ -418,7 +445,7 @@ fn make_video_group(fps: &[VideoFp], cluster: Vec<usize>) -> SimilarGroup {
         .into_iter()
         .map(|i| SimilarMember {
             entry: fps[i].entry.clone(),
-            similarity: frame_seq_similarity(&fps[i].frames, &fps[keeper].frames, 2),
+            similarity: frame_seq_similarity_sym(&fps[i].frames, &fps[keeper].frames, 2),
             w: fps[i].w,
             h: fps[i].h,
         })
@@ -473,7 +500,7 @@ pub fn find_similar(
     // dHash only images that share a bucket with a possible partner. Files
     // whose fingerprint is already cached skip the header read AND the decode.
     let mut aspect_buckets: HashMap<i64, Vec<usize>> = HashMap::new();
-    let mut cached_img: HashMap<usize, (u32, u32, u64)> = HashMap::new();
+    let mut cached_img: HashMap<usize, (u32, u32, FrameHash)> = HashMap::new();
     for (i, e) in images.iter().enumerate() {
         if let Some(CacheFp::Image { w, h, hash }) =
             cache.and_then(|c| c.get(&e.path, e.size, e.mtime_secs))
@@ -548,7 +575,7 @@ pub fn find_similar(
     // unique. Cached fingerprints provide probe-equivalent metadata and skip
     // the sampling entirely.
     if !videos.is_empty() {
-        let mut cached_vid: HashMap<usize, (u32, u32, u64, Vec<u64>)> = HashMap::new();
+        let mut cached_vid: HashMap<usize, (u32, u32, u64, Vec<FrameHash>)> = HashMap::new();
         for (i, e) in videos.iter().enumerate() {
             if let Some(CacheFp::Video {
                 w,
@@ -829,43 +856,69 @@ mod tests {
 
     #[test]
     fn dhash_constant_image_is_zero() {
-        let gray = vec![100u8; 9 * 8];
-        assert_eq!(dhash_gray(9, 8, &gray), 0);
+        let gray = vec![100u8; FRAME_W * FRAME_H];
+        assert_eq!(dhash_gray(FRAME_W, FRAME_H, &gray), [0; 4]);
     }
 
     #[test]
     fn dhash_gradual_gradient_sets_bits() {
         // Brightness strictly decreases left -> right: every pair differs
         // (gray[x] > gray[x+1] sets the bit).
-        let mut gray = vec![0u8; 9 * 8];
-        for y in 0..8 {
-            for x in 0..9 {
-                gray[y * 9 + x] = ((8 - x) * 30) as u8;
+        let mut gray = vec![0u8; FRAME_W * FRAME_H];
+        for y in 0..FRAME_H {
+            for x in 0..FRAME_W {
+                gray[y * FRAME_W + x] = ((FRAME_W - 1 - x) * 10) as u8;
             }
         }
-        assert_eq!(dhash_gray(9, 8, &gray), u64::MAX);
+        assert_eq!(
+            dhash_gray(FRAME_W, FRAME_H, &gray),
+            [u64::MAX; 4]
+        );
     }
 
     #[test]
     fn similarity_is_bit_fraction() {
-        assert_eq!(hash_similarity(0, 0), 1.0);
-        assert_eq!(hash_similarity(0, 1), 63.0 / 64.0);
-        assert_eq!(hash_similarity(0, u64::MAX), 0.0);
+        assert_eq!(hash_similarity(&[0; 4], &[0; 4]), 1.0);
+        assert_eq!(
+            hash_similarity(&[0; 4], &[1, 0, 0, 0]),
+            255.0 / 256.0
+        );
+        assert_eq!(
+            hash_similarity(&[0; 4], &[u64::MAX; 4]),
+            0.0
+        );
     }
 
     #[test]
     fn frame_seq_tolerates_small_shift() {
         // a[i] = i+1 appears exactly at b[i+1] (b is shifted one position).
-        let a: Vec<u64> = (1..=8).collect();
-        let b: Vec<u64> = (0..8).collect();
+        let mk = |v: u64| -> FrameHash { [v, 0, 0, 0] };
+        let a: Vec<FrameHash> = (1..=8).map(mk).collect();
+        let b: Vec<FrameHash> = (0..8).map(mk).collect();
         // 7 of 8 frames match exactly; the unpaired head matches its nearest
-        // neighbor at 63/64 -> ~0.998.
+        // neighbor at 255/256 -> ~0.999.
         let sim = frame_seq_similarity(&a, &b, 2);
         assert!(sim > 0.99, "sim = {sim}");
-        // Without a tolerance window the same shift drops to ~0.984 and is
-        // strictly worse.
+        // Without a tolerance window the same shift drops and is strictly worse.
         let sim0 = frame_seq_similarity(&a, &b, 0);
         assert!(sim0 < sim && sim0 < 1.0);
+    }
+
+    #[test]
+    fn frame_seq_sym_is_min_of_both_directions() {
+        // Uniform B (all frames identical to one of A's) scores higher B→A
+        // than A→B — the symmetric score must be the lower one so static
+        // clips cannot claim 100% against varied clips.
+        let mk = |v: u64| -> FrameHash { [v, 0, 0, 0] };
+        let varied: Vec<FrameHash> = (0..8).map(mk).collect();
+        let uniform: Vec<FrameHash> = vec![mk(0); 8];
+        let fwd = frame_seq_similarity(&uniform, &varied, 2);
+        let back = frame_seq_similarity(&varied, &uniform, 2);
+        assert!(fwd > back, "fwd = {fwd}, back = {back}");
+        assert_eq!(
+            frame_seq_similarity_sym(&uniform, &varied, 2),
+            fwd.min(back)
+        );
     }
 
     fn all_idx(members: &[SimilarMember]) -> Vec<usize> {
@@ -956,7 +1009,7 @@ mod tests {
 
         let f1 = image_fingerprint(entry(&png, 0)).expect("png decodes");
         let f2 = image_fingerprint(entry(&jpg, 0)).expect("jpg decodes");
-        let sim = hash_similarity(f1.hash, f2.hash);
+        let sim = hash_similarity(&f1.hash, &f2.hash);
         assert!(
             sim >= DEFAULT_SIMILARITY_PCT / 100.0,
             "png/jpg similarity {sim} < 0.97"
