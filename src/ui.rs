@@ -8,8 +8,8 @@
 //! with one collapsible section per duplicate group, and a status bar.
 
 use crate::{actions, cli, hashing, media, pipeline, poster, report, util};
-use gpui_kit::base::{Disableable as _, h_flex, v_flex};
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::progress::Progress;
@@ -34,6 +34,13 @@ const SIZE_SLIDER_MAX: f32 = 1_000_000_000_000.0;
 
 /// Image formats the UI can thumbnail directly from disk.
 const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
+
+/// Groups rendered before a "Show more" button takes over; keeps huge
+/// result sets fast and navigable.
+const GROUP_PAGE: usize = 100;
+
+/// Member paths previewed inside the delete confirm dialog.
+const CONFIRM_PREVIEW: usize = 8;
 
 /// Boot the GUI application. Returns when the window is closed.
 pub fn run() {
@@ -79,6 +86,7 @@ pub struct DedupeView {
     exclude_dir_input: Entity<InputState>,
     exclude_path_input: Entity<InputState>,
     similarity_input: Entity<InputState>,
+    jobs_input: Entity<InputState>,
     hash_index: Option<usize>,
     keep_index: Option<usize>,
     exact: bool,
@@ -108,6 +116,9 @@ pub struct DedupeView {
     has_scanned: bool,
     ffprobe_note: bool,
     groups: Vec<crate::matching::Group>,
+    /// How many groups render at once; the rest sit behind a "Show more"
+    /// button so huge result sets stay navigable (and fast).
+    group_limit: usize,
     last_hash: cli::HashAlgo,
     expanded: HashSet<usize>,
     selected: HashSet<PathBuf>,
@@ -142,12 +153,13 @@ impl DedupeView {
         };
         let folder_input = mk("Type a folder, then Add (or Browse…)", "", window, cx);
         let types_input = mk("jpg,png,mp4 (empty = all)", "", window, cx);
-        let min_size_input = mk("e.g. 100KB (empty = none)", "", window, cx);
-        let max_size_input = mk("e.g. 500MB (empty = none)", "", window, cx);
+        let min_size_input = mk("100KB", "", window, cx);
+        let max_size_input = mk("500MB", "", window, cx);
         let max_depth_input = mk("0 = top level only", "", window, cx);
-        let exclude_dir_input = mk("e.g. node_modules (;-separated)", "", window, cx);
-        let exclude_path_input = mk("skip paths containing… (;-separated)", "", window, cx);
+        let exclude_dir_input = mk("node_modules", "", window, cx);
+        let exclude_path_input = mk("substring", "", window, cx);
         let similarity_input = mk("0–100", "97", window, cx);
+        let jobs_input = mk("0", "", window, cx);
         let mk_size_slider = |default: f32, cx: &mut Context<Self>| {
             // NOTE: max() must come before min(): the state clamps its
             // value on every builder call, and min(1024) with the default
@@ -172,6 +184,7 @@ impl DedupeView {
             exclude_dir_input,
             exclude_path_input,
             similarity_input,
+            jobs_input,
             hash_index: Some(0),
             keep_index: Some(0),
             exact: false,
@@ -201,6 +214,7 @@ impl DedupeView {
             has_scanned: false,
             ffprobe_note: false,
             groups: Vec::new(),
+            group_limit: GROUP_PAGE,
             last_hash: cli::HashAlgo::Blake3,
             expanded: HashSet::new(),
             selected: HashSet::new(),
@@ -305,6 +319,14 @@ impl DedupeView {
                 "Similarity must be between 0 and 100 (got {similarity})."
             ));
         }
+        let jobs_raw = val(&self.jobs_input).trim().to_string();
+        let jobs: usize = if jobs_raw.is_empty() {
+            0
+        } else {
+            jobs_raw.parse().map_err(|_| {
+                "Worker threads must be a whole number (0 = auto).".to_string()
+            })?
+        };
         let max_depth_raw = val(&self.max_depth_input).trim().to_string();
         let max_depth: Option<usize> = if max_depth_raw.is_empty() {
             None
@@ -359,6 +381,7 @@ impl DedupeView {
             json: false,
             verbose: false,
             quiet: true,
+            jobs,
             gui: false,
         })
     }
@@ -481,6 +504,7 @@ impl DedupeView {
         self.last_ffprobe = out.ffprobe_used;
         self.last_ref_dirs = out.reference_dirs;
         self.groups = out.groups;
+        self.group_limit = GROUP_PAGE;
         // Pre-select every duplicate for deletion (KEEP members are never
         // selectable); the user unchecks what should survive.
         self.selected = self
@@ -827,6 +851,11 @@ impl DedupeView {
                             Input::new(&self.similarity_input),
                             cx,
                         ))
+                        .child(self.sidebar_field(
+                            "WORKER THREADS (0 = AUTO)",
+                            Input::new(&self.jobs_input),
+                            cx,
+                        ))
                         .child(
                             Checkbox::new("exact")
                                 .label("Exact duplicates only")
@@ -993,9 +1022,55 @@ impl DedupeView {
             .child(input)
     }
 
+    /// First-run card: the sidebar holds a dozen options, so the empty
+    /// results pane teaches the 3-step flow instead of sitting blank.
+    fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let step = |n: &'static str, text: &'static str| {
+            h_flex()
+                .gap_2()
+                .items_start()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(cx.theme().accent)
+                        .child(n),
+                )
+                .child(div().text_sm().child(text))
+        };
+        v_flex()
+            .w_full()
+            .gap_2()
+            .p_4()
+            .border_1()
+            .rounded_md()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .child("Find duplicate files in 3 steps"),
+            )
+            .child(step("1.", "Add a folder on the left (type it and Add, or Browse…)."))
+            .child(step("2.", "Press “Scan for duplicates”."))
+            .child(step(
+                "3.",
+                "Review each group, untick anything that must survive, then Delete selected.",
+            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Keepers are never deleted. Deletion goes to the trash by default."),
+            )
+    }
+
     fn render_results(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Two rows: read-only status on top, all action controls on the
-        // second row right-aligned. Flex items will not shrink below
+        // Two rows: expand/collapse + select-all on top, all action
+        // controls on the second row right-aligned. The scan status lives
+        // in the status bar (and the progress card while scanning), so the
+        // header never repeats it. Flex items will not shrink below
         // content width here, so controls must never share a row with
         // free-length text — otherwise they clip off the edge.
         let header = v_flex()
@@ -1004,14 +1079,8 @@ impl DedupeView {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .truncate()
-                            .child(self.status.clone()),
-                    )
+                    .justify_between()
+                    .child(self.render_expand_toggle(cx))
                     .child(self.render_select_presets(cx)),
             )
             .child(
@@ -1034,6 +1103,9 @@ impl DedupeView {
         let mut list = v_flex().gap_2();
         if self.scanning {
             list = list.child(self.render_progress(cx));
+        }
+        if !self.has_scanned && !self.scanning {
+            list = list.child(self.render_empty_state(cx));
         }
         if self.has_scanned && !self.groups.is_empty() {
             list = list.child(self.render_stat_chips(cx));
@@ -1058,8 +1130,22 @@ impl DedupeView {
         if self.sort_biggest {
             order.sort_by(|&a, &b| self.groups[b].dup_bytes().cmp(&self.groups[a].dup_bytes()));
         }
-        for gi in order {
+        // Render in pages: thousands of groups would otherwise build
+        // thousands of elements up front and stall the UI.
+        let total = order.len();
+        for gi in order.into_iter().take(self.group_limit) {
             list = list.child(self.render_group(gi, cx));
+        }
+        if total > self.group_limit {
+            let remaining = total - self.group_limit;
+            list = list.child(
+                Button::new("show-more-groups")
+                    .label(format!("Show more ({remaining} remaining)"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.group_limit += GROUP_PAGE;
+                        cx.notify();
+                    })),
+            );
         }
         v_flex()
             .flex_1()
@@ -1186,30 +1272,77 @@ impl DedupeView {
             }))
     }
 
-    /// Global keep mode as a single cycling button (First → Smallest → Newest → Oldest); reassigns keepers on the current results, no rescan.
+    /// Bulk expand/collapse for the group list.
+    fn render_expand_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let off = self.scanning || self.groups.is_empty();
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                Button::new("expand-all")
+                    .label("Expand all")
+                    .disabled(off)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.expanded = this.groups.iter().map(|g| g.index).collect();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("collapse-all")
+                    .label("Collapse all")
+                    .disabled(off || self.expanded.is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.expanded.clear();
+                        cx.notify();
+                    })),
+            )
+    }
+
+    /// Global keep mode as a segmented control (First / Smallest / Newest /
+    /// Oldest); reassigns keepers on the current results, no rescan.
     fn render_keep_segmented(&self, cx: &mut Context<Self>) -> impl IntoElement {
         const MODES: [&str; 4] = ["First", "Smallest", "Newest", "Oldest"];
         let active = self.keep_index.unwrap_or(0).min(3);
-        Button::new("keep-mode")
-            .label(format!("Keep: {}", MODES[active]))
-            .disabled(self.scanning || self.groups.is_empty())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.apply_keep_mode((active + 1) % MODES.len(), cx);
-            }))
+        let off = self.scanning || self.groups.is_empty();
+        let mut group = ButtonGroup::new("keep-mode").compact().disabled(off);
+        for (i, label) in MODES.iter().enumerate() {
+            group = group.child(
+                Button::new(SharedString::from(format!("keep-mode-{i}")))
+                    .label(*label)
+                    .selected(i == active),
+            );
+        }
+        group.on_click(cx.listener(
+            move |this, clicks: &Vec<usize>, _, cx| {
+                if let Some(&i) = clicks.first() {
+                    this.apply_keep_mode(i, cx);
+                }
+            },
+        ))
     }
 
     /// Toggle: default discovery order vs biggest-reclaimable-first.
     fn render_sort_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("sort-toggle")
-            .label(if self.sort_biggest {
-                "Sort: Biggest"
-            } else {
-                "Sort: Default"
-            })
-            .disabled(self.scanning || self.groups.is_empty())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sort_biggest = !this.sort_biggest;
-                cx.notify();
+        let active = usize::from(self.sort_biggest);
+        let off = self.scanning || self.groups.is_empty();
+        ButtonGroup::new("sort-mode")
+            .compact()
+            .disabled(off)
+            .child(
+                Button::new("sort-default")
+                    .label("Default")
+                    .selected(active == 0),
+            )
+            .child(
+                Button::new("sort-biggest")
+                    .label("Biggest")
+                    .selected(active == 1),
+            )
+            .on_click(cx.listener(move |this, clicks: &Vec<usize>, _, cx| {
+                if let Some(&i) = clicks.first() {
+                    this.sort_biggest = i == 1;
+                    cx.notify();
+                }
             }))
     }
 
@@ -1288,15 +1421,38 @@ impl DedupeView {
             "permanently delete"
         };
         let view = cx.entity();
+        // Preview the actual filenames (capped): a destructive action
+        // should show what it will touch, not just a count. Built inside
+        // the dialog closure (which must stay `Fn`) from borrowed data.
+        let shown: Vec<String> = targets
+            .iter()
+            .take(CONFIRM_PREVIEW)
+            .map(|t| t.path.display().to_string())
+            .collect();
+        let hidden = count.saturating_sub(shown.len());
         window.open_dialog(
             cx,
             move |dialog, _, _| {
                 let confirm_view = view.clone();
+                let mut file_list = v_flex().gap_1().py_1();
+                for p in &shown {
+                    file_list =
+                        file_list.child(div().text_xs().truncate().child(fit_text(p, 90)));
+                }
+                if hidden > 0 {
+                    file_list = file_list
+                        .child(div().text_xs().child(format!("… and {hidden} more")));
+                }
                 dialog
                     .title(format!("Delete {count} file(s)?"))
-                    .child(format!(
-                        "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
-                    ))
+                    .child(
+                        v_flex()
+                            .gap_2()
+                            .child(format!(
+                                "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
+                            ))
+                            .child(file_list),
+                    )
                     .footer(
                         h_flex().gap_2().justify_end().child(
                             Button::new("cancel-delete").label("Cancel").on_click(
@@ -1395,25 +1551,29 @@ trait SnapshotGroup {
 
 impl SnapshotGroup for crate::matching::Group {
     fn clone_snapshot(&self) -> GroupSnapshot {
-        let ident = match self.similarity {
-            Some(s) => format!("{s:.1}% similar", s = s * 100.0),
-            None => self.hash.chars().take(12).collect(),
-        };
-        let media_summary = self
+        // Exact groups omit the content hash: identical bytes are implied
+        // by the grouping itself, and a hex prefix is not actionable.
+        // Similar groups keep their score — that one informs the decision.
+        let mut parts = vec![
+            format!("Group #{}", self.index),
+            report::group_kind_name(self.media_kind).to_uppercase(),
+            format!("{} files", self.members.len()),
+            format!("{} reclaimable", util::human_bytes(self.dup_bytes())),
+        ];
+        if let Some(s) = self.similarity {
+            parts.push(format!("{:.1}% similar", s * 100.0));
+        }
+        if let Some(summary) = self
             .members
             .first()
             .and_then(|m| m.media.clone())
-            .map(|info| format!(" · {}", info.summary()))
-            .unwrap_or_default();
+            .map(|info| info.summary())
+        {
+            parts.push(summary);
+        }
         GroupSnapshot {
             index: self.index,
-            header: format!(
-                "Group #{} · {} · {} files · {} reclaimable · {ident}{media_summary}",
-                self.index,
-                report::group_kind_name(self.media_kind).to_uppercase(),
-                self.members.len(),
-                util::human_bytes(self.dup_bytes()),
-            ),
+            header: parts.join(" · "),
             members: self.members.clone(),
         }
     }
@@ -1557,18 +1717,28 @@ fn render_member(
     thumb: &Thumb,
     cx: &mut Context<DedupeView>,
 ) -> impl IntoElement {
-    // Two-line row: the filename gets a full-width line to itself (nothing
-    // to push out), and all fixed-size controls share a second line. Flex
-    // items will not shrink below content width here, so text must never
-    // share a row with buttons.
-    let mut detail = member.path.display().to_string();
+    // Three-line row: the file name gets top billing, the parent folder
+    // sits dimmed underneath, and all fixed-size controls share a third
+    // line. Flex items will not shrink below content width here, so text
+    // must never share a row with buttons.
+    let name = member
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| member.path.display().to_string());
+    let parent = member
+        .path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let mut title = name;
     if let Some(sim) = member.similarity
         && !member.keep
     {
-        detail.push_str(&format!("  · {:.1}% similar", sim * 100.0));
+        title.push_str(&format!("  · {:.1}% similar", sim * 100.0));
     }
     if let Some(info) = &member.media {
-        detail.push_str(&format!("  · {}", info.summary()));
+        title.push_str(&format!("  · {}", info.summary()));
     }
 
     let mut actions = h_flex().gap_2().items_center();
@@ -1664,7 +1834,14 @@ fn render_member(
             v_flex()
                 .flex_1()
                 .gap_1()
-                .child(div().text_xs().truncate().child(fit_text(&detail, 200)))
+                .child(div().text_sm().truncate().child(fit_text(&title, 120)))
+                .child(
+                    div()
+                        .text_xs()
+                        .truncate()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(fit_text(&parent, 160)),
+                )
                 .child(actions),
         )
 }

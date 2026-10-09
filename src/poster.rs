@@ -38,8 +38,11 @@ pub fn video_poster(path: &Path, size: u64, mtime: Option<i64>) -> Option<PathBu
     if std::fs::create_dir_all(cache_dir()).is_err() {
         return None;
     }
+    // Single-threaded decode: posters extract one frame each, and the GUI
+    // already runs these back to back — ffmpeg's internal threading would
+    // only oversubscribe the machine during big scans.
     let ok = crate::util::quiet_command("ffmpeg")
-        .args(["-y", "-v", "error", "-i"])
+        .args(["-y", "-v", "error", "-threads", "1", "-i"])
         .arg(path)
         .args(["-vframes", "1", "-vf", "scale=320:-1"])
         .arg(&out)
