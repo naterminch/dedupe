@@ -64,6 +64,10 @@ pub struct GuiPrefs {
     pub trash: bool,
     #[serde(default)]
     pub sort_biggest: bool,
+    /// Remember scan folders between runs. Defaults to true so existing
+    /// installs keep their current behavior; off starts every launch empty.
+    #[serde(default = "default_true")]
+    pub remember_folders: bool,
     /// True = dark mode. Defaults to light (kit default).
     #[serde(default)]
     pub dark: bool,
@@ -104,6 +108,7 @@ impl Default for GuiPrefs {
             no_cache: false,
             trash: true,
             sort_biggest: false,
+            remember_folders: true,
             dark: false,
         }
     }
@@ -193,12 +198,30 @@ mod tests {
             exact: true,
             trash: false,
             sort_biggest: true,
+            remember_folders: false,
             ..GuiPrefs::default()
         };
         prefs.save_to(path.clone()).unwrap();
 
         let loaded = GuiPrefs::load_from(path.clone());
         assert_eq!(loaded, prefs);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_prefs_without_remember_flag_keep_remembering() {
+        // Files written before the flag existed have no field: serde
+        // defaults it to true so upgrades keep their folders.
+        let path = tmp_path("legacy");
+        fs::write(
+            &path,
+            serde_json::json!({"version": PREFS_VERSION, "types": "mp4"}).to_string(),
+        )
+        .unwrap();
+        let loaded = GuiPrefs::load_from(path.clone());
+        assert!(loaded.remember_folders);
+        assert_eq!(loaded.types, "mp4");
+        assert!(loaded.folders.is_empty());
         let _ = fs::remove_file(&path);
     }
 

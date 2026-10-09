@@ -20,7 +20,7 @@ use crate::ui_helpers::{
     NO_LIMIT_LABEL, bar_pos, fit_text, hash_caption, is_no_limit, parse_size_limit,
     prefs_size_to_slider, size_slider_to_text, size_text_to_slider,
 };
-use crate::ui_results::{SnapshotGroup, render_member};
+use crate::ui_results::{SnapshotGroup, is_grid_preview, render_media_card, render_member};
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -33,9 +33,8 @@ use gpui_kit::component::{ActiveTheme, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
     AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ObjectFit, ParentElement as _, Render, SharedString, Size,
-    Styled as _, StyledImage as _, Subscription, TitlebarOptions, Window, WindowOptions,
-    div, img, px,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString, Size, Styled as _,
+    Subscription, TitlebarOptions, Window, WindowOptions, div, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -105,6 +104,7 @@ pub(crate) struct DedupeView {
     pub(crate) no_cache: bool,
     pub(crate) trash: bool,
     pub(crate) sort_biggest: bool,
+    pub(crate) remember_folders: bool,
     pub(crate) last_stats: Option<report::ScanStats>,
     pub(crate) last_paths: Vec<String>,
     pub(crate) last_hash_algo: String,
@@ -116,6 +116,11 @@ pub(crate) struct DedupeView {
     pub(crate) ffprobe_ok: bool,
     pub(crate) media_checked: bool,
     pub(crate) posters: HashMap<PathBuf, PathBuf>,
+    /// Inline video preview strips (frame PNGs) by source path. Filled
+    /// lazily when a video card first renders; cached on disk too.
+    pub(crate) strips: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Videos with a strip extraction currently in flight (dedupes spawns).
+    pub(crate) preview_loading: HashSet<PathBuf>,
     pub(crate) dup_files: u64,
     pub(crate) reclaim_bytes: u64,
     pub(crate) scanning: bool,
@@ -144,6 +149,9 @@ pub(crate) struct DedupeView {
     pub(crate) last_hash: cli::HashAlgo,
     pub(crate) expanded: HashSet<usize>,
     pub(crate) selected: HashSet<PathBuf>,
+    /// Previous keeper at the last single-click pick (group, path): a
+    /// double-click reverts that flip so "just looking" never moves KEEP.
+    pub(crate) last_pick: Option<(usize, PathBuf)>,
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
     pub(crate) last_trashed: Vec<PathBuf>,
@@ -228,14 +236,20 @@ impl DedupeView {
         let mut view = Self {
             view: AppView::Main,
             folder_input,
-            folders: saved
-                .folders
-                .iter()
-                .map(|f| FolderEntry {
-                    path: f.path.clone(),
-                    reference: f.reference,
-                })
-                .collect(),
+            // The remember toggle gates restore: off starts every launch
+            // with an empty folder list (session list itself is untouched).
+            folders: if saved.remember_folders {
+                saved
+                    .folders
+                    .iter()
+                    .map(|f| FolderEntry {
+                        path: f.path.clone(),
+                        reference: f.reference,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             types_input,
             min_size_input,
             max_size_input,
@@ -250,6 +264,7 @@ impl DedupeView {
             no_cache: saved.no_cache,
             trash: saved.trash,
             sort_biggest: saved.sort_biggest,
+            remember_folders: saved.remember_folders,
             last_stats: None,
             last_paths: Vec::new(),
             last_hash_algo: "blake3".to_string(),
@@ -261,6 +276,8 @@ impl DedupeView {
             ffprobe_ok: false,
             media_checked: false,
             posters: HashMap::new(),
+            strips: HashMap::new(),
+            preview_loading: HashSet::new(),
             dup_files: 0,
             reclaim_bytes: 0,
             scanning: false,
@@ -281,6 +298,7 @@ impl DedupeView {
             last_hash: cli::HashAlgo::Blake3,
             expanded: HashSet::new(),
             selected: HashSet::new(),
+            last_pick: None,
             last_trashed: Vec::new(),
             _subs: Vec::new(),
         };
@@ -479,14 +497,19 @@ impl DedupeView {
         let val = |e: &Entity<InputState>| e.read(cx).value().to_string();
         let out = prefs::GuiPrefs {
             version: 1,
-            folders: self
-                .folders
-                .iter()
-                .map(|f| prefs::FolderPref {
-                    path: f.path.clone(),
-                    reference: f.reference,
-                })
-                .collect(),
+            // Off means "don't keep": persist an empty list so stale
+            // folders never resurface; the live session list is untouched.
+            folders: if self.remember_folders {
+                self.folders
+                    .iter()
+                    .map(|f| prefs::FolderPref {
+                        path: f.path.clone(),
+                        reference: f.reference,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
             types: val(&self.types_input),
             min_size: val(&self.min_size_input),
             max_size: val(&self.max_size_input),
@@ -501,6 +524,7 @@ impl DedupeView {
             no_cache: self.no_cache,
             trash: self.trash,
             sort_biggest: self.sort_biggest,
+            remember_folders: self.remember_folders,
             dark: cx.theme().is_dark(),
         };
         let _ = out.save();
@@ -631,6 +655,8 @@ impl DedupeView {
         self.base_groups = self.groups.clone();
         self.min_sim = self.scan_similarity;
         self.group_limit = GROUP_PAGE;
+        // One display ordering for the whole scan (honors the sort toggle).
+        self.sort_groups();
         // Pre-select every duplicate for deletion (KEEP members are never
         // selectable); the user unchecks what should survive.
         self.selected = self
@@ -678,6 +704,11 @@ impl DedupeView {
             .map(|m| (m.path.clone(), m.size, m.mtime_secs))
             .collect();
         self.posters.clear();
+        // Preview strips are per-scan too: paths are gone, so drop frames
+        // and in-flight flags (their async tasks no-op on update when the
+        // view is gone).
+        self.strips.clear();
+        self.preview_loading.clear();
         if !jobs.is_empty() {
             cx.spawn(async move |this, cx| {
                 for (path, size, mtime) in jobs {
@@ -755,6 +786,8 @@ impl DedupeView {
     }
 
     /// Promote one member to keeper of its group (per-group decision).
+    /// Member order never changes here: the grid keeps every card in place
+    /// and only the highlight (KEEP/DUP badge + border) moves.
     pub(crate) fn set_keeper(
         &mut self,
         group_index: usize,
@@ -765,11 +798,11 @@ impl DedupeView {
             for m in g.members.iter_mut() {
                 m.keep = m.path == path;
             }
-            g.members
-                .sort_by(|a, b| (!a.keep).cmp(&!b.keep).then_with(|| a.path.cmp(&b.path)));
         }
         self.reselect_all_dups();
         self.sync_keep_to_base();
+        // Keeper swap changes which bytes count as reclaimable.
+        self.recount();
         cx.notify();
     }
 
@@ -790,6 +823,8 @@ impl DedupeView {
             self.groups.len()
         );
         self.sync_keep_to_base();
+        // New keepers everywhere: re-apply the display order once, here.
+        self.sort_groups();
         self.save_prefs(cx);
         cx.notify();
     }
@@ -803,6 +838,29 @@ impl DedupeView {
             .sum();
         self.dup_files = dups;
         self.reclaim_bytes = self.groups.iter().map(|g| g.dup_bytes()).sum();
+    }
+
+    /// Order `groups` for display: biggest-reclaimable-first while the sort
+    /// toggle is on, otherwise the scan's discovery order (via base_groups).
+    /// Stable sort, so ties never jitter.
+    ///
+    /// Called ONLY on explicit order-changing events (new scan, sort toggle,
+    /// similarity filter, global keep mode) — never on keeper picks or
+    /// renders, so clicking a card can't reshuffle the list underneath.
+    fn sort_groups(&mut self) {
+        if self.sort_biggest {
+            self.groups
+                .sort_by_key(|b| std::cmp::Reverse(b.dup_bytes()));
+        } else {
+            let pos: HashMap<usize, usize> = self
+                .base_groups
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (g.index, i))
+                .collect();
+            self.groups
+                .sort_by_key(|g| pos.get(&g.index).copied().unwrap_or(usize::MAX));
+        }
     }
 
     /// Mirror keep flags and member order from the live view back into the
@@ -858,6 +916,8 @@ impl DedupeView {
         self.group_limit = GROUP_PAGE;
         self.reselect_all_dups();
         self.recount();
+        // Fresh member set: re-apply the display order once, here.
+        self.sort_groups();
         self.status = format!(
             "Similarity ≥ {:.0}% — {} group(s), {} duplicate file(s).",
             t * 100.0,
@@ -1298,6 +1358,16 @@ impl DedupeView {
                                         })),
                                 )
                                 .child(
+                                    Checkbox::new("remember-folders")
+                                        .label("Remember scan folders between runs")
+                                        .checked(self.remember_folders)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.remember_folders = *value;
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
                                     div()
                                         .text_xs()
                                         .text_color(cx.theme().muted_foreground)
@@ -1496,17 +1566,12 @@ impl DedupeView {
                     .child("✔ No duplicate files found."),
             );
         }
-        let mut order: Vec<usize> = Vec::with_capacity(self.groups.len());
-        for gi in 0..self.groups.len() {
-            order.push(gi);
-        }
-        if self.sort_biggest {
-            order.sort_by(|&a, &b| self.groups[b].dup_bytes().cmp(&self.groups[a].dup_bytes()));
-        }
         // Render in pages: thousands of groups would otherwise build
-        // thousands of elements up front and stall the UI.
-        let total = order.len();
-        for gi in order.into_iter().take(self.group_limit) {
+        // thousands of elements up front and stall the UI. Order comes
+        // from sort_groups (scan / toggle / filter events only) — rendering
+        // itself never re-sorts, so keeper picks can't move groups around.
+        let total = self.groups.len();
+        for gi in 0..total.min(self.group_limit) {
             list = list.child(self.render_group(gi, cx));
         }
         if total > self.group_limit {
@@ -1757,6 +1822,8 @@ impl DedupeView {
             .on_click(cx.listener(move |this, clicks: &Vec<usize>, _, cx| {
                 if let Some(&i) = clicks.first() {
                     this.sort_biggest = i == 1;
+                    // The toggle is THE explicit order change: sort now.
+                    this.sort_groups();
                     this.save_prefs(cx);
                     cx.notify();
                 }
@@ -2044,57 +2111,103 @@ impl DedupeView {
                     })),
             );
         if expanded {
-            // Side-by-side compare: exactly two previewable images render
-            // large next to each other above the rows — the "same picture?"
-            // call is visual, so show it big.
-            let pair: Option<(PathBuf, PathBuf)> =
-                if snapshot.members.len() == 2 {
-                    let imgs: Vec<PathBuf> = snapshot
-                        .members
-                        .iter()
-                        .filter(|m| matches!(self.thumb_for(m), crate::ui_results::Thumb::Image))
-                        .map(|m| m.path.clone())
-                        .collect();
-                    if imgs.len() == 2 {
-                        Some((imgs[0].clone(), imgs[1].clone()))
-                    } else {
-                        None
+            // Single-display grid for media groups: every member has a
+            // large visual (image or video poster), so render each once as
+            // a side-by-side card (left card / right card, info under each)
+            // instead of big-preview + duplicate rows. Keeper cards get a
+            // highlight border; clicking a preview promotes it to keeper.
+            let thumbs: Vec<crate::ui_results::Thumb> = snapshot
+                .members
+                .iter()
+                .map(|m| self.thumb_for(m))
+                .collect();
+            let grid = snapshot.members.len() >= 2
+                && thumbs.iter().all(is_grid_preview);
+            if grid {
+                for chunk in snapshot.members.chunks(2).enumerate() {
+                    let (ci, members) = chunk;
+                    // Stretch keeps both cards in a row the same height so
+                    // images and videos always display at the same size.
+                    let mut row = h_flex().gap_2().pl_6().items_stretch();
+                    for (offset, member) in members.iter().enumerate() {
+                        let mi = ci * 2 + offset;
+                        let checked = self.selected.contains(&member.path);
+                        let thumb = self.thumb_for(member);
+                        // Lazy inline strip: one background extraction per
+                        // video, kicked off on first sight (render may run
+                        // often; the loading set + disk cache dedupe it).
+                        if matches!(
+                            thumb,
+                            crate::ui_results::Thumb::Poster(_)
+                                | crate::ui_results::Thumb::PendingVideo
+                        ) && !self.strips.contains_key(&member.path)
+                            && !self.preview_loading.contains(&member.path)
+                        {
+                            self.preview_loading.insert(member.path.clone());
+                            let job_path = member.path.clone();
+                            let done_path = member.path.clone();
+                            let size = member.size;
+                            let mtime = member.mtime_secs;
+                            cx.spawn(async move |this, cx| {
+                                let frames = cx
+                                    .background_executor()
+                                    .spawn(async move {
+                                        poster::video_strip(
+                                            &job_path,
+                                            size,
+                                            mtime,
+                                            poster::STRIP_FRAMES,
+                                        )
+                                    })
+                                    .await;
+                                this.update(cx, |view, cx| {
+                                    view.preview_loading.remove(&done_path);
+                                    if frames.is_empty() {
+                                        view.status = "Inline preview unavailable — install ffmpeg or check the file."
+                                            .to_string();
+                                    } else {
+                                        view.strips.insert(done_path, frames);
+                                    }
+                                    cx.notify();
+                                })
+                                .ok();
+                            })
+                            .detach();
+                        }
+                        let video = crate::ui_results::VideoPreview {
+                            strip: self.strips.get(&member.path).cloned(),
+                            loading: self.preview_loading.contains(&member.path),
+                        };
+                        row = row.child(render_media_card(
+                            snapshot.index,
+                            mi,
+                            member,
+                            checked,
+                            &thumb,
+                            video,
+                            cx,
+                        ));
                     }
-                } else {
-                    None
-                };
-            if let Some((left, right)) = pair {
-                card = card.child(
-                    h_flex()
-                        .gap_2()
-                        .pl_6()
-                        .child(
-                            img(left)
-                                .h(px(180.))
-                                .w_full()
-                                .object_fit(ObjectFit::Cover)
-                                .rounded_md(),
-                        )
-                        .child(
-                            img(right)
-                                .h(px(180.))
-                                .w_full()
-                                .object_fit(ObjectFit::Cover)
-                                .rounded_md(),
-                        ),
-                );
-            }
-            for (mi, member) in snapshot.members.iter().enumerate() {
-                let checked = self.selected.contains(&member.path);
-                let thumb = self.thumb_for(member);
-                card = card.child(render_member(
-                    snapshot.index,
-                    mi,
-                    member,
-                    checked,
-                    &thumb,
-                    cx,
-                ));
+                    // Odd tail: keep the single card left-aligned at half
+                    // width instead of stretching full width.
+                    if members.len() == 1 {
+                        row = row.child(div().flex_1());
+                    }
+                    card = card.child(row);
+                }
+            } else {
+                for (mi, member) in snapshot.members.iter().enumerate() {
+                    let checked = self.selected.contains(&member.path);
+                    let thumb = self.thumb_for(member);
+                    card = card.child(render_member(
+                        snapshot.index,
+                        mi,
+                        member,
+                        checked,
+                        &thumb,
+                        cx,
+                    ));
+                }
             }
         }
         card
