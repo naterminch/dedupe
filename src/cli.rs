@@ -153,3 +153,56 @@ pub enum HashAlgo {
     Sha256,
     Md5,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn defaults_match_documented_behavior() {
+        let cli = Cli::try_parse_from(["dedupe", "/media"]).unwrap();
+        assert_eq!(cli.paths, vec!["/media".to_string()]);
+        assert_eq!(cli.hash, HashAlgo::Blake3);
+        assert!((cli.similarity - crate::similar::DEFAULT_SIMILARITY_PCT).abs() < f64::EPSILON);
+        assert_eq!(cli.jobs, 0);
+        assert!(!cli.trash && !cli.exact && !cli.delete && !cli.gui);
+        assert!(cli.max_depth.is_none() && cli.min_size.is_none());
+    }
+
+    #[test]
+    fn flags_parse_into_matching_fields() {
+        let cli = Cli::try_parse_from([
+            "dedupe",
+            "--exact",
+            "--trash",
+            "--keep-newest",
+            "--hash",
+            "sha256",
+            "--similarity",
+            "90",
+            "--jobs",
+            "2",
+            "--types",
+            "jpg,png",
+            "--reference-dir",
+            "/backup",
+            "a",
+            "b",
+        ])
+        .unwrap();
+        assert!(cli.exact && cli.trash && cli.keep_newest);
+        assert_eq!(cli.hash, HashAlgo::Sha256);
+        assert_eq!(cli.similarity, 90.0);
+        assert_eq!(cli.jobs, 2);
+        assert_eq!(cli.types, vec!["jpg".to_string(), "png".to_string()]);
+        assert_eq!(cli.reference_dir, vec!["/backup".to_string()]);
+        assert_eq!(cli.paths, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn short_flags_and_gui_flag_parse() {
+        let cli = Cli::try_parse_from(["dedupe", "-D", "-y", "--gui"]).unwrap();
+        assert!(cli.delete && cli.yes && cli.gui);
+    }
+}

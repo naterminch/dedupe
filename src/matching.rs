@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 
 /// A file inside a duplicate group, with its keep decision and media metadata.
 #[derive(Debug, Clone, Serialize)]
-pub struct GroupMember {
-    pub path: PathBuf,
+pub struct GroupMember {    pub path: PathBuf,
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime_secs: Option<i64>,
@@ -322,6 +321,49 @@ mod tests {
 
     fn no_refs() -> Vec<std::path::PathBuf> {
         Vec::new()
+    }
+
+    #[test]
+    fn is_under_ref_matches_only_inside_the_tree() {
+        assert!(!is_under_ref(Path::new("C:\\a\\f.txt"), &no_refs()));
+        let refs = vec![PathBuf::from("C:\\backup")];
+        assert!(is_under_ref(Path::new("C:\\backup\\z.txt"), &refs));
+        assert!(is_under_ref(Path::new("C:\\backup"), &refs));
+        assert!(!is_under_ref(Path::new("C:\\backup2\\z.txt"), &refs));
+        assert!(!is_under_ref(Path::new("C:\\other\\z.txt"), &refs));
+    }
+
+    #[test]
+    fn canonicalize_refs_resolves_existing_and_passes_through_missing() {
+        let dir = tmpdir("canon");
+        let resolved = canonicalize_refs(&[dir.to_string_lossy().into_owned()]);
+        assert_eq!(resolved.len(), 1);
+        assert!(resolved[0].is_absolute());
+        let missing = canonicalize_refs(&["Z:\\definitely\\not\\here-12345".to_string()]);
+        assert_eq!(
+            missing,
+            vec![PathBuf::from("Z:\\definitely\\not\\here-12345")]
+        );
+        assert!(canonicalize_refs(&[]).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assemble_groups_indexes_from_one_with_single_keeper_each() {
+        let dir = tmpdir("indexing");
+        let g1 = fake_group(&dir, &[("a.txt", 10), ("b.txt", 10)]);
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let g2 = fake_group(&sub, &[("c.txt", 5), ("d.txt", 5)]);
+        let groups = assemble_groups(vec![g1, g2], KeepMode::First, &no_refs(), false);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].index, 1);
+        assert_eq!(groups[1].index, 2);
+        for g in &groups {
+            assert_eq!(g.keep_count(), 1, "exactly one keeper per group");
+            assert!(g.members.first().unwrap().keep, "keeper sorts first");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

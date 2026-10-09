@@ -175,3 +175,180 @@ fn prompt(message: &str) -> String {
     let _ = std::io::stdin().read_line(&mut line);
     line
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::HashAlgo;
+    use crate::matching::{Group, GroupMember};
+    use crate::media::MediaKind;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dedupe-actions-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn engine() -> HashEngine {
+        HashEngine::new(HashAlgo::Blake3)
+    }
+
+    fn target_for(path: &PathBuf) -> DeleteTarget {
+        let eng = engine();
+        DeleteTarget {
+            size: fs::metadata(path).unwrap().len(),
+            expected_hash: eng.full(path).unwrap(),
+            path: path.clone(),
+        }
+    }
+
+    fn member(path: PathBuf, size: u64, keep: bool, hash: Option<String>) -> GroupMember {
+        GroupMember {
+            path,
+            size,
+            mtime_secs: None,
+            keep,
+            reference: false,
+            media: None,
+            similarity: None,
+            content_hash: hash,
+            fingerprint_res: None,
+        }
+    }
+
+    #[test]
+    fn permanent_delete_removes_matching_targets_and_counts_bytes() {
+        let dir = tmpdir("perm");
+        let a = dir.join("a.txt");
+        let b = dir.join("b.txt");
+        fs::write(&a, b"same payload here").unwrap();
+        fs::write(&b, b"same payload here").unwrap();
+
+        let targets = vec![target_for(&a), target_for(&b)];
+        let outcome = delete_targets(&targets, &engine(), Disposition::Permanent);
+        assert_eq!(outcome.deleted.len(), 2);
+        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.bytes_freed, 2 * "same payload here".len() as u64);
+        assert!(!a.exists() && !b.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn changed_file_is_skipped_and_survives() {
+        let dir = tmpdir("changed");
+        let p = dir.join("f.txt");
+        fs::write(&p, b"version one").unwrap();
+        let mut target = target_for(&p);
+        // Modify after the "scan": the recorded hash no longer matches.
+        fs::write(&p, b"version two, different").unwrap();
+        target.size = fs::metadata(&p).unwrap().len();
+
+        let outcome = delete_targets(&[target], &engine(), Disposition::Permanent);
+        assert!(outcome.deleted.is_empty());
+        assert_eq!(outcome.skipped, vec![p.clone()]);
+        assert_eq!(outcome.bytes_freed, 0);
+        assert!(p.exists(), "changed file must never be deleted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_file_is_skipped_not_failed() {
+        let dir = tmpdir("missing");
+        let p = dir.join("gone.txt");
+        let target = DeleteTarget {
+            path: p.clone(),
+            expected_hash: "deadbeef".to_string(),
+            size: 10,
+        };
+        let outcome = delete_targets(&[target], &engine(), Disposition::Permanent);
+        assert!(outcome.deleted.is_empty());
+        assert_eq!(outcome.skipped, vec![p]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_targets_yield_empty_outcome() {
+        let outcome = delete_targets(&[], &engine(), Disposition::Permanent);
+        assert!(outcome.deleted.is_empty() && outcome.skipped.is_empty());
+        assert_eq!(outcome.bytes_freed, 0);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn locked_file_is_skipped_and_survives() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tmpdir("locked");
+        let p = dir.join("locked.txt");
+        fs::write(&p, b"locked content").unwrap();
+        let target = target_for(&p);
+        // Share reads/writes but not delete: re-hashing succeeds, removal
+        // fails with a sharing violation.
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        let _lock = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&p)
+            .unwrap();
+
+        let outcome = delete_targets(&[target], &engine(), Disposition::Permanent);
+        assert!(outcome.deleted.is_empty());
+        assert_eq!(outcome.skipped, vec![p.clone()]);
+        assert!(p.exists(), "failed delete must leave the file");
+
+        drop(_lock);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn trash_disposition_removes_path_from_location() {
+        let dir = tmpdir("trash");
+        let p = dir.join("t.txt");
+        fs::write(&p, b"trash me").unwrap();
+
+        let outcome = delete_targets(&[target_for(&p)], &engine(), Disposition::Trash);
+        assert_eq!(outcome.deleted.len(), 1);
+        assert!(!p.exists(), "trashed file must leave its location");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_duplicates_yes_removes_only_non_keep() {
+        let dir = tmpdir("yesmode");
+        let keep = dir.join("keep.txt");
+        let dup = dir.join("dup.txt");
+        fs::write(&keep, b"identical bytes").unwrap();
+        fs::write(&dup, b"identical bytes").unwrap();
+        let eng = engine();
+        let hash = eng.full(&keep).unwrap();
+        let groups = vec![Group {
+            index: 1,
+            hash: hash.clone(),
+            media_kind: MediaKind::Other,
+            similarity: None,
+            members: vec![
+                member(keep.clone(), 15, true, Some(hash.clone())),
+                member(dup.clone(), 15, false, Some(hash.clone())),
+            ],
+        }];
+
+        let stats =
+            delete_duplicates(&groups, &eng, true, Disposition::Permanent).unwrap();
+        assert_eq!(stats.files_deleted, 1);
+        assert_eq!(stats.files_skipped, 0);
+        assert!(keep.exists() && !dup.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

@@ -30,6 +30,7 @@ pub fn phase_label(phase: ScanPhase) -> &'static str {
 }
 
 /// Everything a front end needs to render a report after a scan.
+#[derive(Debug)]
 pub struct ScanOutput {
     pub paths: Vec<String>,
     pub hash_algo: &'static str,
@@ -217,4 +218,145 @@ pub fn run_scan(
         cache_save_errors,
         reference_dirs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_cli(paths: Vec<String>) -> cli::Cli {
+        cli::Cli {
+            paths,
+            max_depth: None,
+            types: vec![],
+            keep_smaller: false,
+            keep_newest: false,
+            keep_oldest: false,
+            reference_dir: vec![],
+            trash: false,
+            dry_run: false,
+            delete: false,
+            yes: false,
+            hash: cli::HashAlgo::Blake3,
+            exact: true,
+            similarity: 97.0,
+            no_cache: true,
+            min_size: None,
+            max_size: None,
+            exclude_dir: vec![],
+            exclude_path: vec![],
+            json: false,
+            verbose: false,
+            quiet: true,
+            jobs: 0,
+            gui: false,
+        }
+    }
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "dedupe-pipeline-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn phase_labels_cover_every_phase() {
+        assert_eq!(phase_label(ScanPhase::Scanning), "Scanning folders…");
+        assert_eq!(phase_label(ScanPhase::Hashing), "Hashing files…");
+        assert_eq!(
+            phase_label(ScanPhase::ComparingMedia),
+            "Comparing media…"
+        );
+        assert_eq!(phase_label(ScanPhase::Finishing), "Building report…");
+    }
+
+    #[test]
+    fn rejects_similarity_out_of_range() {
+        let seen = std::sync::Mutex::new(Vec::new());
+        for bad in [101.0, -1.0, f64::NAN] {
+            let mut cli = test_cli(vec![".".to_string()]);
+            cli.similarity = bad;
+            let err = run_scan(&cli, None, None, &|p| {
+                seen.lock().unwrap().push(p);
+            })
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("--similarity"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_conflicting_keep_flags() {
+        let mut cli = test_cli(vec![".".to_string()]);
+        cli.keep_smaller = true;
+        cli.keep_newest = true;
+        let err = run_scan(&cli, None, None, &|_| {}).unwrap_err();
+        assert!(err.to_string().contains("conflict"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unparsable_size_filter() {
+        let mut cli = test_cli(vec![".".to_string()]);
+        cli.min_size = Some("not-a-size".to_string());
+        assert!(run_scan(&cli, None, None, &|_| {}).is_err());
+    }
+
+    #[test]
+    fn run_scan_finds_exact_duplicates_and_reports_phases() {
+        let dir = tmpdir("exact");
+        std::fs::write(dir.join("a.txt"), b"pipeline payload").unwrap();
+        std::fs::write(dir.join("b.txt"), b"pipeline payload").unwrap();
+        std::fs::write(dir.join("unique.txt"), b"something else").unwrap();
+
+        let seen = std::sync::Mutex::new(Vec::new());
+        let out = run_scan(
+            &test_cli(vec![dir.to_str().unwrap().to_string()]),
+            None,
+            None,
+            &|p| {
+                seen.lock().unwrap().push(p);
+            },
+        )
+        .unwrap();
+        assert_eq!(out.groups.len(), 1);
+        assert_eq!(out.groups[0].members.len(), 2);
+        assert_eq!(out.stats.files_scanned, 3);
+        assert_eq!(out.hash_algo, "blake3");
+        // All four phases fire in order.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                ScanPhase::Scanning,
+                ScanPhase::Hashing,
+                ScanPhase::Finishing
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_scan_on_empty_dir_succeeds_with_no_groups() {
+        let dir = tmpdir("empty");
+        let out = run_scan(
+            &test_cli(vec![dir.to_str().unwrap().to_string()]),
+            None,
+            None,
+            &|_| {},
+        )
+        .unwrap();
+        assert!(out.groups.is_empty());
+        assert_eq!(out.stats.files_scanned, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -149,4 +149,25 @@ mod tests {
         // Auto (0) leaves headroom but never drops to zero workers.
         assert!(effective_jobs(0) >= 1);
     }
+
+    #[test]
+    fn init_thread_pool_is_safe_to_call_repeatedly() {
+        // Only the first call takes effect; later ones are ignored, never
+        // panics — the pipeline calls this on every scan.
+        init_thread_pool(1);
+        init_thread_pool(2);
+        init_thread_pool(0);
+    }
+
+    #[test]
+    fn quiet_command_targets_the_requested_program() {
+        assert_eq!(quiet_command("ffmpeg").get_program(), "ffmpeg");
+        assert_eq!(quiet_command("ffprobe").get_program(), "ffprobe");
+    }
+
+    #[test]
+    fn human_bytes_covers_zero_and_terabytes() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1_500_000_000_000), "1.50 TB");
+    }
 }

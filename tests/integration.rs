@@ -485,8 +485,7 @@ fn dry_run_deletes_nothing() {
 }
 
 #[test]
-fn keep_newest_prefers_recently_modified() {
-    use std::time::{Duration, SystemTime};
+fn keep_newest_prefers_recently_modified() {    use std::time::{Duration, SystemTime};
     let dir = tmpdir("keepnew");
     fs::write(dir.join("old.txt"), b"payload").unwrap();
     fs::write(dir.join("new.txt"), b"payload").unwrap();
@@ -508,6 +507,220 @@ fn keep_newest_prefers_recently_modified() {
     let members = parsed["groups"][0]["members"].as_array().unwrap();
     assert!(members[0]["keep"].as_bool().unwrap());
     assert!(members[0]["path"].as_str().unwrap().ends_with("new.txt"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keep_oldest_prefers_least_recently_modified() {
+    use std::time::{Duration, SystemTime};
+    let dir = tmpdir("keepold");
+    fs::write(dir.join("old.txt"), b"payload").unwrap();
+    fs::write(dir.join("new.txt"), b"payload").unwrap();
+    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600));
+    fs::File::options()
+        .write(true)
+        .open(dir.join("old.txt"))
+        .unwrap()
+        .set_times(ft)
+        .unwrap();
+
+    let (out, stdout) = run(&["--json", "--keep-oldest", dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let members = parsed["groups"][0]["members"].as_array().unwrap();
+    assert!(members[0]["keep"].as_bool().unwrap());
+    assert!(members[0]["path"].as_str().unwrap().ends_with("old.txt"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn min_and_max_size_bound_the_scan() {
+    let dir = tmpdir("sizes");
+    fs::write(dir.join("tiny-a.txt"), b"12345").unwrap();
+    fs::write(dir.join("tiny-b.txt"), b"12345").unwrap();
+    let big = vec![7u8; 200_000];
+    fs::write(dir.join("big-a.bin"), &big).unwrap();
+    fs::write(dir.join("big-b.bin"), &big).unwrap();
+
+    // min-size hides the tiny pair, keeps the big one.
+    let (_, stdout) = run(&["--json", "--min-size", "100KB", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 1);
+    assert!(parsed["groups"][0]["members"][0]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".bin"));
+
+    // max-size hides the big pair, keeps the tiny one.
+    let (_, stdout) = run(&["--json", "--max-size", "1KB", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 1);
+    assert!(parsed["groups"][0]["members"][0]["path"]
+        .as_str()
+        .unwrap()
+        .ends_with(".txt"));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exclude_dir_and_path_prune_matches() {
+    let dir = tmpdir("excludes");
+    fs::create_dir_all(dir.join("node_modules")).unwrap();
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("node_modules").join("b.txt"), b"payload").unwrap();
+    fs::write(dir.join("draft-final.txt"), b"payload").unwrap();
+
+    // Baseline: all three are duplicates.
+    let (_, stdout) = run(&["--json", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 1);
+
+    // Excluding the directory leaves a.txt + draft-final.txt.
+    let (_, stdout) = run(&[
+        "--json",
+        "--exclude-dir",
+        "node_modules",
+        dir.to_str().unwrap(),
+    ]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 1);
+    assert_eq!(parsed["duplicate_files"], 1);
+
+    // Excluding both leaves a single file: no groups.
+    let (_, stdout) = run(&[
+        "--json",
+        "--exclude-dir",
+        "node_modules",
+        "--exclude-path",
+        "draft",
+        dir.to_str().unwrap(),
+    ]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 0);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn max_depth_zero_stays_top_level() {
+    let dir = tmpdir("depth");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("sub").join("b.txt"), b"payload").unwrap();
+
+    let (_, stdout) = run(&["--json", "--max-depth", "0", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 0);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn empty_directory_reports_no_duplicates() {
+    let dir = tmpdir("emptydir");
+
+    let (out, stdout) = run(&[dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("No duplicate"), "stdout: {stdout}");
+
+    let (_, json) = run(&["--json", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["duplicate_groups"], 0);
+    assert_eq!(parsed["files_scanned"], 0);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn invalid_options_fail_with_usage_error() {
+    let dir = tmpdir("badflags");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+
+    // Similarity outside 0–100 is rejected.
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args(["--similarity", "101", dir.to_str().unwrap()])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--similarity"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Conflicting keep flags are rejected.
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args(["--keep-smaller", "--keep-newest", dir.to_str().unwrap()])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("conflict"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Unparsable size filter is rejected.
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args(["--min-size", "huge-ish", dir.to_str().unwrap()])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(!out.status.success());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn trash_delete_removes_files_from_their_location() {
+    let dir = tmpdir("trashdel");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+
+    let (out, _) = run(&[
+        "--delete",
+        "--yes",
+        "--trash",
+        "--quiet",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn json_report_carries_provenance_fields() {
+    let dir = tmpdir("provenance");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+
+    let (_, stdout) = run(&["--json", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["hash_algorithm"], "blake3");
+    assert!(parsed.get("ffprobe_used").is_some());
+    assert_eq!(parsed["files_scanned"], 2);
+    assert!(parsed["bytes_scanned"].as_u64().unwrap() > 0);
+
+    let (_, stdout) = run(&["--json", "--hash", "sha256", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["hash_algorithm"], "sha256");
+    assert_eq!(parsed["duplicate_groups"], 1);
 
     let _ = fs::remove_dir_all(&dir);
 }

@@ -4,10 +4,23 @@
 //! drives the same [`crate::pipeline::run_scan`] as the CLI, so results are
 //! identical; only the presentation differs.
 //!
-//! Layout: a left settings sidebar (every CLI option), a main results pane
-//! with one collapsible section per duplicate group, and a status bar.
+//! Layout: a side nav (folders + per-run scope + Scan), a main results
+//! pane with one collapsible section per duplicate group, a Settings page
+//! for global defaults (matching + system), and a status bar. Pure helpers
+//! live in [`crate::ui_helpers`]; group/member rows live in
+//! [`crate::ui_results`].
+//!
+//! Native-feel boundaries (do not reimplement inside the view layer):
+//! folder picking and report saving go through native `rfd` dialogs off the
+//! GPUI thread, deletions honor the OS trash, and theme mode persists to
+//! `gui-prefs.json` and is restored before first paint.
 
-use crate::{actions, cli, hashing, media, pipeline, poster, report, util};
+use crate::{actions, cli, hashing, media, pipeline, poster, prefs, report, util};
+use crate::ui_helpers::{
+    NO_LIMIT_LABEL, bar_pos, fit_text, hash_caption, is_no_limit, parse_size_limit,
+    prefs_size_to_slider, size_slider_to_text, size_text_to_slider,
+};
+use crate::ui_results::{SnapshotGroup, render_member};
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -19,9 +32,10 @@ use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState}
 use gpui_kit::component::{ActiveTheme, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
-    AppContext as _, Context, Entity, FontWeight, IntoElement, ObjectFit, ParentElement as _,
-    Render, SharedString, Size, Styled as _, StyledImage as _, Subscription, TitlebarOptions,
-    Window, WindowOptions, div, img, px,
+    AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ObjectFit, ParentElement as _, Render, SharedString, Size,
+    Styled as _, StyledImage as _, Subscription, TitlebarOptions, Window, WindowOptions,
+    div, img, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -29,18 +43,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Slider bounds for the size filters (log scale): 1 KB … 1 TB.
-const SIZE_SLIDER_MIN: f32 = 1024.0;
-const SIZE_SLIDER_MAX: f32 = 1_000_000_000_000.0;
+pub(crate) const SIZE_SLIDER_MIN: f32 = 1024.0;
+pub(crate) const SIZE_SLIDER_MAX: f32 = 1_000_000_000_000.0;
 
 /// Image formats the UI can thumbnail directly from disk.
-const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
+pub(crate) const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
 
 /// Groups rendered before a "Show more" button takes over; keeps huge
 /// result sets fast and navigable.
-const GROUP_PAGE: usize = 100;
-
-/// Member paths previewed inside the delete confirm dialog.
-const CONFIRM_PREVIEW: usize = 8;
+pub(crate) const GROUP_PAGE: usize = 100;
 
 /// Boot the GUI application. Returns when the window is closed.
 pub fn run() {
@@ -76,61 +87,83 @@ pub fn run() {
         });
 }
 
-pub struct DedupeView {
-    folder_input: Entity<InputState>,
-    folders: Vec<FolderEntry>,
-    types_input: Entity<InputState>,
-    min_size_input: Entity<InputState>,
-    max_size_input: Entity<InputState>,
-    max_depth_input: Entity<InputState>,
-    exclude_dir_input: Entity<InputState>,
-    exclude_path_input: Entity<InputState>,
-    similarity_input: Entity<InputState>,
-    jobs_input: Entity<InputState>,
-    hash_index: Option<usize>,
-    keep_index: Option<usize>,
-    exact: bool,
-    no_cache: bool,
-    trash: bool,
-    sort_biggest: bool,
-    last_stats: Option<report::ScanStats>,
-    last_paths: Vec<String>,
-    last_hash_algo: String,
-    last_ffprobe: bool,
-    last_ref_dirs: Vec<PathBuf>,
-    min_size_slider: Entity<SliderState>,
-    max_size_slider: Entity<SliderState>,
-    ffmpeg_ok: bool,
-    ffprobe_ok: bool,
-    media_checked: bool,
-    posters: HashMap<PathBuf, PathBuf>,
-    dup_files: u64,
-    reclaim_bytes: u64,
-    scanning: bool,
-    scan_done: u64,
-    scan_total: u64,
-    scan_determinate: bool,
-    status: String,
-    files_scanned: usize,
-    bytes_scanned: u64,
-    has_scanned: bool,
-    ffprobe_note: bool,
-    groups: Vec<crate::matching::Group>,
+pub(crate) struct DedupeView {
+    pub(crate) view: AppView,
+    pub(crate) folder_input: Entity<InputState>,
+    pub(crate) folders: Vec<FolderEntry>,
+    pub(crate) types_input: Entity<InputState>,
+    pub(crate) min_size_input: Entity<InputState>,
+    pub(crate) max_size_input: Entity<InputState>,
+    pub(crate) max_depth_input: Entity<InputState>,
+    pub(crate) exclude_dir_input: Entity<InputState>,
+    pub(crate) exclude_path_input: Entity<InputState>,
+    pub(crate) similarity_input: Entity<InputState>,
+    pub(crate) jobs_input: Entity<InputState>,
+    pub(crate) hash_index: Option<usize>,
+    pub(crate) keep_index: Option<usize>,
+    pub(crate) exact: bool,
+    pub(crate) no_cache: bool,
+    pub(crate) trash: bool,
+    pub(crate) sort_biggest: bool,
+    pub(crate) last_stats: Option<report::ScanStats>,
+    pub(crate) last_paths: Vec<String>,
+    pub(crate) last_hash_algo: String,
+    pub(crate) last_ffprobe: bool,
+    pub(crate) last_ref_dirs: Vec<PathBuf>,
+    pub(crate) min_size_slider: Entity<SliderState>,
+    pub(crate) max_size_slider: Entity<SliderState>,
+    pub(crate) ffmpeg_ok: bool,
+    pub(crate) ffprobe_ok: bool,
+    pub(crate) media_checked: bool,
+    pub(crate) posters: HashMap<PathBuf, PathBuf>,
+    pub(crate) dup_files: u64,
+    pub(crate) reclaim_bytes: u64,
+    pub(crate) scanning: bool,
+    pub(crate) scan_done: u64,
+    pub(crate) scan_total: u64,
+    pub(crate) scan_determinate: bool,
+    pub(crate) status: String,
+    pub(crate) files_scanned: usize,
+    pub(crate) bytes_scanned: u64,
+    pub(crate) has_scanned: bool,
+    pub(crate) ffprobe_note: bool,
+    pub(crate) groups: Vec<crate::matching::Group>,
+    /// Pristine scan results: `groups` is a live view over this,
+    /// re-derived whenever the similarity floor changes. Keep decisions
+    /// are mirrored back here so tightening never loses keeper choices.
+    pub(crate) base_groups: Vec<crate::matching::Group>,
+    /// Similarity floor the scan ran with (fraction 0..=1).
+    pub(crate) scan_similarity: f64,
+    /// Live similarity floor (fraction); always >= `scan_similarity`.
+    /// Lowering below the scan floor needs discarded pairs — rescan.
+    pub(crate) min_sim: f64,
+    pub(crate) min_sim_input: Entity<InputState>,
     /// How many groups render at once; the rest sit behind a "Show more"
     /// button so huge result sets stay navigable (and fast).
-    group_limit: usize,
-    last_hash: cli::HashAlgo,
-    expanded: HashSet<usize>,
-    selected: HashSet<PathBuf>,
-    _subs: Vec<Subscription>,
+    pub(crate) group_limit: usize,
+    pub(crate) last_hash: cli::HashAlgo,
+    pub(crate) expanded: HashSet<usize>,
+    pub(crate) selected: HashSet<PathBuf>,
+    /// Original paths from the last trash run: enables one-step undo.
+    /// Cleared on permanent deletes and after a successful restore.
+    pub(crate) last_trashed: Vec<PathBuf>,
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 /// One folder to scan, with an optional protection flag (Krokiet's Ref
 /// checkbox pattern: protected folders are never deleted from).
 #[derive(Debug, Clone)]
-struct FolderEntry {
-    path: String,
-    reference: bool,
+pub(crate) struct FolderEntry {
+    pub(crate) path: String,
+    pub(crate) reference: bool,
+}
+
+/// Top-level view: main scan/results flow vs the full Settings page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AppView {
+    #[default]
+    Main,
+    Settings,
 }
 
 /// Owned report data carried into the async save task.
@@ -144,6 +177,7 @@ struct ReportSnapshot {
 
 impl DedupeView {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let saved = prefs::GuiPrefs::load();
         let mk = |placeholder: &str, default: &str, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -152,14 +186,29 @@ impl DedupeView {
             })
         };
         let folder_input = mk("Type a folder, then Add (or Browse…)", "", window, cx);
-        let types_input = mk("jpg,png,mp4 (empty = all)", "", window, cx);
-        let min_size_input = mk("100KB", "", window, cx);
-        let max_size_input = mk("500MB", "", window, cx);
-        let max_depth_input = mk("0 = top level only", "", window, cx);
-        let exclude_dir_input = mk("node_modules", "", window, cx);
-        let exclude_path_input = mk("substring", "", window, cx);
-        let similarity_input = mk("0–100", "97", window, cx);
-        let jobs_input = mk("0", "", window, cx);
+        let types_input = mk("jpg,png,mp4 (empty = all)", &saved.types, window, cx);
+        // Legacy prefs stored a blank box for "no limit"; display the
+        // explicit `unlimited` label instead so the box never looks broken.
+        let min_size_default = if saved.min_size.trim().is_empty() {
+            NO_LIMIT_LABEL
+        } else {
+            saved.min_size.as_str()
+        };
+        let max_size_default = if saved.max_size.trim().is_empty() {
+            NO_LIMIT_LABEL
+        } else {
+            saved.max_size.as_str()
+        };
+        let min_size_input = mk("100KB", min_size_default, window, cx);
+        let max_size_input = mk("500MB", max_size_default, window, cx);
+        let max_depth_input = mk("0 = top level only", &saved.max_depth, window, cx);
+        let exclude_dir_input = mk("node_modules", &saved.exclude_dir, window, cx);
+        let exclude_path_input = mk("substring", &saved.exclude_path, window, cx);
+        let similarity_input = mk("0–100", &saved.similarity, window, cx);
+        let jobs_input = mk("0", &saved.jobs, window, cx);
+        // Live similarity floor for the current results (blank = scan
+        // default). Lowering below the scan floor needs a rescan.
+        let min_sim_input = mk("e.g. 98", "", window, cx);
         let mk_size_slider = |default: f32, cx: &mut Context<Self>| {
             // NOTE: max() must come before min(): the state clamps its
             // value on every builder call, and min(1024) with the default
@@ -172,11 +221,21 @@ impl DedupeView {
                     .default_value(default)
             })
         };
-        let min_size_slider = mk_size_slider(SIZE_SLIDER_MIN, cx);
-        let max_size_slider = mk_size_slider(SIZE_SLIDER_MAX, cx);
+        let min_size_slider =
+            mk_size_slider(prefs_size_to_slider(&saved.min_size, true), cx);
+        let max_size_slider =
+            mk_size_slider(prefs_size_to_slider(&saved.max_size, false), cx);
         let mut view = Self {
+            view: AppView::Main,
             folder_input,
-            folders: Vec::new(),
+            folders: saved
+                .folders
+                .iter()
+                .map(|f| FolderEntry {
+                    path: f.path.clone(),
+                    reference: f.reference,
+                })
+                .collect(),
             types_input,
             min_size_input,
             max_size_input,
@@ -185,12 +244,12 @@ impl DedupeView {
             exclude_path_input,
             similarity_input,
             jobs_input,
-            hash_index: Some(0),
-            keep_index: Some(0),
-            exact: false,
-            no_cache: false,
-            trash: true,
-            sort_biggest: false,
+            hash_index: Some(saved.hash_index.min(2)),
+            keep_index: Some(saved.keep_index.min(3)),
+            exact: saved.exact,
+            no_cache: saved.no_cache,
+            trash: saved.trash,
+            sort_biggest: saved.sort_biggest,
             last_stats: None,
             last_paths: Vec::new(),
             last_hash_algo: "blake3".to_string(),
@@ -214,10 +273,15 @@ impl DedupeView {
             has_scanned: false,
             ffprobe_note: false,
             groups: Vec::new(),
+            base_groups: Vec::new(),
+            scan_similarity: crate::similar::DEFAULT_SIMILARITY_PCT / 100.0,
+            min_sim: crate::similar::DEFAULT_SIMILARITY_PCT / 100.0,
+            min_sim_input,
             group_limit: GROUP_PAGE,
             last_hash: cli::HashAlgo::Blake3,
             expanded: HashSet::new(),
             selected: HashSet::new(),
+            last_trashed: Vec::new(),
             _subs: Vec::new(),
         };
         // Slider — text box (one way; set_value emits no Change event, so
@@ -271,6 +335,18 @@ impl DedupeView {
                 }
             },
         ));
+        // Live similarity floor: every keystroke re-derives the groups from
+        // the pristine scan results — no rescan, no I/O.
+        view._subs.push(cx.subscribe_in(
+            &view.min_sim_input,
+            window,
+            |this, state, event, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let raw = state.read(cx).value().trim().to_string();
+                    this.apply_sim_input(&raw, cx);
+                }
+            },
+        ));
         // Probe ffmpeg/ffprobe off the critical path: two process spawns
         // can cost hundreds of milliseconds and must not block first paint.
         cx.spawn(async move |this, cx: &mut gpui_kit::AsyncApp| {
@@ -287,6 +363,15 @@ impl DedupeView {
             .ok();
         })
         .detach();
+        // Restore the saved theme before first paint to avoid a light-flash
+        // when the user left the app in dark mode.
+        if saved.dark {
+            Theme::change(ThemeMode::Dark, None, cx);
+        }
+        // Checklist A4: initial focus lands in the folder input so the user
+        // can type immediately after launch.
+        let initial_focus = view.folder_input.read(cx).focus_handle(cx);
+        window.focus(&initial_focus, cx);
         view
     }
 
@@ -339,14 +424,14 @@ impl DedupeView {
         };
         let opt = |e: &Entity<InputState>| {
             let v = val(e).trim().to_string();
-            if v.is_empty() { None } else { Some(v) }
+            if is_no_limit(&v) { None } else { Some(v) }
         };
         // Validate sizes now so typos surface before the (slow) scan starts.
+        // Blank or `unlimited` means unbounded.
         for e in [&self.min_size_input, &self.max_size_input] {
-            if let Some(v) = opt(e)
-                && let Err(err) = util::parse_size(&v)
-            {
-                return Err(format!("Bad size “{v}”: {err:#}"));
+            let raw = val(e);
+            if let Err(err) = parse_size_limit(&raw) {
+                return Err(format!("Bad size “{raw}”: {err:#}"));
             }
         }
         Ok(cli::Cli {
@@ -386,7 +471,43 @@ impl DedupeView {
         })
     }
 
+    /// Snapshot the current sidebar into `gui-prefs.json`. Best-effort:
+    /// failures are ignored so a read-only home dir never breaks the GUI.
+    /// Text fields are saved here (at scan time) plus on every discrete
+    /// toggle, which avoids a disk write per keystroke.
+    fn save_prefs(&self, cx: &mut Context<Self>) {
+        let val = |e: &Entity<InputState>| e.read(cx).value().to_string();
+        let out = prefs::GuiPrefs {
+            version: 1,
+            folders: self
+                .folders
+                .iter()
+                .map(|f| prefs::FolderPref {
+                    path: f.path.clone(),
+                    reference: f.reference,
+                })
+                .collect(),
+            types: val(&self.types_input),
+            min_size: val(&self.min_size_input),
+            max_size: val(&self.max_size_input),
+            max_depth: val(&self.max_depth_input),
+            exclude_dir: val(&self.exclude_dir_input),
+            exclude_path: val(&self.exclude_path_input),
+            similarity: val(&self.similarity_input),
+            jobs: val(&self.jobs_input),
+            hash_index: self.hash_index.unwrap_or(0),
+            keep_index: self.keep_index.unwrap_or(0),
+            exact: self.exact,
+            no_cache: self.no_cache,
+            trash: self.trash,
+            sort_biggest: self.sort_biggest,
+            dark: cx.theme().is_dark(),
+        };
+        let _ = out.save();
+    }
+
     fn start_scan(&mut self, cx: &mut Context<Self>) {
+        self.save_prefs(cx);
         let opts = match self.collect_options(cx) {
             Ok(o) => o,
             Err(msg) => {
@@ -396,6 +517,7 @@ impl DedupeView {
             }
         };
         self.last_hash = opts.hash;
+        self.scan_similarity = (opts.similarity / 100.0).clamp(0.0, 1.0);
         self.scanning = true;
         self.scan_done = 0;
         self.scan_total = 0;
@@ -504,6 +626,10 @@ impl DedupeView {
         self.last_ffprobe = out.ffprobe_used;
         self.last_ref_dirs = out.reference_dirs;
         self.groups = out.groups;
+        // Pristine copy for live re-thresholding; the floor starts at the
+        // scan threshold (everything qualifies).
+        self.base_groups = self.groups.clone();
+        self.min_sim = self.scan_similarity;
         self.group_limit = GROUP_PAGE;
         // Pre-select every duplicate for deletion (KEEP members are never
         // selectable); the user unchecks what should survive.
@@ -592,6 +718,7 @@ impl DedupeView {
                 });
             }
         }
+        self.save_prefs(cx);
         cx.notify();
     }
 
@@ -624,17 +751,16 @@ impl DedupeView {
     /// Mark every non-keep member for deletion (fresh intent after a
     /// keeper/mode change).
     fn reselect_all_dups(&mut self) {
-        self.selected = self
-            .groups
-            .iter()
-            .flat_map(|g| g.members.iter())
-            .filter(|m| !m.keep)
-            .map(|m| m.path.clone())
-            .collect();
+        self.selected = self.all_dup_paths();
     }
 
     /// Promote one member to keeper of its group (per-group decision).
-    fn set_keeper(&mut self, group_index: usize, path: &std::path::Path, cx: &mut Context<Self>) {
+    pub(crate) fn set_keeper(
+        &mut self,
+        group_index: usize,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(g) = self.groups.iter_mut().find(|g| g.index == group_index) {
             for m in g.members.iter_mut() {
                 m.keep = m.path == path;
@@ -643,6 +769,7 @@ impl DedupeView {
                 .sort_by(|a, b| (!a.keep).cmp(&!b.keep).then_with(|| a.path.cmp(&b.path)));
         }
         self.reselect_all_dups();
+        self.sync_keep_to_base();
         cx.notify();
     }
 
@@ -662,7 +789,112 @@ impl DedupeView {
             "Keep mode: {name} applied to {} group(s).",
             self.groups.len()
         );
+        self.sync_keep_to_base();
+        self.save_prefs(cx);
         cx.notify();
+    }
+
+    /// Recompute the summary counters from the current groups.
+    fn recount(&mut self) {
+        let dups: u64 = self
+            .groups
+            .iter()
+            .map(|g| (g.members.len() - g.keep_count()) as u64)
+            .sum();
+        self.dup_files = dups;
+        self.reclaim_bytes = self.groups.iter().map(|g| g.dup_bytes()).sum();
+    }
+
+    /// Mirror keep flags and member order from the live view back into the
+    /// pristine scan results, so re-thresholding never loses keeper choices.
+    /// Members hidden by the floor keep their stored flags.
+    fn sync_keep_to_base(&mut self) {
+        for g in &self.groups {
+            if let Some(base) = self.base_groups.iter_mut().find(|b| b.index == g.index) {
+                for m in &g.members {
+                    if let Some(bm) = base.members.iter_mut().find(|bm| bm.path == m.path) {
+                        bm.keep = m.keep;
+                    }
+                }
+                let order: HashMap<PathBuf, usize> = g
+                    .members
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m.path.clone(), i))
+                    .collect();
+                base.members.sort_by_key(|m| {
+                    order.get(&m.path).copied().unwrap_or(usize::MAX)
+                });
+            }
+        }
+    }
+
+    /// Re-derive the live groups from the pristine scan results at floor
+    /// `t` (fraction). Exact groups always qualify; similar members need
+    /// similarity-to-keeper >= `t`. Groups left with fewer than 2 members
+    /// drop out (restorable by lowering the floor — no rescan).
+    fn apply_threshold(&mut self, t: f64, cx: &mut Context<Self>) {
+        let t = t.clamp(self.scan_similarity, 1.0);
+        self.min_sim = t;
+        self.groups = self
+            .base_groups
+            .iter()
+            .filter_map(|g| {
+                let members: Vec<_> = g
+                    .members
+                    .iter()
+                    .filter(|m| m.similarity.is_none_or(|s| s >= t))
+                    .cloned()
+                    .collect();
+                if members.len() >= 2 {
+                    let mut g = g.clone();
+                    g.members = members;
+                    Some(g)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.group_limit = GROUP_PAGE;
+        self.reselect_all_dups();
+        self.recount();
+        self.status = format!(
+            "Similarity ≥ {:.0}% — {} group(s), {} duplicate file(s).",
+            t * 100.0,
+            self.groups.len(),
+            self.dup_files,
+        );
+        cx.notify();
+    }
+
+    /// Parse the live floor box: blank restores the scan floor, a number
+    /// tightens it, anything below the scan floor is clamped (loosening
+    /// needs discarded pairs — rescan instead).
+    fn apply_sim_input(&mut self, raw: &str, cx: &mut Context<Self>) {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            if (self.min_sim - self.scan_similarity).abs() > f64::EPSILON {
+                let floor = self.scan_similarity;
+                self.apply_threshold(floor, cx);
+            }
+            return;
+        }
+        match raw.parse::<f64>() {
+            Ok(v) if (0.0..=100.0).contains(&v) => {
+                let t = v / 100.0;
+                if t < self.scan_similarity {
+                    self.status = format!(
+                        "Floor {:.0}% is below the scan threshold {:.0}% — rescan to loosen.",
+                        v,
+                        self.scan_similarity * 100.0
+                    );
+                    cx.notify();
+                    return;
+                }
+                self.apply_threshold(t, cx);
+            }
+            _ => {}
+        }
     }
 
     /// Files currently marked for deletion (selected checkboxes that are
@@ -702,6 +934,12 @@ impl DedupeView {
             g.members.retain(|m| !gone.contains(&m.path));
         }
         self.groups.retain(|g| g.members.len() >= 2);
+        // Prune the pristine copy too so a later floor change cannot
+        // resurrect deleted files.
+        for g in &mut self.base_groups {
+            g.members.retain(|m| !gone.contains(&m.path));
+        }
+        self.base_groups.retain(|g| g.members.len() >= 2);
         for p in &outcome.deleted {
             self.selected.remove(p);
         }
@@ -710,12 +948,60 @@ impl DedupeView {
         } else {
             "Deleted"
         };
+        // Trash receipts enable one-step undo; permanent deletes cannot
+        // be undone, so any stale receipt is dropped.
+        if self.trash {
+            self.last_trashed = outcome.deleted.clone();
+        } else {
+            self.last_trashed.clear();
+        }
         self.status = format!(
             "{verb} {} file(s) ({} freed); {} skipped.",
             outcome.deleted.len(),
             util::human_bytes(outcome.bytes_freed),
             outcome.skipped.len()
         );
+        cx.notify();
+    }
+
+    /// Restore the last trash run (undo). Permanent deletes have no
+    /// receipt and cannot be restored. Restored files reappear on disk;
+    /// press Scan to refresh the groups.
+    fn undo_delete(&mut self, cx: &mut Context<Self>) {
+        if self.last_trashed.is_empty() {
+            self.status = "Nothing to undo.".to_string();
+            cx.notify();
+            return;
+        }
+        let wanted: HashSet<PathBuf> = self.last_trashed.iter().cloned().collect();
+        let items = match trash::os_limited::list() {
+            Ok(items) => items,
+            Err(e) => {
+                self.status = format!("Could not read the trash: {e}");
+                cx.notify();
+                return;
+            }
+        };
+        let mine: Vec<_> = items
+            .into_iter()
+            .filter(|it| wanted.contains(&it.original_path()))
+            .collect();
+        if mine.is_empty() {
+            self.status = "Nothing to restore — the trash was already emptied.".to_string();
+            self.last_trashed.clear();
+            cx.notify();
+            return;
+        }
+        let n = mine.len();
+        match trash::os_limited::restore_all(mine) {
+            Ok(()) => {
+                self.status = format!("Restored {n} file(s). Press Scan to refresh.");
+                self.last_trashed.clear();
+            }
+            Err(e) => {
+                self.status = format!("Restore failed: {e}");
+            }
+        }
         cx.notify();
     }
 
@@ -751,6 +1037,7 @@ impl DedupeView {
                                     .on_change(cx.listener(move |this, value, _, cx| {
                                         if let Some(f) = this.folders.get_mut(i) {
                                             f.reference = *value;
+                                            this.save_prefs(cx);
                                             cx.notify();
                                         }
                                     })),
@@ -761,6 +1048,7 @@ impl DedupeView {
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if i < this.folders.len() {
                                             this.folders.remove(i);
+                                            this.save_prefs(cx);
                                             cx.notify();
                                         }
                                     })),
@@ -772,8 +1060,8 @@ impl DedupeView {
     }
 
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        // Fixed folder row on top, scrollable options in the middle, and a
-        // sticky Scan button at the bottom — usable at any window height.
+        // Side nav: scan folders + per-run scope. Global tuning lives on the
+        // Settings page — the main flow stays a 3-step scan.
         v_flex()
             .w(px(320.))
             .h_full()
@@ -789,7 +1077,10 @@ impl DedupeView {
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .child("SCAN FOLDERS (TICK REF TO PROTECT)"),
+                            .child(format!(
+                                "SCAN FOLDERS ({}) — TICK REF TO PROTECT",
+                                self.folders.len()
+                            )),
                     )
                     .child(self.render_folder_list(cx))
                     .child(
@@ -825,64 +1116,12 @@ impl DedupeView {
                         .gap_3()
                         .px_4()
                         .py_2()
+                        .child(self.sidebar_section("SCOPE (THIS SCAN)", cx))
                         .child(self.sidebar_field(
                             "FILE TYPES (EMPTY = ALL)",
                             Input::new(&self.types_input),
                             cx,
                         ))
-                        .child(self.sidebar_section("HASH ALGORITHM", cx))
-                        .child(
-                            RadioGroup::new("hash")
-                                .children(["blake3", "sha256", "md5"])
-                                .selected_index(self.hash_index)
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.hash_index = Some(*value);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(hash_caption(self.hash_index)),
-                        )
-                        .child(self.sidebar_field(
-                            "SIMILARITY % FOR IMAGES / VIDEO",
-                            Input::new(&self.similarity_input),
-                            cx,
-                        ))
-                        .child(self.sidebar_field(
-                            "WORKER THREADS (0 = AUTO)",
-                            Input::new(&self.jobs_input),
-                            cx,
-                        ))
-                        .child(
-                            Checkbox::new("exact")
-                                .label("Exact duplicates only")
-                                .checked(self.exact)
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.exact = *value;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Checkbox::new("no-cache")
-                                .label("Skip caches (hash + fingerprint)")
-                                .checked(self.no_cache)
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.no_cache = *value;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Checkbox::new("trash")
-                                .label("Move to trash (recoverable)")
-                                .checked(self.trash)
-                                .on_change(cx.listener(|this, value, _, cx| {
-                                    this.trash = *value;
-                                    cx.notify();
-                                })),
-                        )
                         .child(self.render_size_row(
                             "MIN SIZE",
                             &self.min_size_slider,
@@ -933,6 +1172,139 @@ impl DedupeView {
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.start_scan(cx);
                                 })),
+                        ),
+                    ),
+            )
+    }
+
+    /// Settings page: global defaults (matching + system). Per-run scope
+    /// lives in the side nav. Everything auto-saves to `gui-prefs.json`.
+    fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let section_title = |label: &'static str, cx: &mut Context<Self>| {
+            div()
+                .text_sm()
+                .font_weight(FontWeight::BOLD)
+                .text_color(cx.theme().foreground)
+                .child(label)
+        };
+        div()
+            .flex_1()
+            .h_full()
+            .w_full()
+            .overflow_y_scrollbar()
+            .child(
+                v_flex()
+                    .gap_4()
+                    .p_6()
+                    .max_w(px(640.))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                Button::new("settings-back")
+                                    .label("← Back")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view = AppView::Main;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(section_title("Settings", cx)),
+                    )
+                    .child(
+                        v_flex().gap_2().child(section_title("MATCHING", cx)).child(
+                            v_flex()
+                                .gap_3()
+                                .child(self.sidebar_section("HASH ALGORITHM", cx))
+                                .child(
+                                    RadioGroup::new("hash")
+                                        .children(["blake3", "sha256", "md5"])
+                                        .selected_index(self.hash_index)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.hash_index = Some(*value);
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(hash_caption(self.hash_index)),
+                                )
+                                .child(self.sidebar_field(
+                                    "SIMILARITY % FOR IMAGES / VIDEO",
+                                    Input::new(&self.similarity_input),
+                                    cx,
+                                ))
+                                .child(
+                                    Checkbox::new("exact")
+                                        .label("Exact duplicates only")
+                                        .checked(self.exact)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.exact = *value;
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    Checkbox::new("no-cache")
+                                        .label("Skip caches (hash + fingerprint)")
+                                        .checked(self.no_cache)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.no_cache = *value;
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                ),
+                        ),
+                    )
+                    .child(
+                        v_flex().gap_2().child(section_title("SYSTEM", cx)).child(
+                            v_flex()
+                                .gap_3()
+                                .child(self.sidebar_field(
+                                    "WORKER THREADS (0 = AUTO)",
+                                    Input::new(&self.jobs_input),
+                                    cx,
+                                ))
+                                .child(
+                                    Checkbox::new("trash")
+                                        .label("Move to trash (recoverable)")
+                                        .checked(self.trash)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.trash = *value;
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(self.sidebar_section("DEFAULT KEEP (NEW SCANS)", cx))
+                                .child(
+                                    RadioGroup::new("default-keep")
+                                        .children(["First", "Smallest", "Newest", "Oldest"])
+                                        .selected_index(self.keep_index)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.apply_keep_mode(*value, cx);
+                                        })),
+                                )
+                                .child(
+                                    Checkbox::new("default-sort-biggest")
+                                        .label("Sort biggest reclaim first")
+                                        .checked(self.sort_biggest)
+                                        .on_change(cx.listener(|this, value, _, cx| {
+                                            this.sort_biggest = *value;
+                                            this.save_prefs(cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(
+                                            "Per-scan scope (folders, types, sizes) lives in the side nav. Theme lives in the top bar. All settings save automatically.",
+                                        ),
+                                ),
                         ),
                     ),
             )
@@ -1088,6 +1460,7 @@ impl DedupeView {
                     .gap_1()
                     .items_center()
                     .justify_end()
+                    .child(self.render_sim_filter(cx))
                     .child(self.render_keep_segmented(cx))
                     .child(self.render_sort_toggle(cx))
                     .child(
@@ -1240,36 +1613,57 @@ impl DedupeView {
             ))
     }
 
-    /// Bulk selection: one "Select all" checkbox (toggle all/none).
+    /// Every non-keeper path: the universe bulk selection operates on.
     /// Keepers are never selectable.
-    fn render_select_presets(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let dups: HashSet<PathBuf> = self
-            .groups
+    fn all_dup_paths(&self) -> HashSet<PathBuf> {
+        self.groups
             .iter()
             .flat_map(|g| g.members.iter())
             .filter(|m| !m.keep)
             .map(|m| m.path.clone())
-            .collect();
-        let off = self.scanning || dups.is_empty();
-        let all_selected = !dups.is_empty() && dups.iter().all(|p| self.selected.contains(p));
-        Checkbox::new("sel-all")
-            .label("All")
-            .checked(all_selected)
-            .disabled(off)
-            .on_change(cx.listener(move |this, value, _, cx| {
-                if *value {
-                    this.selected = this
-                        .groups
-                        .iter()
-                        .flat_map(|g| g.members.iter())
-                        .filter(|m| !m.keep)
-                        .map(|m| m.path.clone())
-                        .collect();
-                } else {
-                    this.selected.clear();
-                }
-                cx.notify();
-            }))
+            .collect()
+    }
+
+    /// Bulk selection presets: All / None / Invert. Keepers stay untouched.
+    fn render_select_presets(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let off = self.scanning || self.groups.is_empty();
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("SELECT"),
+            )
+            .child(
+                Button::new("sel-all")
+                    .label("All")
+                    .disabled(off)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selected = this.all_dup_paths();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("sel-none")
+                    .label("None")
+                    .disabled(off || self.selected.is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.selected.clear();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("sel-invert")
+                    .label("Invert")
+                    .disabled(off)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let all = this.all_dup_paths();
+                        this.selected = all.difference(&this.selected).cloned().collect();
+                        cx.notify();
+                    })),
+            )
     }
 
     /// Bulk expand/collapse for the group list.
@@ -1296,6 +1690,28 @@ impl DedupeView {
                         cx.notify();
                     })),
             )
+    }
+
+    /// Live similarity floor: type a higher % to tighten the current
+    /// results without rescanning (blank restores the scan floor).
+    /// Shown only when similar-media groups exist; exact groups always
+    /// qualify and are unaffected.
+    fn render_sim_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let has_sim = self.groups.iter().any(|g| g.similarity.is_some());
+        if self.scanning || self.groups.is_empty() || !has_sim {
+            return div().into_any_element();
+        }
+        h_flex()
+            .gap_1()
+            .items_center()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("SIM ≥{:.0}%", self.min_sim * 100.0)),
+            )
+            .child(div().w(px(64.)).child(Input::new(&self.min_sim_input)))
+            .into_any_element()
     }
 
     /// Global keep mode as a segmented control (First / Smallest / Newest /
@@ -1341,6 +1757,7 @@ impl DedupeView {
             .on_click(cx.listener(move |this, clicks: &Vec<usize>, _, cx| {
                 if let Some(&i) = clicks.first() {
                     this.sort_biggest = i == 1;
+                    this.save_prefs(cx);
                     cx.notify();
                 }
             }))
@@ -1395,16 +1812,33 @@ impl DedupeView {
     }
     fn render_delete_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let targets = self.pending_targets();
-        Button::new("delete")
-            .label(format!("Delete selected ({})", targets.len()))
-            .disabled(self.scanning || self.groups.is_empty() || targets.is_empty())
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.open_delete_confirm(window, cx);
-            }))
+        let can_undo = !self.scanning && !self.last_trashed.is_empty();
+        h_flex()
+            .gap_2()
+            .items_center()
+            .child(
+                Button::new("delete")
+                    .label(format!("Delete selected ({})", targets.len()))
+                    .disabled(self.scanning || self.groups.is_empty() || targets.is_empty())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_delete_confirm(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("undo-delete")
+                    .label(format!("Undo delete ({})", self.last_trashed.len()))
+                    .disabled(!can_undo)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.undo_delete(cx);
+                    })),
+            )
             .into_any_element()
     }
 
-    /// Delete confirmation as a modal dialog (replaces the old inline bar).
+    /// Delete confirmation as a modal dialog: a per-group dry-run summary
+    /// (keeper + exactly what will go, with sizes) plus in-dialog Keep
+    /// picks. After a Keep change the dialog reopens fresh so it never
+    /// shows stale keep/dup state.
     fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let targets = self.pending_targets();
         if targets.is_empty() {
@@ -1421,38 +1855,149 @@ impl DedupeView {
             "permanently delete"
         };
         let view = cx.entity();
-        // Preview the actual filenames (capped): a destructive action
-        // should show what it will touch, not just a count. Built inside
-        // the dialog closure (which must stay `Fn`) from borrowed data.
-        let shown: Vec<String> = targets
+        // Per-group dry-run data, capped so huge selections stay readable.
+        // The dialog closure must stay `Fn`, so everything is owned here.
+        const CONFIRM_GROUPS: usize = 6;
+        const CONFIRM_ROWS: usize = 4;
+        struct ConfirmGroup {
+            index: usize,
+            keeper: String,
+            rows: Vec<(String, u64, PathBuf)>,
+            hidden_rows: usize,
+            group_bytes: u64,
+        }
+        let mut confirm_groups: Vec<ConfirmGroup> = Vec::new();
+        for g in &self.groups {
+            let mut rows = Vec::new();
+            let mut group_bytes = 0u64;
+            let mut total = 0usize;
+            for m in &g.members {
+                if !m.keep && self.selected.contains(&m.path) {
+                    total += 1;
+                    group_bytes += m.size;
+                    if rows.len() < CONFIRM_ROWS {
+                        rows.push((
+                            m.path.display().to_string(),
+                            m.size,
+                            m.path.clone(),
+                        ));
+                    }
+                }
+            }
+            if total == 0 {
+                continue;
+            }
+            let keeper = g
+                .members
+                .iter()
+                .find(|m| m.keep)
+                .map(|m| {
+                    m.path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| m.path.display().to_string())
+                })
+                .unwrap_or_else(|| "—".to_string());
+            confirm_groups.push(ConfirmGroup {
+                index: g.index,
+                keeper,
+                rows,
+                hidden_rows: total.saturating_sub(CONFIRM_ROWS),
+                group_bytes,
+            });
+            if confirm_groups.len() >= CONFIRM_GROUPS {
+                break;
+            }
+        }
+        let hidden_groups = self
+            .groups
             .iter()
-            .take(CONFIRM_PREVIEW)
-            .map(|t| t.path.display().to_string())
-            .collect();
-        let hidden = count.saturating_sub(shown.len());
+            .filter(|g| {
+                g.members
+                    .iter()
+                    .any(|m| !m.keep && self.selected.contains(&m.path))
+            })
+            .count()
+            .saturating_sub(confirm_groups.len());
         window.open_dialog(
             cx,
             move |dialog, _, _| {
                 let confirm_view = view.clone();
-                let mut file_list = v_flex().gap_1().py_1();
-                for p in &shown {
-                    file_list =
-                        file_list.child(div().text_xs().truncate().child(fit_text(p, 90)));
+                let mut body = v_flex().gap_2().child(format!(
+                    "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
+                ));
+                for cg in &confirm_groups {
+                    let mut section = v_flex()
+                        .gap_1()
+                        .py_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .child(format!(
+                                    "Group #{} · keeps {} · deletes {} ({})",
+                                    cg.index,
+                                    cg.keeper,
+                                    cg.rows.len() + cg.hidden_rows,
+                                    util::human_bytes(cg.group_bytes),
+                                )),
+                        );
+                    for (name, size, path) in &cg.rows {
+                        let gi = cg.index;
+                        let keep_path = path.clone();
+                        let reopen_view = confirm_view.clone();
+                        section = section.child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .truncate()
+                                        .child(format!(
+                                            "{} ({})",
+                                            fit_text(name, 70),
+                                            util::human_bytes(*size)
+                                        )),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "dlg-keep-{gi}-{}",
+                                        fit_text(name, 20)
+                                    )))
+                                    .label("Keep")
+                                    .on_click(move |_, window, cx| {
+                                        reopen_view.update(cx, |v, cx| {
+                                            v.set_keeper(gi, &keep_path, cx);
+                                        });
+                                        window.close_dialog(cx);
+                                        let reopen_view2 = reopen_view.clone();
+                                        reopen_view2.update(cx, |v, cx| {
+                                            v.open_delete_confirm(window, cx);
+                                        });
+                                    }),
+                                ),
+                        );
+                    }
+                    if cg.hidden_rows > 0 {
+                        section = section.child(
+                            div()
+                                .text_xs()
+                                .child(format!("… and {} more in this group", cg.hidden_rows)),
+                        );
+                    }
+                    body = body.child(section);
                 }
-                if hidden > 0 {
-                    file_list = file_list
-                        .child(div().text_xs().child(format!("… and {hidden} more")));
+                if hidden_groups > 0 {
+                    body = body.child(
+                        div()
+                            .text_xs()
+                            .child(format!("… and {hidden_groups} more group(s)")),
+                    );
                 }
                 dialog
                     .title(format!("Delete {count} file(s)?"))
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(format!(
-                                "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
-                            ))
-                            .child(file_list),
-                    )
+                    .child(body)
                     .footer(
                         h_flex().gap_2().justify_end().child(
                             Button::new("cancel-delete").label("Cancel").on_click(
@@ -1499,6 +2044,46 @@ impl DedupeView {
                     })),
             );
         if expanded {
+            // Side-by-side compare: exactly two previewable images render
+            // large next to each other above the rows — the "same picture?"
+            // call is visual, so show it big.
+            let pair: Option<(PathBuf, PathBuf)> =
+                if snapshot.members.len() == 2 {
+                    let imgs: Vec<PathBuf> = snapshot
+                        .members
+                        .iter()
+                        .filter(|m| matches!(self.thumb_for(m), crate::ui_results::Thumb::Image))
+                        .map(|m| m.path.clone())
+                        .collect();
+                    if imgs.len() == 2 {
+                        Some((imgs[0].clone(), imgs[1].clone()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            if let Some((left, right)) = pair {
+                card = card.child(
+                    h_flex()
+                        .gap_2()
+                        .pl_6()
+                        .child(
+                            img(left)
+                                .h(px(180.))
+                                .w_full()
+                                .object_fit(ObjectFit::Cover)
+                                .rounded_md(),
+                        )
+                        .child(
+                            img(right)
+                                .h(px(180.))
+                                .w_full()
+                                .object_fit(ObjectFit::Cover)
+                                .rounded_md(),
+                        ),
+                );
+            }
             for (mi, member) in snapshot.members.iter().enumerate() {
                 let checked = self.selected.contains(&member.path);
                 let thumb = self.thumb_for(member);
@@ -1515,335 +2100,6 @@ impl DedupeView {
         card
     }
 
-    /// Decide what preview a member row shows.
-    fn thumb_for(&self, member: &crate::matching::GroupMember) -> Thumb {
-        match media::classify(&member.path) {
-            media::MediaKind::Image => {
-                let thumbable = member
-                    .path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| THUMB_EXTS.contains(&e.to_ascii_lowercase().as_str()))
-                    .unwrap_or(false);
-                if thumbable { Thumb::Image } else { Thumb::None }
-            }
-            media::MediaKind::Video => match self.posters.get(&member.path) {
-                Some(p) => Thumb::Poster(p.clone()),
-                None => Thumb::PendingVideo,
-            },
-            media::MediaKind::Other => Thumb::None,
-        }
-    }
-}
-
-/// Owned per-group data for rendering. Groups are replaced wholesale on
-/// every scan/delete, so click handlers capture this snapshot instead of
-/// borrowing the view (handlers must be `'static`).
-struct GroupSnapshot {
-    index: usize,
-    header: String,
-    members: Vec<crate::matching::GroupMember>,
-}
-
-trait SnapshotGroup {
-    fn clone_snapshot(&self) -> GroupSnapshot;
-}
-
-impl SnapshotGroup for crate::matching::Group {
-    fn clone_snapshot(&self) -> GroupSnapshot {
-        // Exact groups omit the content hash: identical bytes are implied
-        // by the grouping itself, and a hex prefix is not actionable.
-        // Similar groups keep their score — that one informs the decision.
-        let mut parts = vec![
-            format!("Group #{}", self.index),
-            report::group_kind_name(self.media_kind).to_uppercase(),
-            format!("{} files", self.members.len()),
-            format!("{} reclaimable", util::human_bytes(self.dup_bytes())),
-        ];
-        if let Some(s) = self.similarity {
-            parts.push(format!("{:.1}% similar", s * 100.0));
-        }
-        if let Some(summary) = self
-            .members
-            .first()
-            .and_then(|m| m.media.clone())
-            .map(|info| info.summary())
-        {
-            parts.push(summary);
-        }
-        GroupSnapshot {
-            index: self.index,
-            header: parts.join(" · "),
-            members: self.members.clone(),
-        }
-    }
-}
-
-impl GroupSnapshot {
-    fn header_label(&self, expanded: bool) -> String {
-        format!("{} {}", if expanded { "▾ " } else { "▸ " }, self.header)
-    }
-}
-
-/// Read (position, length) off a headless progress bar.
-fn bar_pos(bar: &indicatif::ProgressBar) -> (u64, u64) {
-    (bar.position(), bar.length().unwrap_or(0))
-}
-
-/// Cap a display string, keeping the tail — filenames live at the end of
-/// paths, so a truncated middle would hide the useful part. Paired with
-/// `.truncate()` (ellipsis) on the element for pixel-level clipping.
-fn fit_text(s: &str, max_chars: usize) -> String {
-    let count = s.chars().count();
-    if count <= max_chars {
-        return s.to_string();
-    }
-    format!(
-        "…{}",
-        s.chars().skip(count - max_chars + 1).collect::<String>()
-    )
-}
-
-/// What preview a member row shows: none, the image itself, a generated
-/// video poster, or a placeholder while the poster extracts.
-enum Thumb {
-    None,
-    Image,
-    Poster(PathBuf),
-    PendingVideo,
-}
-
-/// One-line explanation for each hash algorithm, shown under the selector.
-fn hash_caption(index: Option<usize>) -> &'static str {
-    match index.unwrap_or(0) {
-        1 => "SHA-256 — widely supported standard; pick it to match other tools.",
-        2 => "MD5 — legacy and collision-prone; only to match old hashes.",
-        _ => "BLAKE3 — fastest modern hash; the right default for scans.",
-    }
-}
-
-/// Mirror a size slider position into its text box. `empty_at_min`: the
-/// min-size slider clears the box at the left end (no limit); the max-size
-/// slider clears it at the right end.
-fn size_slider_to_text(
-    value: f32,
-    empty_at_min: bool,
-    input: &Entity<InputState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let at_empty_end = if empty_at_min {
-        value <= SIZE_SLIDER_MIN * 1.001
-    } else {
-        value >= SIZE_SLIDER_MAX / 1.001
-    };
-    let text = if at_empty_end {
-        String::new()
-    } else {
-        util::human_bytes(value.max(1.0) as u64)
-    };
-    input.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text), window, cx);
-    });
-}
-
-/// Mirror a typed size into its slider. Empty means "no limit" (slider to
-/// the empty end); unparsable text leaves the slider alone.
-fn size_text_to_slider(
-    raw: &str,
-    empty_at_min: bool,
-    slider: &Entity<SliderState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let raw = raw.trim();
-    let target: f32 = if raw.is_empty() {
-        if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        }
-    } else {
-        match util::parse_size(raw) {
-            Ok(b) => (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-            Err(_) => return,
-        }
-    };
-    slider.update(cx, |state, cx| {
-        state.set_value(target, window, cx);
-    });
-}
-
-/// Thumbnail box for a member row: the image itself, a video poster, a
-/// placeholder while the poster extracts, or nothing for plain files.
-fn render_thumb(
-    path: &std::path::Path,
-    thumb: &Thumb,
-    cx: &mut Context<DedupeView>,
-) -> impl IntoElement {
-    match thumb {
-        Thumb::None => div().into_any_element(),
-        Thumb::Image => fixed_thumb(img(path)),
-        Thumb::Poster(poster) => fixed_thumb(img(poster.clone())),
-        Thumb::PendingVideo => div()
-            .w(px(72.))
-            .h(px(56.))
-            .rounded_md()
-            .bg(cx.theme().secondary)
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(IconName::Play)
-            .into_any_element(),
-    }
-}
-
-/// Fixed 72×56 thumbnail box (cover-fit): async image loads must never
-/// change row geometry, or rows overlap mid-layout.
-fn fixed_thumb(image: gpui_kit::Img) -> gpui_kit::AnyElement {
-    image
-        .w(px(72.))
-        .h(px(56.))
-        .object_fit(ObjectFit::Cover)
-        .rounded_md()
-        .into_any_element()
-}
-
-fn render_member(
-    group_index: usize,
-    mi: usize,
-    member: &crate::matching::GroupMember,
-    checked: bool,
-    thumb: &Thumb,
-    cx: &mut Context<DedupeView>,
-) -> impl IntoElement {
-    // Three-line row: the file name gets top billing, the parent folder
-    // sits dimmed underneath, and all fixed-size controls share a third
-    // line. Flex items will not shrink below content width here, so text
-    // must never share a row with buttons.
-    let name = member
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| member.path.display().to_string());
-    let parent = member
-        .path
-        .parent()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let mut title = name;
-    if let Some(sim) = member.similarity
-        && !member.keep
-    {
-        title.push_str(&format!("  · {:.1}% similar", sim * 100.0));
-    }
-    if let Some(info) = &member.media {
-        title.push_str(&format!("  · {}", info.summary()));
-    }
-
-    let mut actions = h_flex().gap_2().items_center();
-    if member.keep {
-        let (badge, color) = if member.reference {
-            ("◈ REF", cx.theme().accent)
-        } else {
-            ("✓ KEEP", cx.theme().success)
-        };
-        actions = actions.child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(color)
-                .child(badge),
-        );
-    } else {
-        let key = member.path.clone();
-        actions = actions
-            .child(
-                Checkbox::new(SharedString::from(format!("dup-{group_index}-{mi}")))
-                    .checked(checked)
-                    .on_change(cx.listener(move |this, value, _, cx| {
-                        if *value {
-                            this.selected.insert(key.clone());
-                        } else {
-                            this.selected.remove(&key);
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(cx.theme().warning)
-                    .child("DUP"),
-            );
-    }
-    actions = actions.child(
-        div()
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(util::human_bytes(member.size)),
-    );
-    if !member.keep {
-        let keep_path = member.path.clone();
-        actions = actions.child(
-            Button::new(SharedString::from(format!("keep-{group_index}-{mi}")))
-                .label("Keep")
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_keeper(group_index, &keep_path, cx);
-                })),
-        );
-    }
-    if matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo) {
-        let play_path = member.path.clone();
-        actions = actions.child(
-            Button::new(SharedString::from(format!("play-{group_index}-{mi}")))
-                .icon(IconName::Play)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Err(e) = open::that(&play_path) {
-                        this.status = format!("Could not play file: {e}");
-                        cx.notify();
-                    }
-                })),
-        );
-    }
-    {
-        let reveal = member
-            .path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| member.path.clone());
-        actions = actions.child(
-            Button::new(SharedString::from(format!("reveal-{group_index}-{mi}")))
-                .icon(IconName::FolderOpen)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Err(e) = open::that(&reveal) {
-                        this.status = format!("Could not open folder: {e}");
-                        cx.notify();
-                    }
-                })),
-        );
-    }
-
-    h_flex()
-        .gap_2()
-        .items_start()
-        .pl_6()
-        .child(render_thumb(&member.path, thumb, cx))
-        .child(
-            v_flex()
-                .flex_1()
-                .gap_1()
-                .child(div().text_sm().truncate().child(fit_text(&title, 120)))
-                .child(
-                    div()
-                        .text_xs()
-                        .truncate()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(fit_text(&parent, 160)),
-                )
-                .child(actions),
-        )
 }
 
 impl Render for DedupeView {
@@ -1853,6 +2109,14 @@ impl Render for DedupeView {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            // Checklist C29: Escape always does something — backs out of
+            // Settings to the main flow.
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                if ev.keystroke.key == "escape" && this.view == AppView::Settings {
+                    this.view = AppView::Main;
+                    cx.notify();
+                }
+            }))
             .child(
                 h_flex()
                     .items_center()
@@ -1880,10 +2144,31 @@ impl Render for DedupeView {
                             ),
                     )
                     .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                if self.view == AppView::Settings {
+                                    Button::new("nav-back")
+                                        .label("← Back")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.view = AppView::Main;
+                                            cx.notify();
+                                        }))
+                                } else {
+                                    Button::new("nav-settings")
+                                        .label("Settings")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.view = AppView::Settings;
+                                            cx.notify();
+                                        }))
+                                },
+                            )
+                            .child(
                         Button::new("theme-toggle")
                             .icon(if dark { IconName::Sun } else { IconName::Moon })
                             .label(if dark { "Light" } else { "Dark" })
-                            .on_click(cx.listener(move |_, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, _, cx| {
                                 Theme::change(
                                     if dark {
                                         ThemeMode::Light
@@ -1893,17 +2178,27 @@ impl Render for DedupeView {
                                     None,
                                     cx,
                                 );
+                                this.save_prefs(cx);
                             })),
+                            ),
                     ),
             )
-            .child(
+            .child(if self.view == AppView::Settings {
+                div()
+                    .flex_1()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(self.render_settings(cx))
+                    .into_any_element()
+            } else {
                 h_flex()
                     .flex_1()
                     .w_full()
                     .overflow_hidden()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_results(cx)),
-            )
+                    .child(self.render_results(cx))
+                    .into_any_element()
+            })
             .child(
                 h_flex()
                     .items_center()
@@ -1945,15 +2240,5 @@ mod tests {
             assert_eq!(s.min_value(), SIZE_SLIDER_MIN);
             assert_eq!(s.max_value(), SIZE_SLIDER_MAX);
         }
-    }
-
-    #[test]
-    fn fit_text_keeps_short_strings_and_truncates_tails() {
-        assert_eq!(fit_text("abc", 10), "abc");
-        assert_eq!(fit_text("abcdef", 6), "abcdef");
-        // Long paths keep the filename tail, prefixed with an ellipsis.
-        let capped = fit_text("C:\\very\\long\\directory\\file.txt", 12);
-        assert_eq!(capped, "…ry\\file.txt");
-        assert_eq!(capped.chars().count(), 12);
     }
 }

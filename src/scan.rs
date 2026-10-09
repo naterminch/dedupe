@@ -207,8 +207,18 @@ mod tests {
     }
 
     #[test]
-    fn scan_filters_by_type_and_size() {
-        let dir = tmpdir("filters");
+    fn missing_path_records_error_instead_of_panicking() {
+        let cli = Cli {
+            paths: vec![r"Z:\definitely\not\here-12345".to_string()],
+            ..zero_cli()
+        };
+        let result = scan(&cli, 0, 0);
+        assert!(result.entries.is_empty());
+        assert_eq!(result.dir_read_errors.len(), 1);
+    }
+
+    #[test]
+    fn scan_filters_by_type_and_size() {        let dir = tmpdir("filters");
         fs::write(dir.join("a.jpg"), vec![0u8; 100]).unwrap();
         fs::write(dir.join("b.png"), vec![0u8; 100]).unwrap();
         fs::write(dir.join("c.txt"), vec![0u8; 100]).unwrap();

@@ -429,4 +429,30 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn every_algorithm_hashes_deterministically() {
+        use crate::cli::HashAlgo;
+        let dir = tmpdir("algos");
+        let a = dir.join("a.bin");
+        let b = dir.join("b.bin");
+        fs::write(&a, b"deterministic bytes").unwrap();
+        fs::write(&b, b"different bytes here!").unwrap();
+        for algo in [HashAlgo::Blake3, HashAlgo::Sha256, HashAlgo::Md5] {
+            let engine = HashEngine::new(algo);
+            let h1 = engine.full(&a).unwrap();
+            assert_eq!(engine.full(&a).unwrap(), h1, "{algo:?} unstable");
+            assert_ne!(engine.full(&b).unwrap(), h1, "{algo:?} collides");
+            assert!(!h1.is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn engine_names_match_cli_flags() {
+        use crate::cli::HashAlgo;
+        assert_eq!(HashEngine::new(HashAlgo::Blake3).name(), "blake3");
+        assert_eq!(HashEngine::new(HashAlgo::Sha256).name(), "sha256");
+        assert_eq!(HashEngine::new(HashAlgo::Md5).name(), "md5");
+    }
 }

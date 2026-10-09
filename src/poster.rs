@@ -52,3 +52,49 @@ pub fn video_poster(path: &Path, size: u64, mtime: Option<i64>) -> Option<PathBu
         && out.exists();
     if ok { Some(out) } else { None }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_key_is_stable_and_sensitive_to_every_input() {
+        let p = Path::new("C:\\media\\clip.mp4");
+        let base = key_for(p, 1024, Some(7));
+        assert_eq!(key_for(p, 1024, Some(7)), base, "same inputs, same key");
+        assert_ne!(key_for(p, 1025, Some(7)), base, "size matters");
+        assert_ne!(key_for(p, 1024, Some(8)), base, "mtime matters");
+        assert_ne!(key_for(p, 1024, None), base, "unknown mtime differs");
+        assert_ne!(
+            key_for(Path::new("C:\\media\\other.mp4"), 1024, Some(7)),
+            base,
+            "path matters"
+        );
+        assert_eq!(base.len(), 64, "blake3 hex digest");
+    }
+
+    #[test]
+    fn cache_dir_lives_under_the_temp_dir() {
+        let dir = cache_dir();
+        assert_eq!(dir.parent().unwrap(), std::env::temp_dir());
+        assert_eq!(
+            dir.file_name().unwrap().to_string_lossy(),
+            "dedupe-posters"
+        );
+    }
+
+    #[test]
+    fn missing_file_never_panics_and_returns_none() {
+        // ffmpeg is either absent (None) or fails on a bogus path (None).
+        let missing = std::env::temp_dir().join(format!(
+            "dedupe-poster-missing-{}-{}.mp4",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!missing.exists());
+        assert_eq!(video_poster(&missing, 999, Some(1)), None);
+    }
+}
