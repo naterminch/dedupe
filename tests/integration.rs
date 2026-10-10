@@ -729,3 +729,140 @@ fn json_report_carries_provenance_fields() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn keep_best_quality_wires_through_and_conflicts() {
+    let dir = tmpdir("keepbest");
+    // Exact duplicates are byte-identical: quality ties, first path wins.
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+
+    let (out, stdout) = run(&["--json", "--keep-best-quality", dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let members = parsed["groups"][0]["members"].as_array().unwrap();
+    assert!(members[0]["keep"].as_bool().unwrap());
+    assert!(members[0]["path"].as_str().unwrap().ends_with("a.txt"));
+
+    // Conflicts with the other keep modes.
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args([
+            "--keep-best-quality",
+            "--keep-newest",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("conflict"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn json_groups_carry_per_group_reclaimable() {
+    let dir = tmpdir("groupbytes");
+    fs::write(dir.join("a.txt"), b"12345678").unwrap();
+    fs::write(dir.join("b.txt"), b"12345678").unwrap();
+
+    let (_, stdout) = run(&["--json", dir.to_str().unwrap()]);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["groups"][0]["reclaimable_bytes"], 8);
+    assert_eq!(parsed["reclaimable_bytes"], 8);
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn consolidate_dry_run_moves_nothing() {
+    let dir = tmpdir("consdry");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+    let dest = dir.join("vault");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+        .args([
+            "--consolidate-dir",
+            dest.to_str().unwrap(),
+            "--dry-run",
+            dir.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run dedupe binary");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Dry run"), "stdout: {stdout}");
+    assert!(stdout.contains("would move"), "stdout: {stdout}");
+    assert!(stdout.contains("Group #1"), "stdout: {stdout}");
+    assert!(dir.join("a.txt").exists() && dir.join("b.txt").exists());
+    assert!(!dest.exists(), "dry run must not create the destination");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn consolidate_moves_keeper_leaves_dup() {
+    let dir = tmpdir("consmove");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+    let dest = dir.join("vault");
+
+    let (out, stdout) = run(&[
+        "--consolidate-dir",
+        dest.to_str().unwrap(),
+        "--yes",
+        "--quiet",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("Consolidated"), "stdout: {stdout}");
+    // First path wins the keep: a.txt gathered, b.txt left behind.
+    assert!(!dir.join("a.txt").exists());
+    assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"payload");
+    assert!(dir.join("b.txt").exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn consolidate_collision_gains_suffix() {
+    let dir = tmpdir("conscollide");
+    fs::write(dir.join("a.txt"), b"payload").unwrap();
+    fs::write(dir.join("b.txt"), b"payload").unwrap();
+    let dest = dir.join("vault");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("a.txt"), b"unrelated").unwrap();
+
+    let (out, _) = run(&[
+        "--consolidate-dir",
+        dest.to_str().unwrap(),
+        "--yes",
+        "--quiet",
+        dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"unrelated");
+    assert_eq!(fs::read(dest.join("a (2).txt")).unwrap(), b"payload");
+
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -369,6 +369,8 @@ mod tests {
             keep_smaller: false,
             keep_newest: false,
             keep_oldest: false,
+            keep_best_quality: false,
+            consolidate_dir: None,
             reference_dir: vec![],
             trash: false,
             dry_run: false,

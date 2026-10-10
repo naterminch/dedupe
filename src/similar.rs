@@ -754,7 +754,8 @@ pub fn build_similar_groups(
             // the candidates the keep rule applies — for `Smallest` the
             // highest-resolution version (a smaller file is usually the
             // re-encoded/lower-res copy, so the best original is kept),
-            // falling back to smallest size when unknown.
+            // falling back to smallest size when unknown; for `BestQuality`
+            // ties break toward the largest file instead.
             let pool: Vec<usize> = {
                 let refs: Vec<usize> = sg
                     .members
@@ -805,6 +806,8 @@ pub fn build_similar_groups(
 /// `Smallest` prefers the highest resolution (width ? height); members with
 /// unknown resolution (0?0, e.g. a video probed without ffprobe) rank below
 /// any member with known resolution, falling back to smallest size.
+/// `BestQuality` also leads with resolution, but ties break toward the
+/// largest file (bitrate proxy) instead of the smallest.
 fn best_similar_keep(members: &[SimilarMember], pool: &[usize], keep: KeepMode) -> usize {
     let area = |m: &SimilarMember| -> Option<u64> {
         (m.w > 0 && m.h > 0).then_some(m.w as u64 * m.h as u64)
@@ -822,6 +825,18 @@ fn best_similar_keep(members: &[SimilarMember], pool: &[usize], keep: KeepMode) 
                 }
                 (Some(_), None) => true,
                 (None, None) => (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path),
+                (None, Some(_)) => false,
+            },
+            KeepMode::BestQuality => match (area(m), area(b)) {
+                (Some(a), Some(ba)) => {
+                    (a, m.entry.size) > (ba, b.entry.size)
+                        || ((a, m.entry.size) == (ba, b.entry.size) && m.entry.path < b.entry.path)
+                }
+                (Some(_), None) => true,
+                (None, None) => {
+                    m.entry.size > b.entry.size
+                        || (m.entry.size == b.entry.size && m.entry.path < b.entry.path)
+                }
                 (None, Some(_)) => false,
             },
             KeepMode::Newest => {
@@ -979,6 +994,46 @@ mod tests {
         ];
         assert_eq!(
             best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
+            1
+        );
+    }
+
+    #[test]
+    fn keep_best_quality_prefers_resolution_then_larger_size() {
+        // Resolution leads, like Smallest — but ties break toward the
+        // bigger file (bitrate proxy), the opposite of Smallest.
+        let members = vec![
+            sim_member("/media/low.jpg", 8_000_000, 1280, 720),
+            sim_member("/media/high.png", 2_000_000, 3840, 2160),
+        ];
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
+            1
+        );
+        let members = vec![
+            sim_member("/media/a.jpg", 100_000, 1920, 1080),
+            sim_member("/media/b.jpg", 500_000, 1920, 1080),
+        ];
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
+            1
+        );
+        // Same resolution and size: first path wins.
+        let members = vec![
+            sim_member("/media/b.jpg", 500_000, 1920, 1080),
+            sim_member("/media/a.jpg", 500_000, 1920, 1080),
+        ];
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
+            1
+        );
+        // Unknown resolution loses to known, however big.
+        let members = vec![
+            sim_member("/media/huge.jpg", 9_000_000, 0, 0),
+            sim_member("/media/known.jpg", 100_000, 640, 480),
+        ];
+        assert_eq!(
+            best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
             1
         );
     }

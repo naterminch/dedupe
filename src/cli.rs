@@ -48,23 +48,41 @@ pub struct Cli {
     /// Within each duplicate group, prefer keeping the smallest file
     /// (for media, files in a group always share the same content, hence the
     /// same resolution -- so the smaller encoding is kept).
+    /// Conflicts with --keep-newest/--keep-oldest/--keep-best-quality.
     #[arg(short, long)]
     pub keep_smaller: bool,
 
     /// Within each duplicate group, prefer keeping the most recently
-    /// modified file. Conflicts with --keep-smaller/--keep-oldest.
+    /// modified file. Conflicts with --keep-smaller/--keep-oldest/--keep-best-quality.
     #[arg(long)]
     pub keep_newest: bool,
 
     /// Within each duplicate group, prefer keeping the least recently
-    /// modified file. Conflicts with --keep-smaller/--keep-newest.
+    /// modified file. Conflicts with --keep-smaller/--keep-newest/--keep-best-quality.
     #[arg(long)]
     pub keep_oldest: bool,
+
+    /// Within each duplicate group, prefer keeping the highest-quality
+    /// media: highest resolution, then longest duration, then largest file
+    /// (bitrate proxy). Files without metadata tie-break by path; exact
+    /// duplicates are byte-identical, so the first path wins there.
+    /// Conflicts with --keep-smaller/--keep-newest/--keep-oldest.
+    #[arg(long)]
+    pub keep_best_quality: bool,
 
     /// Protect folders: files under these directories are never deleted
     /// and win the keep decision (repeatable). Like czkawka reference dirs.
     #[arg(long, value_name = "PATH", action = clap::ArgAction::Append)]
     pub reference_dir: Vec<String>,
+
+    /// Gather one copy of everything: move each group's keeper into DIR
+    /// (flattened; name collisions gain a " (2)" suffix). Keepers already
+    /// under DIR and reference-dir keepers are left alone. Every keeper is
+    /// re-hashed before moving; changed files are skipped, never moved.
+    /// Combines with --delete (dups are removed too) and honors
+    /// --dry-run and --yes.
+    #[arg(long, value_name = "DIR")]
+    pub consolidate_dir: Option<String>,
 
     /// Move duplicates to the system trash instead of deleting permanently.
     #[arg(long)]
@@ -204,5 +222,24 @@ mod tests {
     fn short_flags_and_gui_flag_parse() {
         let cli = Cli::try_parse_from(["dedupe", "-D", "-y", "--gui"]).unwrap();
         assert!(cli.delete && cli.yes && cli.gui);
+    }
+
+    #[test]
+    fn best_quality_and_consolidate_parse() {
+        let cli = Cli::try_parse_from([
+            "dedupe",
+            "--keep-best-quality",
+            "--consolidate-dir",
+            "D:\\vault",
+            ".",
+        ])
+        .unwrap();
+        assert!(cli.keep_best_quality);
+        assert!(!cli.keep_smaller && !cli.keep_newest && !cli.keep_oldest);
+        assert_eq!(cli.consolidate_dir.as_deref(), Some("D:\\vault"));
+        assert_eq!(cli.paths, vec![".".to_string()]);
+        let cli = Cli::try_parse_from(["dedupe", "."]).unwrap();
+        assert!(!cli.keep_best_quality);
+        assert!(cli.consolidate_dir.is_none());
     }
 }

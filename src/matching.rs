@@ -33,17 +33,34 @@ pub struct GroupMember {
 }
 
 /// A set of identical files, ordered with the KEEP member first.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Serialized manually (see below) so `reclaimable_bytes` is always
+/// computed from the live keep flags — keeper swaps must never go stale.
+#[derive(Debug, Clone)]
 pub struct Group {
     pub index: usize,
     pub hash: String,
-    #[serde(rename = "kind")]
     pub media_kind: MediaKind,
     /// Worst pairwise similarity within the group (0..=1); `None` for exact
     /// groups.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub similarity: Option<f64>,
     pub members: Vec<GroupMember>,
+}
+
+impl serde::Serialize for Group {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Group", 6)?;
+        state.serialize_field("index", &self.index)?;
+        state.serialize_field("hash", &self.hash)?;
+        state.serialize_field("kind", &self.media_kind)?;
+        if let Some(similarity) = self.similarity {
+            state.serialize_field("similarity", &similarity)?;
+        }
+        state.serialize_field("reclaimable_bytes", &self.dup_bytes())?;
+        state.serialize_field("members", &self.members)?;
+        state.end()
+    }
 }
 
 impl Group {
@@ -74,6 +91,12 @@ pub enum KeepMode {
     /// Least recently modified (unknown mtime counts as newest, i.e. kept
     /// only when nothing else qualifies — it sorts last).
     Oldest,
+    /// Highest quality media: highest resolution first (ffprobe metadata,
+    /// falling back to fingerprint dimensions), then longest duration, then
+    /// largest file (bitrate proxy). Members with unknown resolution rank
+    /// below any known one. Exact groups hold identical bytes, so every
+    /// quality signal ties and the first path wins — same as [`KeepMode::First`].
+    BestQuality,
 }
 
 /// True when `path` lives under one of the reference (protected) folders.
@@ -288,12 +311,46 @@ fn is_better_keep_res(a: &GroupMember, b: &GroupMember, keep: KeepMode) -> bool 
     }
 }
 
+/// Quality ranking for [`KeepMode::BestQuality`]: (known resolution,
+/// resolution area, duration, size) — compared largest-first, ties broken
+/// by path. Resolution comes from ffprobe metadata, falling back to
+/// fingerprint dimensions (always set for similar-media members).
+fn quality_key(m: &GroupMember) -> (u8, u64, u64, u64) {
+    let area = m
+        .media
+        .as_ref()
+        .and_then(|info| match (info.width, info.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some(w as u64 * h as u64),
+            _ => None,
+        })
+        .or_else(|| {
+            m.fingerprint_res
+                .filter(|(w, h)| *w > 0 && *h > 0)
+                .map(|(w, h)| w as u64 * h as u64)
+        });
+    let duration = m
+        .media
+        .as_ref()
+        .and_then(|info| info.duration_ms)
+        .unwrap_or(0);
+    (
+        u8::from(area.is_some()),
+        area.unwrap_or(0),
+        duration,
+        m.size,
+    )
+}
+
 /// True when `a` is a better keeper than `b` under `keep` (ties broken by
 /// path for determinism).
 fn is_better_keep(a: &GroupMember, b: &GroupMember, keep: KeepMode) -> bool {
     match keep {
         KeepMode::First => a.path < b.path,
         KeepMode::Smallest => (a.size, &a.path) < (b.size, &b.path),
+        KeepMode::BestQuality => {
+            let (ka, kb) = (quality_key(a), quality_key(b));
+            ka > kb || (ka == kb && a.path < b.path)
+        }
         // Unknown mtime sorts as oldest (Newest) / newest (Oldest): files
         // we know nothing about never win on a time rule.
         KeepMode::Newest => {
@@ -341,6 +398,96 @@ mod tests {
 
     fn no_refs() -> Vec<std::path::PathBuf> {
         Vec::new()
+    }
+
+    fn quality_member(path: &str, size: u64, w: u32, h: u32, dur: Option<u64>) -> GroupMember {
+        GroupMember {
+            path: PathBuf::from(path),
+            size,
+            mtime_secs: None,
+            keep: false,
+            reference: false,
+            media: Some(MediaInfo {
+                width: Some(w),
+                height: Some(h),
+                duration_ms: dur,
+                codec: None,
+            }),
+            similarity: None,
+            content_hash: None,
+            fingerprint_res: None,
+        }
+    }
+
+    #[test]
+    fn best_quality_prefers_highest_resolution_over_size() {
+        // A 4K copy is smaller (better encoding) than the 720p copy: the
+        // sharper file must win even though it is not the biggest.
+        let members = vec![
+            quality_member("/media/low.jpg", 8_000_000, 1280, 720, None),
+            quality_member("/media/high.png", 2_000_000, 3840, 2160, None),
+        ];
+        assert_eq!(choose_keep(&members, KeepMode::BestQuality), 1);
+    }
+
+    #[test]
+    fn best_quality_tie_breaks_by_size_then_path() {
+        // Same resolution: the bigger file (bitrate proxy) wins.
+        let members = vec![
+            quality_member("/media/a.jpg", 100_000, 1920, 1080, None),
+            quality_member("/media/b.jpg", 500_000, 1920, 1080, None),
+        ];
+        assert_eq!(choose_keep(&members, KeepMode::BestQuality), 1);
+        // Same everything: first path wins (deterministic).
+        let members = vec![
+            quality_member("/media/b.jpg", 500_000, 1920, 1080, None),
+            quality_member("/media/a.jpg", 500_000, 1920, 1080, None),
+        ];
+        assert_eq!(choose_keep(&members, KeepMode::BestQuality), 1);
+    }
+
+    #[test]
+    fn best_quality_known_resolution_beats_unknown() {
+        let members = vec![
+            quality_member("/media/huge.jpg", 9_000_000, 0, 0, None),
+            quality_member("/media/small.jpg", 100_000, 640, 480, None),
+        ];
+        assert_eq!(choose_keep(&members, KeepMode::BestQuality), 1);
+    }
+
+    #[test]
+    fn best_quality_prefers_longer_duration() {
+        let members = vec![
+            quality_member("/media/short.mp4", 5_000_000, 1920, 1080, Some(30_000)),
+            quality_member("/media/full.mp4", 5_000_000, 1920, 1080, Some(65_000)),
+        ];
+        assert_eq!(choose_keep(&members, KeepMode::BestQuality), 1);
+    }
+
+    #[test]
+    fn best_quality_falls_back_to_fingerprint_res() {
+        // No ffprobe metadata (e.g. binary missing): fingerprint dimensions
+        // still rank the sharper file first.
+        let mut high = quality_member("/media/high.png", 100_000, 0, 0, None);
+        high.media = None;
+        high.fingerprint_res = Some((3840, 2160));
+        let mut low = quality_member("/media/low.jpg", 900_000, 0, 0, None);
+        low.media = None;
+        low.fingerprint_res = Some((1280, 720));
+        assert_eq!(choose_keep(&[low, high], KeepMode::BestQuality), 1);
+    }
+
+    #[test]
+    fn best_quality_on_exact_group_keeps_first_path() {
+        // Identical bytes => every quality signal ties => first path.
+        let dir = tmpdir("best-exact");
+        let group = fake_group(&dir, &[("z.txt", 10), ("a.txt", 10)]);
+        let groups = assemble_groups(vec![group], KeepMode::BestQuality, &no_refs(), false);
+        assert_eq!(
+            groups[0].members.first().unwrap().path.file_name().unwrap(),
+            "a.txt"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

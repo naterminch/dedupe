@@ -359,6 +359,9 @@ mod tests {
         assert_eq!(v["dirs_skipped"], 1);
         assert_eq!(v["dir_read_errors"], serde_json::json!(["denied"]));
         assert_eq!(v["groups"][0]["members"].as_array().unwrap().len(), 2);
+        // Per-group preview: kind keeps its renamed key, reclaimable is live.
+        assert_eq!(v["groups"][0]["kind"], "other");
+        assert_eq!(v["groups"][0]["reclaimable_bytes"], 100);
     }
 
     #[test]

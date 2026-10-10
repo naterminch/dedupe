@@ -155,6 +155,11 @@ pub(crate) struct DedupeView {
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
     pub(crate) last_trashed: Vec<PathBuf>,
+    /// Armed consolidate destination (two-click flow): the first click
+    /// picks the folder and previews the moves in the status line, the
+    /// second click moves. Disarmed by any keeper/group change, since the
+    /// previewed paths would be stale.
+    pub(crate) consolidate_dest: Option<PathBuf>,
     pub(crate) _subs: Vec<Subscription>,
 }
 
@@ -257,7 +262,7 @@ impl DedupeView {
             similarity_input,
             jobs_input,
             hash_index: Some(saved.hash_index.min(2)),
-            keep_index: Some(saved.keep_index.min(3)),
+            keep_index: Some(saved.keep_index.min(4)),
             exact: saved.exact,
             no_cache: saved.no_cache,
             trash: saved.trash,
@@ -298,6 +303,7 @@ impl DedupeView {
             selected: HashSet::new(),
             last_pick: None,
             last_trashed: Vec::new(),
+            consolidate_dest: None,
             _subs: Vec::new(),
         };
         // Slider — text box (one way; set_value emits no Change event, so
@@ -457,6 +463,8 @@ impl DedupeView {
             keep_smaller: self.keep_index.unwrap_or(0) == 1,
             keep_newest: self.keep_index.unwrap_or(0) == 2,
             keep_oldest: self.keep_index.unwrap_or(0) == 3,
+            keep_best_quality: self.keep_index.unwrap_or(0) == 4,
+            consolidate_dir: None,
             reference_dir: self
                 .folders
                 .iter()
@@ -651,6 +659,8 @@ impl DedupeView {
         // Pristine copy for live re-thresholding; the floor starts at the
         // scan threshold (everything qualifies).
         self.base_groups = self.groups.clone();
+        // Fresh results: disarm any pending consolidate from last scan.
+        self.consolidate_dest = None;
         self.min_sim = self.scan_similarity;
         self.group_limit = GROUP_PAGE;
         // One display ordering for the whole scan (honors the sort toggle).
@@ -801,6 +811,8 @@ impl DedupeView {
         self.sync_keep_to_base();
         // Keeper swap changes which bytes count as reclaimable.
         self.recount();
+        // Keeper change: disarm a pending consolidate (stale paths).
+        self.consolidate_dest = None;
         cx.notify();
     }
 
@@ -811,11 +823,20 @@ impl DedupeView {
             1 => crate::matching::KeepMode::Smallest,
             2 => crate::matching::KeepMode::Newest,
             3 => crate::matching::KeepMode::Oldest,
+            4 => crate::matching::KeepMode::BestQuality,
             _ => crate::matching::KeepMode::First,
         };
         crate::matching::reassign_keepers(&mut self.groups, keep);
         self.reselect_all_dups();
-        let name = ["First found", "Smallest", "Newest", "Oldest"][index.min(3)];
+        // New keepers everywhere: disarm a pending consolidate (stale paths).
+        self.consolidate_dest = None;
+        let name = [
+            "First found",
+            "Smallest",
+            "Newest",
+            "Oldest",
+            "Best quality",
+        ][index.min(4)];
         self.status = format!(
             "Keep mode: {name} applied to {} group(s).",
             self.groups.len()
@@ -1000,6 +1021,8 @@ impl DedupeView {
         for p in &outcome.deleted {
             self.selected.remove(p);
         }
+        // Deleted paths are gone: disarm a pending consolidate.
+        self.consolidate_dest = None;
         let verb = if self.trash {
             "Moved to trash"
         } else {
@@ -1017,6 +1040,95 @@ impl DedupeView {
             outcome.deleted.len(),
             util::human_bytes(outcome.bytes_freed),
             outcome.skipped.len()
+        );
+        cx.notify();
+    }
+
+    /// First click of the two-click consolidate: pick the destination
+    /// folder, then preview the planned keeper moves in the status line.
+    /// The second click (same button) executes via `perform_consolidate`.
+    fn pick_consolidate_dir(&mut self, cx: &mut Context<Self>) {
+        let start = self
+            .folders
+            .last()
+            .map(|f| f.path.clone())
+            .unwrap_or_default();
+        // Same rule as browse(): native dialogs stay off the GPUI thread.
+        cx.spawn(async move |this, _cx| {
+            let mut dlg =
+                rfd::AsyncFileDialog::new().set_title("Choose the consolidate folder");
+            if !start.is_empty() && std::path::Path::new(&start).exists() {
+                dlg = dlg.set_directory(&start);
+            }
+            let picked = dlg.pick_folder().await;
+            let Some(handle) = picked else { return };
+            let dest = handle.path().to_path_buf();
+            this.update(_cx, |view, cx| {
+                let (moves, skipped) = actions::plan_consolidation(&view.groups, &dest);
+                if moves.is_empty() {
+                    view.consolidate_dest = None;
+                    view.status =
+                        "Nothing to consolidate: every keeper is protected or already there."
+                            .to_string();
+                } else {
+                    let bytes: u64 = moves.iter().map(|m| m.target.size).sum();
+                    view.consolidate_dest = Some(dest.clone());
+                    view.status = format!(
+                        "Consolidate {} keeper(s) ({}) into {}? ({} skipped) Press “Move keepers” again to move them.",
+                        moves.len(),
+                        util::human_bytes(bytes),
+                        dest.display(),
+                        skipped.len(),
+                    );
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Second click: move every group's keeper into the armed destination.
+    /// The plan is rebuilt live so retries after partial moves stay
+    /// correct; keepers are re-hashed before moving and member paths plus
+    /// ticks follow moved files.
+    fn perform_consolidate(&mut self, cx: &mut Context<Self>) {
+        let Some(dest) = self.consolidate_dest.clone() else {
+            self.status = "Pick a consolidate folder first.".to_string();
+            cx.notify();
+            return;
+        };
+        let (moves, skipped) = actions::plan_consolidation(&self.groups, &dest);
+        if moves.is_empty() {
+            self.status =
+                "Nothing to consolidate: every keeper is protected or already there.".to_string();
+            self.consolidate_dest = None;
+            cx.notify();
+            return;
+        }
+        let engine = hashing::HashEngine::new(self.last_hash);
+        let targets: Vec<actions::MoveTarget> = moves.iter().map(|m| m.target.clone()).collect();
+        let outcome = actions::consolidate_targets(&targets, &engine);
+        for (from, to) in &outcome.moved {
+            for groups in [&mut self.groups, &mut self.base_groups] {
+                for m in groups.iter_mut().flat_map(|g| g.members.iter_mut()) {
+                    if m.path == *from {
+                        m.path = to.clone();
+                    }
+                }
+            }
+            // Ticks follow moved files.
+            if self.selected.remove(from) {
+                self.selected.insert(to.clone());
+            }
+        }
+        self.consolidate_dest = None;
+        self.status = format!(
+            "Consolidated {} keeper(s) ({}) into {}; {} skipped.",
+            outcome.moved.len(),
+            util::human_bytes(outcome.bytes_moved),
+            dest.display(),
+            outcome.skipped.len() + skipped.len(),
         );
         cx.notify();
     }
@@ -1368,7 +1480,7 @@ impl DedupeView {
                                 .child(self.sidebar_section("DEFAULT KEEP (NEW SCANS)", cx))
                                 .child(
                                     RadioGroup::new("default-keep")
-                                        .children(["First", "Smallest", "Newest", "Oldest"])
+                                        .children(["First", "Smallest", "Newest", "Oldest", "Best quality"])
                                         .selected_index(self.keep_index)
                                         .on_change(cx.listener(|this, value, _, cx| {
                                             this.apply_keep_mode(*value, cx);
@@ -1810,10 +1922,11 @@ impl DedupeView {
     }
 
     /// Global keep mode as a segmented control (First / Smallest / Newest /
-    /// Oldest); reassigns keepers on the current results, no rescan.
+    /// Oldest / Best quality); reassigns keepers on the current results, no
+    /// rescan.
     fn render_keep_segmented(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        const MODES: [&str; 4] = ["First", "Smallest", "Newest", "Oldest"];
-        let active = self.keep_index.unwrap_or(0).min(3);
+        const MODES: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best quality"];
+        let active = self.keep_index.unwrap_or(0).min(4);
         let off = self.scanning || self.groups.is_empty();
         let mut group = ButtonGroup::new("keep-mode").compact().disabled(off);
         for (i, label) in MODES.iter().enumerate() {
@@ -1907,13 +2020,18 @@ impl DedupeView {
     }
     fn render_delete_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let targets = self.pending_targets();
+        let pending_bytes: u64 = targets.iter().map(|t| t.size).sum();
         let can_undo = !self.scanning && !self.last_trashed.is_empty();
         h_flex()
             .gap_2()
             .items_center()
             .child(
                 Button::new("delete")
-                    .label(format!("Delete selected ({})", targets.len()))
+                    .label(format!(
+                        "Delete selected ({}, {})",
+                        targets.len(),
+                        util::human_bytes(pending_bytes)
+                    ))
                     .disabled(self.scanning || self.groups.is_empty() || targets.is_empty())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_delete_confirm(window, cx);
@@ -1925,6 +2043,26 @@ impl DedupeView {
                     .disabled(!can_undo)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.undo_delete(cx);
+                    })),
+            )
+            .child(
+                Button::new("consolidate")
+                    .label(match &self.consolidate_dest {
+                        Some(dest) => format!(
+                            "Move keepers to {}",
+                            dest.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| dest.display().to_string())
+                        ),
+                        None => "Consolidate…".to_string(),
+                    })
+                    .disabled(self.scanning || self.groups.is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.consolidate_dest.is_some() {
+                            this.perform_consolidate(cx);
+                        } else {
+                            this.pick_consolidate_dir(cx);
+                        }
                     })),
             )
             .into_any_element()

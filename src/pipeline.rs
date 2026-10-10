@@ -69,9 +69,16 @@ pub fn run_scan(
     // global pool, so sizing it here throttles every stage at once. The
     // default leaves one core free for the rest of the system.
     crate::util::init_thread_pool(cli.jobs);
-    let keep_modes = [cli.keep_smaller, cli.keep_newest, cli.keep_oldest];
+    let keep_modes = [
+        cli.keep_smaller,
+        cli.keep_newest,
+        cli.keep_oldest,
+        cli.keep_best_quality,
+    ];
     if keep_modes.iter().filter(|&&b| b).count() > 1 {
-        anyhow::bail!("--keep-smaller, --keep-newest and --keep-oldest conflict; pick one");
+        anyhow::bail!(
+            "--keep-smaller, --keep-newest, --keep-oldest and --keep-best-quality conflict; pick one"
+        );
     }
     let keep = if cli.keep_smaller {
         matching::KeepMode::Smallest
@@ -79,6 +86,8 @@ pub fn run_scan(
         matching::KeepMode::Newest
     } else if cli.keep_oldest {
         matching::KeepMode::Oldest
+    } else if cli.keep_best_quality {
+        matching::KeepMode::BestQuality
     } else {
         matching::KeepMode::First
     };
@@ -232,6 +241,8 @@ mod tests {
             keep_smaller: false,
             keep_newest: false,
             keep_oldest: false,
+            keep_best_quality: false,
+            consolidate_dir: None,
             reference_dir: vec![],
             trash: false,
             dry_run: false,

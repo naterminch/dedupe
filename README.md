@@ -33,8 +33,9 @@ One binary, no install. Windows, macOS, Linux.
 ### Safe deletion
 
 - Every file re-hashed before removal; changed files are skipped, never deleted.
-- `--trash` recovers via system trash; `--dry-run` only lists; prompts per group (`y/n/a/q`) unless `-y`.
-- `--reference-dir PATH` (repeatable) never deleted and always keeps; keeper is first path by default, or `--keep-smaller` / `--keep-newest` / `--keep-oldest`.
+- `--trash` recovers via system trash; `--dry-run` only lists (per-group subtotals included); prompts per group (`y/n/a/q`) unless `-y`.
+- `--reference-dir PATH` (repeatable) never deleted and always keeps; keeper is first path by default, or `--keep-smaller` / `--keep-newest` / `--keep-oldest` / `--keep-best-quality` (highest resolution, then longest duration, then largest file).
+- `--consolidate-dir DIR` gathers each group's keeper into one folder (flattened, collisions gain a ` (2)` suffix; reference keepers stay put). Every keeper is re-hashed before moving.
 
 ### Scope, reports, cache
 
@@ -51,8 +52,9 @@ dedupe         # desktop app + terminal
 dedupe --gui   # same, explicit
 ```
 
-- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete selected** (trash by default).
-- Per-folder **Ref** protection, **Keep** switch without rescanning, thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
+- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete selected** (trash by default, shows file count + bytes).
+- **Consolidate** gathers every group's keeper into one folder (two clicks: pick folder, confirm).
+- Per-folder **Ref** protection, **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
 
 > GUI builds need VS 2022 C++ workload on Windows ([details](https://gpui-kit.com/docs/installation)).
 
@@ -62,9 +64,10 @@ dedupe --gui   # same, explicit
 dedupe <path>...                                   # scan
 dedupe /media --delete                             # delete (prompts per group)
 dedupe /incoming --reference-dir /backup -Dy --trash  # safe cleanup, no prompts
+dedupe /photos --consolidate-dir /sorted -y          # gather one copy of everything
 ```
 
-Flags: `--types` · `--keep-smaller`/`--keep-newest`/`--keep-oldest` · `--reference-dir` · `--trash` · `--dry-run` · `--exact` · `--similarity` · `--no-cache` · `--jobs` · `-y` · `--json` · `--verbose` · `--quiet`. Full list: `dedupe --help`.
+Flags: `--types` · `--keep-smaller`/`--keep-newest`/`--keep-oldest`/`--keep-best-quality` · `--reference-dir` · `--consolidate-dir` · `--trash` · `--dry-run` · `--exact` · `--similarity` · `--no-cache` · `--jobs` · `-y` · `--json` · `--verbose` · `--quiet`. Full list: `dedupe --help`.
 
 ## Build
 
