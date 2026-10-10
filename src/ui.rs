@@ -2261,12 +2261,7 @@ impl Render for DedupeView {
                         h_flex()
                             .gap_3()
                             .items_center()
-                            .child(
-                                img("icons/logo.png")
-                                    .w(px(22.))
-                                    .h(px(22.))
-                                    .rounded_md(),
-                            )
+                            .child(img("icons/logo.png").w(px(22.)).h(px(22.)).rounded_md())
                             .child(
                                 div()
                                     .text_sm()
