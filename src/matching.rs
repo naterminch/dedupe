@@ -78,25 +78,44 @@ pub enum KeepMode {
 
 /// True when `path` lives under one of the reference (protected) folders.
 /// Both sides are canonicalized once by the caller; comparison is
-/// case-insensitive on Windows where the FS is.
+/// case-insensitive for Windows paths (drive-letter paths, or when running
+/// on Windows) and case-sensitive otherwise. Both `/` and `\` separators
+/// are honored on any host so Windows-style paths compare correctly even
+/// on Linux CI (tests use `C:\...` literals everywhere).
 pub fn is_under_ref(path: &Path, reference_dirs: &[PathBuf]) -> bool {
     if reference_dirs.is_empty() {
         return false;
     }
-    #[cfg(windows)]
-    {
-        let lower = path.to_string_lossy().to_ascii_lowercase();
-        reference_dirs.iter().any(|r| {
-            let rl = r.to_string_lossy().to_ascii_lowercase();
-            lower == rl
-                || lower.starts_with(&format!("{rl}\\"))
-                || lower.starts_with(&format!("{rl}/"))
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        reference_dirs.iter().any(|r| path.starts_with(r))
-    }
+    reference_dirs.iter().any(|r| {
+        if path.starts_with(r) {
+            return true;
+        }
+        let mut p = path.to_string_lossy().replace('\\', "/");
+        let mut q = r.to_string_lossy().replace('\\', "/");
+        while p.len() > 1 && p.ends_with('/') {
+            p.pop();
+        }
+        while q.len() > 1 && q.ends_with('/') {
+            q.pop();
+        }
+        let windows_path = cfg!(windows) || is_windows_drive_path(&p) || is_windows_drive_path(&q);
+        if windows_path {
+            p = p.to_ascii_lowercase();
+            q = q.to_ascii_lowercase();
+        }
+        if p == q {
+            return true;
+        }
+        if q == "/" {
+            return p.starts_with('/');
+        }
+        p.starts_with(&format!("{q}/"))
+    })
+}
+
+fn is_windows_drive_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
 }
 
 /// Canonicalize reference dirs once per run (best-effort; unresolvable

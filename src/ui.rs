@@ -1030,36 +1030,66 @@ impl DedupeView {
             cx.notify();
             return;
         }
-        let wanted: HashSet<PathBuf> = self.last_trashed.iter().cloned().collect();
-        let items = match trash::os_limited::list() {
-            Ok(items) => items,
-            Err(e) => {
-                self.status = format!("Could not read the trash: {e}");
+        // `trash::os_limited` (list/restore) only exists on Windows and
+        // Freedesktop-trash Unix — there is no public macOS API for it, so
+        // the module is cfg-gated out there. Mirror the crate's gate here.
+        #[cfg(any(
+            target_os = "windows",
+            all(
+                unix,
+                not(target_os = "macos"),
+                not(target_os = "ios"),
+                not(target_os = "android")
+            )
+        ))]
+        {
+            let wanted: HashSet<PathBuf> = self.last_trashed.iter().cloned().collect();
+            let items = match trash::os_limited::list() {
+                Ok(items) => items,
+                Err(e) => {
+                    self.status = format!("Could not read the trash: {e}");
+                    cx.notify();
+                    return;
+                }
+            };
+            let mine: Vec<_> = items
+                .into_iter()
+                .filter(|it| wanted.contains(&it.original_path()))
+                .collect();
+            if mine.is_empty() {
+                self.status = "Nothing to restore — the trash was already emptied.".to_string();
+                self.last_trashed.clear();
                 cx.notify();
                 return;
             }
-        };
-        let mine: Vec<_> = items
-            .into_iter()
-            .filter(|it| wanted.contains(&it.original_path()))
-            .collect();
-        if mine.is_empty() {
-            self.status = "Nothing to restore — the trash was already emptied.".to_string();
-            self.last_trashed.clear();
+            let n = mine.len();
+            match trash::os_limited::restore_all(mine) {
+                Ok(()) => {
+                    self.status = format!("Restored {n} file(s). Press Scan to refresh.");
+                    self.last_trashed.clear();
+                }
+                Err(e) => {
+                    self.status = format!("Restore failed: {e}");
+                }
+            }
             cx.notify();
-            return;
         }
-        let n = mine.len();
-        match trash::os_limited::restore_all(mine) {
-            Ok(()) => {
-                self.status = format!("Restored {n} file(s). Press Scan to refresh.");
-                self.last_trashed.clear();
-            }
-            Err(e) => {
-                self.status = format!("Restore failed: {e}");
-            }
+        #[cfg(not(any(
+            target_os = "windows",
+            all(
+                unix,
+                not(target_os = "macos"),
+                not(target_os = "ios"),
+                not(target_os = "android")
+            )
+        )))]
+        {
+            self.last_trashed.clear();
+            self.status =
+                "Undo is not supported on this platform (trash restore needs Windows/Linux)."
+                    .to_string();
+            cx.notify();
         }
-        cx.notify();
     }
 
     /// Included-folders list with per-row Ref toggles (Krokiet pattern).
