@@ -120,10 +120,16 @@ pub struct Cli {
     )]
     pub similarity: f64,
 
-    /// Do not read or write the perceptual fingerprint cache (stored at
-    /// ~/.dedupe/fingerprints.bin). Fingerprints are recomputed from scratch.
+    /// Do not read or write the persistent caches (`hashes.bin` +
+    /// `fingerprints.bin` under `~/.dedupe/`). Hashes and fingerprints are
+    /// recomputed from scratch.
     #[arg(long)]
     pub no_cache: bool,
+
+    /// Clear the persistent caches (`hashes.bin` + `fingerprints.bin`) before
+    /// doing anything else, then continue (scan if paths are given).
+    #[arg(long)]
+    pub clear_cache: bool,
 
     /// Minimum file size to consider (e.g. 100KB, 1MB, 1GiB). 0 disables.
     #[arg(long, value_name = "SIZE")]
@@ -222,6 +228,15 @@ mod tests {
     fn short_flags_and_gui_flag_parse() {
         let cli = Cli::try_parse_from(["dedupe", "-D", "-y", "--gui"]).unwrap();
         assert!(cli.delete && cli.yes && cli.gui);
+    }
+
+    #[test]
+    fn clear_cache_flag_defaults_off_and_parses() {
+        let cli = Cli::try_parse_from(["dedupe", "."]).unwrap();
+        assert!(!cli.clear_cache && !cli.no_cache);
+        let cli = Cli::try_parse_from(["dedupe", "--clear-cache", "."]).unwrap();
+        assert!(cli.clear_cache);
+        assert_eq!(cli.paths, vec![".".to_string()]);
     }
 
     #[test]

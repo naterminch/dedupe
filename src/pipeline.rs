@@ -252,6 +252,7 @@ mod tests {
             exact: true,
             similarity: 97.0,
             no_cache: true,
+            clear_cache: false,
             min_size: None,
             max_size: None,
             exclude_dir: vec![],

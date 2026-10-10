@@ -334,6 +334,49 @@ pub fn default_hash_cache_path() -> PathBuf {
     PathBuf::from("hashes.bin")
 }
 
+/// Both persistent cache files (content hashes + perceptual fingerprints).
+/// Paths honor the `DEDUPE_CACHE` override via the `default_*_path` helpers.
+pub fn cache_files() -> Vec<PathBuf> {
+    vec![default_hash_cache_path(), default_cache_path()]
+}
+
+/// Total on-disk size of the persistent caches: `(files present, bytes)`.
+/// Missing files count as zero — never an error, so the GUI can call this
+/// on every render without worrying about a missing home dir.
+pub fn cache_summary() -> (usize, u64) {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for path in cache_files() {
+        if let Ok(meta) = fs::metadata(&path) {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    (files, bytes)
+}
+
+/// Delete both persistent cache files (best-effort, never fails the caller).
+/// Returns `(files removed, bytes freed)` measured before removal, so callers
+/// can report what was cleared. Stale `.tmp` leftovers from an interrupted
+/// save are removed too but don't count toward the total.
+pub fn clear_caches() -> (usize, u64) {
+    let mut files = 0usize;
+    let mut bytes = 0u64;
+    for path in cache_files() {
+        if let Ok(meta) = fs::metadata(&path) {
+            bytes += meta.len();
+            if fs::remove_file(&path).is_ok() {
+                files += 1;
+            } else {
+                bytes -= meta.len();
+            }
+        }
+        // Harmless leftover from a crashed atomic save; ignore errors.
+        let _ = fs::remove_file(path.with_extension("bin.tmp"));
+    }
+    (files, bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -480,5 +523,59 @@ mod tests {
         c.save().unwrap();
         assert!(!path.exists());
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cache_summary_counts_bytes_and_clear_removes_both_files() {
+        // Point both default locations at a temp dir via DEDUPE_CACHE.
+        let dir = std::env::temp_dir().join(format!("dedupe-cache-clear-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let override_path = dir.join("fingerprints.bin");
+        unsafe {
+            std::env::set_var("DEDUPE_CACHE", &override_path);
+        }
+
+        // Empty: nothing present.
+        assert_eq!(cache_summary(), (0, 0));
+        assert_eq!(clear_caches(), (0, 0));
+
+        // Write one entry to each cache through the real save path.
+        let mut fp = FingerprintCache::load();
+        fp.insert_write(CacheWrite {
+            path: PathBuf::from("a.png"),
+            size: 10,
+            mtime_secs: 1,
+            fp: CacheFp::Image {
+                w: 17,
+                h: 16,
+                hash: [7, 0, 0, 0],
+            },
+        });
+        fp.save().unwrap();
+        let mut hc = HashCache::load();
+        hc.insert(
+            PathBuf::from("b.bin"),
+            HASH_CACHE_MIN_SIZE,
+            Some(2),
+            "blake3".into(),
+            None,
+            Some("full".into()),
+        );
+        hc.save().unwrap();
+
+        let (files, bytes) = cache_summary();
+        assert_eq!(files, 2);
+        assert!(bytes > 0, "caches should occupy bytes");
+
+        let (removed, freed) = clear_caches();
+        assert_eq!(removed, 2);
+        assert_eq!(freed, bytes);
+        assert_eq!(cache_summary(), (0, 0));
+
+        unsafe {
+            std::env::remove_var("DEDUPE_CACHE");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

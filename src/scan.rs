@@ -380,6 +380,7 @@ mod tests {
             exact: false,
             similarity: 97.0,
             no_cache: false,
+            clear_cache: false,
             min_size: None,
             max_size: None,
             exclude_dir: vec![],

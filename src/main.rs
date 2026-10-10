@@ -2,12 +2,28 @@ use anyhow::Result;
 use clap::Parser;
 use console::style;
 use dedupe::pipeline::{self, ScanPhase};
-use dedupe::{cli, report};
+use dedupe::{cache, cli, report};
 
 fn main() {
     let t0 = std::time::Instant::now();
     init_colors();
     let cli = cli::Cli::parse();
+    // Clearing is a side effect, not a scan: handle it before deciding
+    // between GUI and CLI so `dedupe --clear-cache` never opens a window.
+    if cli.clear_cache {
+        let (files, bytes) = cache::clear_caches();
+        if !cli.quiet {
+            eprintln!(
+                "{} Cleared {} cache file(s) ({}).",
+                style("✔").green().bold(),
+                files,
+                dedupe::util::human_bytes(bytes),
+            );
+        }
+        if cli.paths.is_empty() {
+            return;
+        }
+    }
     // GUI mode: explicit --gui, or no scan path given. clap still handles
     // `dedupe --help` / `dedupe --version` (exit 0) before we get here.
     if cli.gui || cli.paths.is_empty() {

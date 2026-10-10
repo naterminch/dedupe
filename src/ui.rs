@@ -20,7 +20,7 @@ use crate::ui_helpers::{
     prefs_size_to_slider, size_slider_to_text, size_text_to_slider,
 };
 use crate::ui_results::{SnapshotGroup, is_grid_preview, render_media_card, render_member};
-use crate::{actions, cli, hashing, media, pipeline, poster, prefs, report, util};
+use crate::{actions, cache, cli, hashing, media, pipeline, poster, prefs, report, util};
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -88,6 +88,7 @@ pub fn run() {
 
 pub(crate) struct DedupeView {
     pub(crate) view: AppView,
+    pub(crate) settings_tab: SettingsTab,
     pub(crate) folder_input: Entity<InputState>,
     pub(crate) folders: Vec<FolderEntry>,
     pub(crate) types_input: Entity<InputState>,
@@ -102,6 +103,7 @@ pub(crate) struct DedupeView {
     pub(crate) keep_index: Option<usize>,
     pub(crate) exact: bool,
     pub(crate) no_cache: bool,
+    pub(crate) cache_msg: String,
     pub(crate) trash: bool,
     pub(crate) sort_biggest: bool,
     pub(crate) remember_folders: bool,
@@ -179,6 +181,14 @@ pub(crate) enum AppView {
     Settings,
 }
 
+/// Active tab inside the Settings page side nav.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsTab {
+    #[default]
+    General,
+    Preferences,
+}
+
 /// Owned report data carried into the async save task.
 struct ReportSnapshot {
     paths: Vec<String>,
@@ -238,6 +248,7 @@ impl DedupeView {
         let max_size_slider = mk_size_slider(prefs_size_to_slider(&saved.max_size, false), cx);
         let mut view = Self {
             view: AppView::Main,
+            settings_tab: SettingsTab::General,
             folder_input,
             // The remember toggle gates restore: off starts every launch
             // with an empty folder list (session list itself is untouched).
@@ -265,6 +276,7 @@ impl DedupeView {
             keep_index: Some(saved.keep_index.min(4)),
             exact: saved.exact,
             no_cache: saved.no_cache,
+            cache_msg: String::new(),
             trash: saved.trash,
             sort_biggest: saved.sort_biggest,
             remember_folders: saved.remember_folders,
@@ -483,6 +495,7 @@ impl DedupeView {
             exact: self.exact,
             similarity,
             no_cache: self.no_cache,
+            clear_cache: false,
             min_size: opt(&self.min_size_input),
             max_size: opt(&self.max_size_input),
             exclude_dir: split_multi(&val(&self.exclude_dir_input)),
@@ -1376,145 +1389,236 @@ impl DedupeView {
             )
     }
 
-    /// Settings page: global defaults (matching + system). Per-run scope
-    /// lives in the side nav. Everything auto-saves to `gui-prefs.json`.
+    /// Settings page: side nav (General | Preferences) + content pane,
+    /// mirroring the main page layout. General holds everyday switches
+    /// (trash, remembered folders, cache); Preferences holds matching and
+    /// scan-engine tuning. Everything auto-saves to `gui-prefs.json`.
+    /// (The top bar ← Back button and Escape leave Settings.)
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let section_title = |label: &'static str, cx: &mut Context<Self>| {
-            div()
-                .text_sm()
-                .font_weight(FontWeight::BOLD)
-                .text_color(cx.theme().foreground)
-                .child(label)
-        };
-        div()
-            .flex_1()
-            .h_full()
-            .w_full()
-            .overflow_y_scrollbar()
+        h_flex()
+            .size_full()
+            .overflow_hidden()
             .child(
                 v_flex()
-                    .gap_4()
-                    .p_6()
-                    .max_w(px(640.))
+                    .w(px(200.))
+                    .h_full()
+                    .border_r_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().background)
+                    .p_4()
+                    .gap_2()
                     .child(
-                        h_flex()
-                            .gap_2()
-                            .items_center()
+                        Button::new("settings-tab-general")
+                            .label("General")
+                            .w_full()
+                            .selected(self.settings_tab == SettingsTab::General)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings_tab = SettingsTab::General;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("settings-tab-preferences")
+                            .label("Preferences")
+                            .w_full()
+                            .selected(self.settings_tab == SettingsTab::Preferences)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.settings_tab = SettingsTab::Preferences;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .w_full()
+                    .overflow_y_scrollbar()
+                    .child(match self.settings_tab {
+                        SettingsTab::General => self.render_settings_general(cx).into_any_element(),
+                        SettingsTab::Preferences => {
+                            self.render_settings_preferences(cx).into_any_element()
+                        }
+                    }),
+            )
+    }
+
+    /// General tab: everyday switches (trash, remembered folders, cache).
+    fn render_settings_general(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_4()
+            .p_6()
+            .max_w(px(640.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.settings_section("GENERAL", cx))
+                    .child(
+                        v_flex()
+                            .gap_3()
                             .child(
-                                Button::new("settings-back")
-                                    .label("← Back")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.view = AppView::Main;
+                                Checkbox::new("trash")
+                                    .label("Move to trash (recoverable)")
+                                    .checked(self.trash)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.trash = *value;
+                                        this.save_prefs(cx);
                                         cx.notify();
                                     })),
                             )
-                            .child(section_title("Settings", cx)),
-                    )
+                            .child(
+                                Checkbox::new("remember-folders")
+                                    .label("Remember scan folders between runs")
+                                    .checked(self.remember_folders)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.remember_folders = *value;
+                                        this.save_prefs(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.settings_section("CACHE", cx))
                     .child(
-                        v_flex().gap_2().child(section_title("MATCHING", cx)).child(
-                            v_flex()
-                                .gap_3()
-                                .child(self.sidebar_section("HASH ALGORITHM", cx))
-                                .child(
-                                    RadioGroup::new("hash")
-                                        .children(["blake3", "sha256", "md5"])
-                                        .selected_index(self.hash_index)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.hash_index = Some(*value);
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(hash_caption(self.hash_index)),
-                                )
-                                .child(self.sidebar_field(
-                                    "SIMILARITY % FOR IMAGES / VIDEO",
-                                    Input::new(&self.similarity_input),
-                                    cx,
-                                ))
-                                .child(
-                                    Checkbox::new("exact")
-                                        .label("Exact duplicates only")
-                                        .checked(self.exact)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.exact = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    Checkbox::new("no-cache")
-                                        .label("Skip caches (hash + fingerprint)")
-                                        .checked(self.no_cache)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.no_cache = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                ),
-                        ),
-                    )
+                        v_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child({
+                                        let (files, bytes) = cache::cache_summary();
+                                        format!(
+                                            "hashes.bin + fingerprints.bin under ~/.dedupe/: {} file(s) · {}",
+                                            files,
+                                            util::human_bytes(bytes),
+                                        )
+                                    }),
+                            )
+                            .child(
+                                Button::new("clear-cache")
+                                    .label("Clear caches")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let (files, bytes) = cache::clear_caches();
+                                        this.cache_msg = format!(
+                                            "Cleared {} file(s) ({})",
+                                            files,
+                                            util::human_bytes(bytes),
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(self.cache_msg.clone()),
+                            ),
+                    ),
+            )
+    }
+
+    /// Preferences tab: matching + scan-engine tuning.
+    fn render_settings_preferences(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .gap_4()
+            .p_6()
+            .max_w(px(640.))
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.settings_section("MATCHING", cx))
                     .child(
-                        v_flex().gap_2().child(section_title("SYSTEM", cx)).child(
-                            v_flex()
-                                .gap_3()
-                                .child(self.sidebar_field(
-                                    "WORKER THREADS (0 = AUTO)",
-                                    Input::new(&self.jobs_input),
-                                    cx,
-                                ))
-                                .child(
-                                    Checkbox::new("trash")
-                                        .label("Move to trash (recoverable)")
-                                        .checked(self.trash)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.trash = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(self.sidebar_section("DEFAULT KEEP (NEW SCANS)", cx))
-                                .child(
-                                    RadioGroup::new("default-keep")
-                                        .children(["First", "Smallest", "Newest", "Oldest", "Best quality"])
-                                        .selected_index(self.keep_index)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.apply_keep_mode(*value, cx);
-                                        })),
-                                )
-                                .child(
-                                    Checkbox::new("default-sort-biggest")
-                                        .label("Sort biggest reclaim first")
-                                        .checked(self.sort_biggest)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.sort_biggest = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    Checkbox::new("remember-folders")
-                                        .label("Remember scan folders between runs")
-                                        .checked(self.remember_folders)
-                                        .on_change(cx.listener(|this, value, _, cx| {
-                                            this.remember_folders = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(
-                                            "Per-scan scope (folders, types, sizes) lives in the side nav. Theme lives in the top bar. All settings save automatically.",
-                                        ),
-                                ),
-                        ),
+                        v_flex()
+                            .gap_3()
+                            .child(self.sidebar_section("HASH ALGORITHM", cx))
+                            .child(
+                                RadioGroup::new("hash")
+                                    .children(["blake3", "sha256", "md5"])
+                                    .selected_index(self.hash_index)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.hash_index = Some(*value);
+                                        this.save_prefs(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(hash_caption(self.hash_index)),
+                            )
+                            .child(self.sidebar_field(
+                                "SIMILARITY % FOR IMAGES / VIDEO",
+                                Input::new(&self.similarity_input),
+                                cx,
+                            ))
+                            .child(
+                                Checkbox::new("exact")
+                                    .label("Exact duplicates only")
+                                    .checked(self.exact)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.exact = *value;
+                                        this.save_prefs(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Checkbox::new("no-cache")
+                                    .label("Skip caches (hash + fingerprint)")
+                                    .checked(self.no_cache)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.no_cache = *value;
+                                        this.save_prefs(cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(self.settings_section("SYSTEM", cx))
+                    .child(
+                        v_flex()
+                            .gap_3()
+                            .child(self.sidebar_field(
+                                "WORKER THREADS (0 = AUTO)",
+                                Input::new(&self.jobs_input),
+                                cx,
+                            ))
+                            .child(self.sidebar_section("DEFAULT KEEP (NEW SCANS)", cx))
+                            .child(
+                                RadioGroup::new("default-keep")
+                                    .children([
+                                        "First", "Smallest", "Newest", "Oldest", "Best quality",
+                                    ])
+                                    .selected_index(self.keep_index)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.apply_keep_mode(*value, cx);
+                                    })),
+                            )
+                            .child(
+                                Checkbox::new("default-sort-biggest")
+                                    .label("Sort biggest reclaim first")
+                                    .checked(self.sort_biggest)
+                                    .on_change(cx.listener(|this, value, _, cx| {
+                                        this.sort_biggest = *value;
+                                        this.save_prefs(cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(
+                                        "Per-scan scope (folders, types, sizes) lives in the side nav. Theme lives in the top bar. All settings save automatically.",
+                                    ),
+                            ),
                     ),
             )
     }
@@ -1588,6 +1692,14 @@ impl DedupeView {
         div()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
+            .child(label)
+    }
+
+    fn settings_section(&self, label: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .text_sm()
+            .font_weight(FontWeight::BOLD)
+            .text_color(cx.theme().foreground)
             .child(label)
     }
 

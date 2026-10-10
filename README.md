@@ -7,7 +7,7 @@ Finds duplicate files — exact copies and similar-looking photos/videos.
 - **Exact duplicates** — same bytes. Copies, renames, backups.
 - **Similar duplicates** (on by default) — same picture, different format (`.png` vs `.jpg`, `.mp4` vs `.mov`). Disable with `--exact`.
 
-One binary, no install. Windows, macOS, Linux.
+No install. Windows, macOS, Linux.
 
 ## Screenshots
 
@@ -21,27 +21,27 @@ One binary, no install. Windows, macOS, Linux.
 
 - Size → partial-hash (32 KB head + 32 KB tail) → full-hash; only shared sizes/hashes proceed.
 - Hash via `blake3` (default), `sha256`, or `md5`; files ≤ 64 KB hashed whole.
-- Hard links count once; parallel hashing with `--jobs N` (`0` = auto, all-but-one core).
+- Hard links count once (up to 2000 files per size group); parallel hashing with `--jobs N` (`0` = auto, all-but-one core).
 
 ### Similar media (perceptual, on by default)
 
 - Images: 256-bit dHash over a 17×16 thumbnail; re-encodes match at ≥ 97%.
 - Videos: 8 frames via `ffmpeg` (fast pass ≤ 90 s, seeks above), symmetric sequence match ±2 frames.
 - `--similarity PCT` tunes threshold (default `97`); `--exact` disables the pass.
-- Bucketed by aspect ratio (images) / resolution + duration (videos), so unique files are never decoded; deterministic star clustering, no chained groups.
+- Bucketed by aspect ratio (images) / resolution (videos, duration-checked at match time); deterministic star clustering, no chained groups.
 
 ### Safe deletion
 
 - Every file re-hashed before removal; changed files are skipped, never deleted.
 - `--trash` recovers via system trash; `--dry-run` only lists (per-group subtotals included); prompts per group (`y/n/a/q`) unless `-y`.
-- `--reference-dir PATH` (repeatable) never deleted and always keeps; keeper is first path by default, or `--keep-smaller` / `--keep-newest` / `--keep-oldest` / `--keep-best-quality` (highest resolution, then longest duration, then largest file).
+- `--reference-dir PATH` (repeatable) never deleted and always keeps; keeper is smallest path by default, or `--keep-smaller` / `--keep-newest` / `--keep-oldest` / `--keep-best-quality` (highest resolution, then longest duration, then largest file).
 - `--consolidate-dir DIR` gathers each group's keeper into one folder (flattened, collisions gain a ` (2)` suffix; reference keepers stay put). Every keeper is re-hashed before moving.
 
 ### Scope, reports, cache
 
 - Scan files/dirs; filter with `--types`, `--min-size`/`--max-size`, `--max-depth`, `--exclude-dir`/`--exclude-path`.
 - Human report (`✓ KEEP` / `✗ DUP` / `◈ REF`) or `--json`; `--verbose` adds codec metadata, `--quiet` silences progress.
-- Caches in `~/.dedupe/` (`hashes.bin` ≥ 256 KB files, `fingerprints.bin`), keyed by size+mtime; `--no-cache` bypasses.
+- Caches in `~/.dedupe/` (`hashes.bin` ≥ 256 KB files, `fingerprints.bin`), keyed by size+mtime; `--no-cache` bypasses, `--clear-cache` wipes them (Settings page in the GUI too).
 - Optional `ffprobe`/`ffmpeg` add resolution/duration/codec and video comparison; everything else works without them.
 
 ### GUI
@@ -67,7 +67,7 @@ dedupe /incoming --reference-dir /backup -Dy --trash  # safe cleanup, no prompts
 dedupe /photos --consolidate-dir /sorted -y          # gather one copy of everything
 ```
 
-Flags: `--types` · `--keep-smaller`/`--keep-newest`/`--keep-oldest`/`--keep-best-quality` · `--reference-dir` · `--consolidate-dir` · `--trash` · `--dry-run` · `--exact` · `--similarity` · `--no-cache` · `--jobs` · `-y` · `--json` · `--verbose` · `--quiet`. Full list: `dedupe --help`.
+Flags: `--types` · `--keep-smaller`/`--keep-newest`/`--keep-oldest`/`--keep-best-quality` · `--reference-dir` · `--consolidate-dir` · `--trash` · `--dry-run` · `--exact` · `--similarity` · `--no-cache` · `--clear-cache` · `--jobs` · `-y` · `--json` · `--verbose` · `--quiet`. Full list: `dedupe --help`.
 
 ## Build
 
