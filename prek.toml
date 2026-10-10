@@ -1,0 +1,59 @@
+# prek config — fast git hooks (https://prek.j178.dev/).
+#
+# Install prek (https://prek.j178.dev/installation/), then:
+#   prek install          # run these checks automatically on `git commit`
+#   prek run --all-files  # run these checks on demand / in CI
+
+[[repos]]
+repo = "builtin"
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+
+[[repos.hooks]]
+id = "check-added-large-files"
+
+[[repos.hooks]]
+id = "detect-private-key"
+
+# Cross-platform project (Windows/macOS/Linux binaries) — catch names
+# that break on case-insensitive filesystems or on Windows.
+[[repos.hooks]]
+id = "check-case-conflict"
+
+[[repos.hooks]]
+id = "check-illegal-windows-names"
+
+[[repos.hooks]]
+id = "check-toml"
+
+[[repos.hooks]]
+id = "check-yaml"
+
+[[repos]]
+repo = "local"
+
+# Mirrors CI: `cargo fmt --check` / `cargo clippy --all-targets --locked -- -D warnings`.
+# pass_filenames = false: hook runs once over the workspace (if any .rs
+# file matched), Cargo decides which files to check.
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+language = "system"
+entry = "cargo fmt --all -- --check"
+types = ["rust"]
+pass_filenames = false
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy"
+language = "system"
+entry = "cargo clippy --all-targets --locked -- -D warnings"
+types = ["rust"]
+pass_filenames = false

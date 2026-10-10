@@ -94,6 +94,17 @@ cargo test
 cargo clippy --all-targets
 ```
 
+## Git hooks
+
+Pre-commit checks run via [prek](https://prek.j178.dev/) (fast `pre-commit`
+alternative): `cargo fmt`, `cargo clippy`, plus whitespace/file hygiene —
+same checks as CI (`prek.toml`).
+
+```sh
+prek install            # run checks automatically on `git commit`
+prek run --all-files    # run all checks on demand
+```
+
 ## License
 
 MIT
