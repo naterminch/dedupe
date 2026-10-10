@@ -218,7 +218,8 @@ mod tests {
     }
 
     #[test]
-    fn scan_filters_by_type_and_size() {        let dir = tmpdir("filters");
+    fn scan_filters_by_type_and_size() {
+        let dir = tmpdir("filters");
         fs::write(dir.join("a.jpg"), vec![0u8; 100]).unwrap();
         fs::write(dir.join("b.png"), vec![0u8; 100]).unwrap();
         fs::write(dir.join("c.txt"), vec![0u8; 100]).unwrap();

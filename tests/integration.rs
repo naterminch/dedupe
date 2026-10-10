@@ -485,7 +485,8 @@ fn dry_run_deletes_nothing() {
 }
 
 #[test]
-fn keep_newest_prefers_recently_modified() {    use std::time::{Duration, SystemTime};
+fn keep_newest_prefers_recently_modified() {
+    use std::time::{Duration, SystemTime};
     let dir = tmpdir("keepnew");
     fs::write(dir.join("old.txt"), b"payload").unwrap();
     fs::write(dir.join("new.txt"), b"payload").unwrap();
@@ -552,19 +553,23 @@ fn min_and_max_size_bound_the_scan() {
     let (_, stdout) = run(&["--json", "--min-size", "100KB", dir.to_str().unwrap()]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(parsed["duplicate_groups"], 1);
-    assert!(parsed["groups"][0]["members"][0]["path"]
-        .as_str()
-        .unwrap()
-        .ends_with(".bin"));
+    assert!(
+        parsed["groups"][0]["members"][0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".bin")
+    );
 
     // max-size hides the big pair, keeps the tiny one.
     let (_, stdout) = run(&["--json", "--max-size", "1KB", dir.to_str().unwrap()]);
     let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert_eq!(parsed["duplicate_groups"], 1);
-    assert!(parsed["groups"][0]["members"][0]["path"]
-        .as_str()
-        .unwrap()
-        .ends_with(".txt"));
+    assert!(
+        parsed["groups"][0]["members"][0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".txt")
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }

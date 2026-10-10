@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 /// A file inside a duplicate group, with its keep decision and media metadata.
 #[derive(Debug, Clone, Serialize)]
-pub struct GroupMember {    pub path: PathBuf,
+pub struct GroupMember {
+    pub path: PathBuf,
     pub size: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mtime_secs: Option<i64>,

@@ -270,10 +270,7 @@ mod tests {
     fn phase_labels_cover_every_phase() {
         assert_eq!(phase_label(ScanPhase::Scanning), "Scanning folders…");
         assert_eq!(phase_label(ScanPhase::Hashing), "Hashing files…");
-        assert_eq!(
-            phase_label(ScanPhase::ComparingMedia),
-            "Comparing media…"
-        );
+        assert_eq!(phase_label(ScanPhase::ComparingMedia), "Comparing media…");
         assert_eq!(phase_label(ScanPhase::Finishing), "Building report…");
     }
 

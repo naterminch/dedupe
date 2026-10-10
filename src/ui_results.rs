@@ -13,9 +13,9 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{ActiveTheme, IconName, WindowExt};
 use gpui_kit::{
-    Context, FontWeight, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, px,
+    Context, FontWeight, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
+    px,
 };
 use std::path::PathBuf;
 
@@ -88,11 +88,7 @@ impl DedupeView {
                     .and_then(|e| e.to_str())
                     .map(|e| THUMB_EXTS.contains(&e.to_ascii_lowercase().as_str()))
                     .unwrap_or(false);
-                if thumbable {
-                    Thumb::Image
-                } else {
-                    Thumb::None
-                }
+                if thumbable { Thumb::Image } else { Thumb::None }
             }
             media::MediaKind::Video => match self.posters.get(&member.path) {
                 Some(p) => Thumb::Poster(p.clone()),
@@ -266,10 +262,7 @@ pub(crate) fn render_member(
 /// poster/placeholder). Groups where every member qualifies render as a
 /// side-by-side card grid instead of the vertical row list.
 pub(crate) fn is_grid_preview(thumb: &Thumb) -> bool {
-    matches!(
-        thumb,
-        Thumb::Image | Thumb::Poster(_) | Thumb::PendingVideo
-    )
+    matches!(thumb, Thumb::Image | Thumb::Poster(_) | Thumb::PendingVideo)
 }
 
 /// Card/row/modal title: identical for keeper and dups (name, similarity,
@@ -430,8 +423,7 @@ pub(crate) fn render_media_card(
                               window: &mut Window,
                               cx| {
                             if ev.click_count() == 1 {
-                                if let Some(g) =
-                                    this.groups.iter().find(|g| g.index == group_index)
+                                if let Some(g) = this.groups.iter().find(|g| g.index == group_index)
                                 {
                                     this.last_pick = g
                                         .members
@@ -467,8 +459,7 @@ pub(crate) fn render_media_card(
                               window: &mut Window,
                               cx| {
                             if ev.click_count() == 1 {
-                                if let Some(g) =
-                                    this.groups.iter().find(|g| g.index == group_index)
+                                if let Some(g) = this.groups.iter().find(|g| g.index == group_index)
                                 {
                                     this.last_pick = g
                                         .members
@@ -508,8 +499,7 @@ pub(crate) fn render_media_card(
                               window: &mut Window,
                               cx| {
                             if ev.click_count() == 1 {
-                                if let Some(g) =
-                                    this.groups.iter().find(|g| g.index == group_index)
+                                if let Some(g) = this.groups.iter().find(|g| g.index == group_index)
                                 {
                                     this.last_pick = g
                                         .members
@@ -579,23 +569,22 @@ pub(crate) fn render_media_card(
             }
         }
     }
-    card
-        .child(
-            div()
-                .w_full()
-                .text_sm()
-                .truncate()
-                .child(fit_text(&title, 60)),
-        )
-        .child(
-            div()
-                .w_full()
-                .text_xs()
-                .truncate()
-                .text_color(cx.theme().muted_foreground)
-                .child(fit_text(&parent, 80)),
-        )
-        .child(actions)
+    card.child(
+        div()
+            .w_full()
+            .text_sm()
+            .truncate()
+            .child(fit_text(&title, 60)),
+    )
+    .child(
+        div()
+            .w_full()
+            .text_xs()
+            .truncate()
+            .text_color(cx.theme().muted_foreground)
+            .child(fit_text(&parent, 80)),
+    )
+    .child(actions)
 }
 
 impl DedupeView {
@@ -613,11 +602,7 @@ impl DedupeView {
             return;
         };
         // Owned snapshots: the dialog closure must be 'static.
-        let items: Vec<(
-            crate::matching::GroupMember,
-            Thumb,
-            Vec<PathBuf>,
-        )> = g
+        let items: Vec<(crate::matching::GroupMember, Thumb, Vec<PathBuf>)> = g
             .members
             .iter()
             .map(|m| {
@@ -737,21 +722,19 @@ impl DedupeView {
                         } else {
                             let keep_path = member.path.clone();
                             let reopen = gallery_view.clone();
-                            Button::new(SharedString::from(format!(
-                                "gallery-keep-{gi}-{mi}"
-                            )))
-                            .label("Keep this one")
-                            .on_click(move |_, window, cx| {
-                                reopen.update(cx, |v, cx| {
-                                    v.set_keeper(gi, &keep_path, cx);
-                                });
-                                window.close_dialog(cx);
-                                let again = reopen.clone();
-                                again.update(cx, |v, cx| {
-                                    v.open_gallery(gi, window, cx);
-                                });
-                            })
-                            .into_any_element()
+                            Button::new(SharedString::from(format!("gallery-keep-{gi}-{mi}")))
+                                .label("Keep this one")
+                                .on_click(move |_, window, cx| {
+                                    reopen.update(cx, |v, cx| {
+                                        v.set_keeper(gi, &keep_path, cx);
+                                    });
+                                    window.close_dialog(cx);
+                                    let again = reopen.clone();
+                                    again.update(cx, |v, cx| {
+                                        v.open_gallery(gi, window, cx);
+                                    });
+                                })
+                                .into_any_element()
                         }),
                 );
                 stack = stack.child(block);
@@ -773,11 +756,11 @@ impl DedupeView {
                 .child(body)
                 .footer(
                     h_flex().gap_2().justify_end().child(
-                        Button::new("gallery-close").label("Close").on_click(
-                            |_, window, cx| {
+                        Button::new("gallery-close")
+                            .label("Close")
+                            .on_click(|_, window, cx| {
                                 window.close_dialog(cx);
-                            },
-                        ),
+                            }),
                     ),
                 )
         });

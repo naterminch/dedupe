@@ -873,23 +873,14 @@ mod tests {
                 gray[y * FRAME_W + x] = ((FRAME_W - 1 - x) * 10) as u8;
             }
         }
-        assert_eq!(
-            dhash_gray(FRAME_W, FRAME_H, &gray),
-            [u64::MAX; 4]
-        );
+        assert_eq!(dhash_gray(FRAME_W, FRAME_H, &gray), [u64::MAX; 4]);
     }
 
     #[test]
     fn similarity_is_bit_fraction() {
         assert_eq!(hash_similarity(&[0; 4], &[0; 4]), 1.0);
-        assert_eq!(
-            hash_similarity(&[0; 4], &[1, 0, 0, 0]),
-            255.0 / 256.0
-        );
-        assert_eq!(
-            hash_similarity(&[0; 4], &[u64::MAX; 4]),
-            0.0
-        );
+        assert_eq!(hash_similarity(&[0; 4], &[1, 0, 0, 0]), 255.0 / 256.0);
+        assert_eq!(hash_similarity(&[0; 4], &[u64::MAX; 4]), 0.0);
     }
 
     #[test]

@@ -130,10 +130,7 @@ mod tests {
     fn cache_dir_lives_under_the_temp_dir() {
         let dir = cache_dir();
         assert_eq!(dir.parent().unwrap(), std::env::temp_dir());
-        assert_eq!(
-            dir.file_name().unwrap().to_string_lossy(),
-            "dedupe-posters"
-        );
+        assert_eq!(dir.file_name().unwrap().to_string_lossy(), "dedupe-posters");
     }
 
     #[test]

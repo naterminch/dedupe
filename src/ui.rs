@@ -15,12 +15,12 @@
 //! GPUI thread, deletions honor the OS trash, and theme mode persists to
 //! `gui-prefs.json` and is restored before first paint.
 
-use crate::{actions, cli, hashing, media, pipeline, poster, prefs, report, util};
 use crate::ui_helpers::{
     NO_LIMIT_LABEL, bar_pos, fit_text, hash_caption, is_no_limit, parse_size_limit,
     prefs_size_to_slider, size_slider_to_text, size_text_to_slider,
 };
 use crate::ui_results::{SnapshotGroup, is_grid_preview, render_media_card, render_member};
+use crate::{actions, cli, hashing, media, pipeline, poster, prefs, report, util};
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
@@ -229,10 +229,8 @@ impl DedupeView {
                     .default_value(default)
             })
         };
-        let min_size_slider =
-            mk_size_slider(prefs_size_to_slider(&saved.min_size, true), cx);
-        let max_size_slider =
-            mk_size_slider(prefs_size_to_slider(&saved.max_size, false), cx);
+        let min_size_slider = mk_size_slider(prefs_size_to_slider(&saved.min_size, true), cx);
+        let max_size_slider = mk_size_slider(prefs_size_to_slider(&saved.max_size, false), cx);
         let mut view = Self {
             view: AppView::Main,
             folder_input,
@@ -426,9 +424,9 @@ impl DedupeView {
         let jobs: usize = if jobs_raw.is_empty() {
             0
         } else {
-            jobs_raw.parse().map_err(|_| {
-                "Worker threads must be a whole number (0 = auto).".to_string()
-            })?
+            jobs_raw
+                .parse()
+                .map_err(|_| "Worker threads must be a whole number (0 = auto).".to_string())?
         };
         let max_depth_raw = val(&self.max_depth_input).trim().to_string();
         let max_depth: Option<usize> = if max_depth_raw.is_empty() {
@@ -880,9 +878,8 @@ impl DedupeView {
                     .enumerate()
                     .map(|(i, m)| (m.path.clone(), i))
                     .collect();
-                base.members.sort_by_key(|m| {
-                    order.get(&m.path).copied().unwrap_or(usize::MAX)
-                });
+                base.members
+                    .sort_by_key(|m| order.get(&m.path).copied().unwrap_or(usize::MAX));
             }
         }
     }
@@ -1494,7 +1491,10 @@ impl DedupeView {
                     .font_weight(FontWeight::BOLD)
                     .child("Find duplicate files in 3 steps"),
             )
-            .child(step("1.", "Add a folder on the left (type it and Add, or Browse…)."))
+            .child(step(
+                "1.",
+                "Add a folder on the left (type it and Add, or Browse…).",
+            ))
             .child(step("2.", "Press “Scan for duplicates”."))
             .child(step(
                 "3.",
@@ -1793,13 +1793,11 @@ impl DedupeView {
                     .selected(i == active),
             );
         }
-        group.on_click(cx.listener(
-            move |this, clicks: &Vec<usize>, _, cx| {
-                if let Some(&i) = clicks.first() {
-                    this.apply_keep_mode(i, cx);
-                }
-            },
-        ))
+        group.on_click(cx.listener(move |this, clicks: &Vec<usize>, _, cx| {
+            if let Some(&i) = clicks.first() {
+                this.apply_keep_mode(i, cx);
+            }
+        }))
     }
 
     /// Toggle: default discovery order vs biggest-reclaimable-first.
@@ -1943,11 +1941,7 @@ impl DedupeView {
                     total += 1;
                     group_bytes += m.size;
                     if rows.len() < CONFIRM_ROWS {
-                        rows.push((
-                            m.path.display().to_string(),
-                            m.size,
-                            m.path.clone(),
-                        ));
+                        rows.push((m.path.display().to_string(), m.size, m.path.clone()));
                     }
                 }
             }
@@ -2116,13 +2110,9 @@ impl DedupeView {
             // a side-by-side card (left card / right card, info under each)
             // instead of big-preview + duplicate rows. Keeper cards get a
             // highlight border; clicking a preview promotes it to keeper.
-            let thumbs: Vec<crate::ui_results::Thumb> = snapshot
-                .members
-                .iter()
-                .map(|m| self.thumb_for(m))
-                .collect();
-            let grid = snapshot.members.len() >= 2
-                && thumbs.iter().all(is_grid_preview);
+            let thumbs: Vec<crate::ui_results::Thumb> =
+                snapshot.members.iter().map(|m| self.thumb_for(m)).collect();
+            let grid = snapshot.members.len() >= 2 && thumbs.iter().all(is_grid_preview);
             if grid {
                 for chunk in snapshot.members.chunks(2).enumerate() {
                     let (ci, members) = chunk;
@@ -2212,7 +2202,6 @@ impl DedupeView {
         }
         card
     }
-
 }
 
 impl Render for DedupeView {
@@ -2260,39 +2249,37 @@ impl Render for DedupeView {
                         h_flex()
                             .gap_2()
                             .items_center()
+                            .child(if self.view == AppView::Settings {
+                                Button::new("nav-back")
+                                    .label("← Back")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view = AppView::Main;
+                                        cx.notify();
+                                    }))
+                            } else {
+                                Button::new("nav-settings")
+                                    .label("Settings")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.view = AppView::Settings;
+                                        cx.notify();
+                                    }))
+                            })
                             .child(
-                                if self.view == AppView::Settings {
-                                    Button::new("nav-back")
-                                        .label("← Back")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.view = AppView::Main;
-                                            cx.notify();
-                                        }))
-                                } else {
-                                    Button::new("nav-settings")
-                                        .label("Settings")
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.view = AppView::Settings;
-                                            cx.notify();
-                                        }))
-                                },
-                            )
-                            .child(
-                        Button::new("theme-toggle")
-                            .icon(if dark { IconName::Sun } else { IconName::Moon })
-                            .label(if dark { "Light" } else { "Dark" })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                Theme::change(
-                                    if dark {
-                                        ThemeMode::Light
-                                    } else {
-                                        ThemeMode::Dark
-                                    },
-                                    None,
-                                    cx,
-                                );
-                                this.save_prefs(cx);
-                            })),
+                                Button::new("theme-toggle")
+                                    .icon(if dark { IconName::Sun } else { IconName::Moon })
+                                    .label(if dark { "Light" } else { "Dark" })
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        Theme::change(
+                                            if dark {
+                                                ThemeMode::Light
+                                            } else {
+                                                ThemeMode::Dark
+                                            },
+                                            None,
+                                            cx,
+                                        );
+                                        this.save_prefs(cx);
+                                    })),
                             ),
                     ),
             )

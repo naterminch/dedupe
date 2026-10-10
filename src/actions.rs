@@ -343,8 +343,7 @@ mod tests {
             ],
         }];
 
-        let stats =
-            delete_duplicates(&groups, &eng, true, Disposition::Permanent).unwrap();
+        let stats = delete_duplicates(&groups, &eng, true, Disposition::Permanent).unwrap();
         assert_eq!(stats.files_deleted, 1);
         assert_eq!(stats.files_skipped, 0);
         assert!(keep.exists() && !dup.exists());

@@ -308,15 +308,20 @@ mod tests {
     #[test]
     fn counters_count_only_non_keep_members() {
         let groups = vec![
-            group(1, MediaKind::Other, vec![
-                member("k.txt", 100, true),
-                member("d1.txt", 100, false),
-                member("d2.txt", 100, false),
-            ]),
-            group(2, MediaKind::Image, vec![
-                member("k.png", 50, true),
-                member("d.png", 50, false),
-            ]),
+            group(
+                1,
+                MediaKind::Other,
+                vec![
+                    member("k.txt", 100, true),
+                    member("d1.txt", 100, false),
+                    member("d2.txt", 100, false),
+                ],
+            ),
+            group(
+                2,
+                MediaKind::Image,
+                vec![member("k.png", 50, true), member("d.png", 50, false)],
+            ),
         ];
         assert_eq!(dup_file_count(&groups), 3);
         assert_eq!(reclaimable_bytes(&groups), 250);
@@ -325,7 +330,8 @@ mod tests {
     }
 
     #[test]
-    fn to_json_reports_group_math_and_members() {        let paths = ["C:\\pics".to_string()];
+    fn to_json_reports_group_math_and_members() {
+        let paths = ["C:\\pics".to_string()];
         let ctx = ReportContext {
             paths: &paths,
             hash_algo: "sha256",
@@ -340,10 +346,11 @@ mod tests {
             hardlinks_skipped: 0,
             dir_read_errors: vec!["denied".to_string()],
         };
-        let groups = vec![group(1, MediaKind::Other, vec![
-            member("k.txt", 100, true),
-            member("d.txt", 100, false),
-        ])];
+        let groups = vec![group(
+            1,
+            MediaKind::Other,
+            vec![member("k.txt", 100, true), member("d.txt", 100, false)],
+        )];
         let v: serde_json::Value =
             serde_json::from_str(&to_json(&ctx, &stats, &groups)).expect("valid JSON");
         assert_eq!(v["duplicate_groups"], 1);
