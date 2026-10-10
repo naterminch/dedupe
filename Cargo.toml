@@ -26,6 +26,7 @@ md-5 = "0.10"
 open = "5"
 rayon = "1"
 rfd = "0.15"
+rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -36,6 +37,9 @@ walkdir = "2"
 [dev-dependencies]
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[build-dependencies]
+winres = "0.1"
 
 [profile.release]
 lto = true

@@ -1,5 +1,7 @@
 # dedupe
 
+<img src="assets/icons/logo.png" alt="dedupe logo" width="96">
+
 Finds duplicate files — exact copies and similar-looking photos/videos.
 
 - **Exact duplicates** — same bytes. Copies, renames, backups.

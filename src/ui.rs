@@ -34,7 +34,7 @@ use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
     AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
     IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString, Size, Styled as _,
-    Subscription, TitlebarOptions, Window, WindowOptions, div, px,
+    Subscription, TitlebarOptions, Window, WindowOptions, div, img, px,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -58,7 +58,7 @@ pub fn run() {
     // its own copy of the start time.
     let t_start = std::time::Instant::now();
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::AppAssets)
         .run(move |cx| {
             eprintln!("[startup] application ready in {:?}", t_start.elapsed());
             gpui_kit::init(cx);
@@ -2262,11 +2262,17 @@ impl Render for DedupeView {
                             .gap_3()
                             .items_center()
                             .child(
+                                img("icons/logo.png")
+                                    .w(px(22.))
+                                    .h(px(22.))
+                                    .rounded_md(),
+                            )
+                            .child(
                                 div()
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(cx.theme().accent)
-                                    .child("◆ dedupe"),
+                                    .child("dedupe"),
                             )
                             .child(
                                 div()

@@ -6,6 +6,7 @@
 //! gpui-kit window.
 
 pub mod actions;
+pub mod assets;
 pub mod cache;
 pub mod cli;
 pub mod hashing;
