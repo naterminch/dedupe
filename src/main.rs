@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use console::style;
 use dedupe::pipeline::{self, ScanPhase};
-use dedupe::{cache, cli, report};
+use dedupe::{cache, cancel, cli, report};
 
 fn main() {
     let t0 = std::time::Instant::now();
@@ -86,7 +86,15 @@ fn run(cli: &cli::Cli) -> Result<()> {
             );
         }
     };
-    let out = pipeline::run_scan(cli, progress_bar.as_ref(), similar_bar.as_ref(), &on_phase)?;
+    // The CLI has no Stop button; a fresh token is never set.
+    let cancel = cancel::CancelToken::new();
+    let out = pipeline::run_scan(
+        cli,
+        progress_bar.as_ref(),
+        similar_bar.as_ref(),
+        &on_phase,
+        &cancel,
+    )?;
 
     if out.needs_ffprobe_note && !cli.quiet && !cli.json {
         eprintln!(

@@ -172,6 +172,12 @@ pub(crate) struct DedupeView {
     /// second click moves. Disarmed by any keeper/group change, since the
     /// previewed paths would be stale.
     pub(crate) consolidate_dest: Option<PathBuf>,
+    /// Cooperative cancellation for the running scan; Stop sets it and the
+    /// pipeline polls it at phase boundaries.
+    pub(crate) scan_cancel: crate::cancel::CancelToken,
+    /// Scan generation: bumped by every start and by Stop, so a scan task
+    /// finishing late (after a Stop or a newer scan) discards its output.
+    pub(crate) scan_gen: u64,
     pub(crate) _subs: Vec<Subscription>,
 }
 
@@ -329,6 +335,8 @@ impl DedupeView {
             last_pick: None,
             last_trashed: Vec::new(),
             consolidate_dest: None,
+            scan_cancel: crate::cancel::CancelToken::new(),
+            scan_gen: 0,
             _subs: Vec::new(),
         };
         // Slider — text box (one way; set_value emits no Change event, so
@@ -420,6 +428,35 @@ impl DedupeView {
         let initial_focus = view.folder_input.read(cx).focus_handle(cx);
         window.focus(&initial_focus, cx);
         view
+    }
+
+    /// True while `gen` is the latest scan generation — false once a Stop
+    /// or a newer scan has superseded the task that captured `gen`.
+    pub(crate) fn is_current_scan(&self, generation: u64) -> bool {
+        self.scan_gen == generation
+    }
+
+    /// Stop the running scan: arm the cancellation token AND reset the
+    /// view immediately, so the UI never sits in "Stopping…" while a large
+    /// file finishes hashing. The pipeline winds down in the background
+    /// (bounded by per-file / per-frame / per-member checks) and its late
+    /// output is discarded by the generation guard — the bumped generation
+    /// also makes any in-flight task's `apply_output` a no-op.
+    fn stop_scan(&mut self, cx: &mut Context<Self>) {
+        self.scan_cancel.cancel();
+        self.scan_gen += 1;
+        self.scanning = false;
+        self.scan_done = 0;
+        self.scan_total = 0;
+        self.scan_determinate = false;
+        self.has_scanned = false;
+        self.groups.clear();
+        self.base_groups.clear();
+        self.selected.clear();
+        self.expanded.clear();
+        self.last_stats = None;
+        self.status = "Scan cancelled.".to_string();
+        cx.notify();
     }
 
     /// Escape always does something: back out of Settings to the main
@@ -586,6 +623,13 @@ impl DedupeView {
         self.last_hash = opts.hash;
         self.scan_similarity = (opts.similarity / 100.0).clamp(0.0, 1.0);
         self.scanning = true;
+        // New generation: invalidates any in-flight (stopped) scan task,
+        // and a fresh cancellation token for this run — Stop sets it and
+        // the pipeline polls it at every phase boundary.
+        self.scan_gen += 1;
+        let generation = self.scan_gen;
+        self.scan_cancel.reset();
+        let cancel = self.scan_cancel.clone();
         self.scan_done = 0;
         self.scan_total = 0;
         self.scan_determinate = false;
@@ -613,14 +657,26 @@ impl DedupeView {
             let out = cx
                 .background_executor()
                 .spawn(async move {
-                    pipeline::run_scan(&opts, Some(&hash_bar), Some(&sim_bar), &|p| {
-                        if let Ok(mut s) = phase_write.lock() {
-                            *s = p;
-                        }
-                    })
+                    pipeline::run_scan(
+                        &opts,
+                        Some(&hash_bar),
+                        Some(&sim_bar),
+                        &|p| {
+                            if let Ok(mut s) = phase_write.lock() {
+                                *s = p;
+                            }
+                        },
+                        &cancel,
+                    )
                 })
                 .await;
             this.update(cx, |view: &mut Self, cx| {
+                // A Stop (or a newer scan) bumps the generation while this
+                // task was in flight: its late output must not clobber the
+                // state that replaced it.
+                if !view.is_current_scan(generation) {
+                    return;
+                }
                 match out {
                     Ok(output) => view.apply_output(output, cx),
                     Err(e) => {
@@ -683,6 +739,26 @@ impl DedupeView {
         self.scan_done = 0;
         self.scan_total = 0;
         self.scan_determinate = false;
+        // A cancelled scan carries no groups by design: reset to the
+        // pre-scan state (the walk cleared the pane at start anyway) and
+        // report the stop. `has_scanned` stays false so the 3-step empty
+        // state remains up.
+        if out.cancelled {
+            self.groups.clear();
+            self.base_groups.clear();
+            self.selected.clear();
+            self.expanded.clear();
+            self.has_scanned = false;
+            self.files_scanned = out.stats.files_scanned;
+            self.bytes_scanned = out.stats.bytes_scanned;
+            self.last_stats = None;
+            self.status = format!(
+                "Scan cancelled after {} file(s). Press Scan to run again.",
+                out.stats.files_scanned
+            );
+            cx.notify();
+            return;
+        }
         self.has_scanned = true;
         self.files_scanned = out.stats.files_scanned;
         self.bytes_scanned = out.stats.bytes_scanned;
@@ -1393,23 +1469,32 @@ impl DedupeView {
                     .pt_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        v_flex().gap_2().child(self.render_media_status(cx)).child(
+                    .child(v_flex().gap_2().child(self.render_media_status(cx)).child(
+                        if self.scanning {
+                            // Stop replaces Scan for the duration of the run:
+                            // the pipeline notices at its next phase
+                            // boundary (bounded by one small unit of work).
+                            Button::new("stop-scan")
+                                .danger()
+                                .icon(IconName::Square)
+                                .w_full()
+                                .label("Stop")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.stop_scan(cx);
+                                }))
+                                .into_any_element()
+                        } else {
                             Button::new("scan")
                                 .primary()
                                 .icon(IconName::Search)
                                 .w_full()
-                                .disabled(self.scanning)
-                                .label(if self.scanning {
-                                    "Scanning…"
-                                } else {
-                                    "Scan for duplicates"
-                                })
+                                .label("Scan for duplicates")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.start_scan(cx);
-                                })),
-                        ),
-                    ),
+                                }))
+                                .into_any_element()
+                        },
+                    )),
             )
     }
 

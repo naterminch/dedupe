@@ -191,6 +191,87 @@ fn settings_page_renders_both_tabs(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn stop_button_resets_the_ui_immediately(cx: &mut TestAppContext) {
+    let (handle, view, _guard) = open_view(cx);
+    // A scan in flight with results already on screen.
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.scanning = true;
+            v.has_scanned = true;
+            v.groups = vec![crate::matching::Group {
+                index: 1,
+                hash: "h".to_string(),
+                media_kind: crate::media::MediaKind::Other,
+                similarity: None,
+                members: vec![member("dir/a.txt", 100, true, None, None)],
+            }];
+            v.selected = [PathBuf::from("dir/a.txt")].into_iter().collect();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        // Scanning swaps the primary Scan button for a danger Stop button.
+        assert!(positive(window.find("stop-scan").bounds()).width > px(0.));
+        window.click("stop-scan", cx);
+        window.render_frame(cx);
+    });
+
+    // Everything resets in the same frame — no "Stopping…" limbo while a
+    // large file finishes hashing.
+    assert_view(cx, &view, |v| {
+        assert!(!v.scanning, "scanning clears immediately");
+        assert!(v.scan_cancel.is_cancelled(), "the token is armed");
+        assert!(v.groups.is_empty() && v.selected.is_empty());
+        assert!(!v.has_scanned);
+        assert_eq!(v.status, "Scan cancelled.");
+        assert_eq!(v.scan_done, 0);
+    });
+}
+
+#[gpui_kit::test]
+fn stale_scan_output_is_discarded(cx: &mut TestAppContext) {
+    // A task that finishes after Stop (or after a new scan started) must
+    // not resurrect its results.
+    let (_handle, view, _guard) = open_view(cx);
+    let stale_gen = assert_view(cx, &view, |v| {
+        v.scanning = true;
+        v.scan_gen += 1; // this task's generation
+        v.scan_gen
+    });
+    // Stop (or another start) bumps the generation under the task.
+    assert_view(cx, &view, |v| v.scan_gen += 1);
+    assert_view(cx, &view, |v| {
+        assert!(
+            !v.is_current_scan(stale_gen),
+            "stale output must be dropped"
+        );
+        assert!(
+            v.is_current_scan(v.scan_gen),
+            "the newest generation is current"
+        );
+    });
+    // The same guard on the normal path: a still-current task applies.
+    let current = assert_view(cx, &view, |v| v.scan_gen);
+    assert_view(cx, &view, |v| assert!(v.is_current_scan(current)));
+}
+
+#[gpui_kit::test]
+fn scan_button_is_primary_while_idle(cx: &mut TestAppContext) {
+    // No Stop while idle: only the primary Scan control is present.
+    let (handle, view, _guard) = open_view(cx);
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.scanning = false;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(positive(window.find("scan").bounds()).width > px(0.));
+    });
+}
+// The keystroke wiring itself (`.on_key_down` matching "escape") is
+// declarative and not covered: the offscreen harness does not route
+// key events into windows created through the production
+// `gpui_kit::open_window`. The handler body is tested directly.
+#[gpui_kit::test]
 fn escape_leaves_the_settings_page(cx: &mut TestAppContext) {
     // The keystroke wiring itself (`.on_key_down` matching "escape") is
     // declarative and not covered: the offscreen harness does not route

@@ -8,6 +8,7 @@
 pub mod actions;
 pub mod assets;
 pub mod cache;
+pub mod cancel;
 pub mod cli;
 pub mod hashing;
 pub mod matching;

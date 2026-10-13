@@ -18,6 +18,7 @@
 //! problem of union-find (unrelated files can never chain into one group).
 
 use crate::cache::{CacheFp, CacheWrite, FingerprintCache};
+use crate::cancel::CancelToken;
 use crate::hashing::HashEngine;
 use crate::matching::{self, Group, GroupMember, KeepMode};
 use crate::media::{self, MediaInfo, MediaKind};
@@ -273,14 +274,18 @@ struct VideoFp {
 /// picks evenly time-spaced frames) or `-ss` keyframe seeks for long ones;
 /// without a duration we fall back to a single `fps=1` pass (decodes the
 /// whole stream, subsampled).
-fn video_fingerprint(entry: FileEntry, probe: Option<&MediaInfo>) -> Option<VideoFp> {
+fn video_fingerprint(
+    entry: FileEntry,
+    probe: Option<&MediaInfo>,
+    cancel: &CancelToken,
+) -> Option<VideoFp> {
     if let Some(info) = probe {
         let (w, h) = (info.width?, info.height?);
         let dur = info.duration_ms?;
         let frames = if dur <= SEEK_THRESHOLD_MS {
             extract_frames_pass(&entry.path, dur)
         } else {
-            extract_frames_seek(&entry.path, dur)
+            extract_frames_seek(&entry.path, dur, cancel)
         }?;
         Some(VideoFp {
             entry,
@@ -342,10 +347,19 @@ fn extract_frames_pass(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> 
     )
 }
 
-fn extract_frames_seek(path: &Path, duration_ms: u64) -> Option<Vec<FrameHash>> {
+fn extract_frames_seek(
+    path: &Path,
+    duration_ms: u64,
+    cancel: &CancelToken,
+) -> Option<Vec<FrameHash>> {
     let secs = duration_ms as f64 / 1000.0;
     let mut hashes = Vec::with_capacity(SIMILAR_FRAMES);
     for i in 0..SIMILAR_FRAMES {
+        // Per-frame granularity: eight sequential ffmpeg spawns on a long
+        // video can take minutes; a Stop must land between spawns.
+        if cancel.is_cancelled() {
+            return None;
+        }
         let t = secs * (i as f64 + 0.5) / SIMILAR_FRAMES as f64;
         let out = crate::util::quiet_command("ffmpeg")
             .args(["-v", "error", "-ss"])
@@ -499,7 +513,10 @@ fn make_video_group(fps: &[VideoFp], cluster: Vec<usize>) -> SimilarGroup {
 /// duration check, so only files with a possible partner are fingerprinted
 /// (a lone prioritized keeper is never decoded). Returns the groups plus
 /// the newly computed fingerprints, which the caller should store back
-/// into the cache.
+/// into the cache. `cancel` is polled per file: once set, remaining
+/// decodes / frame extractions are skipped and the partial result is
+/// returned.
+#[allow(clippy::too_many_arguments)]
 pub fn find_similar(
     entries: Vec<FileEntry>,
     config: &SimilarConfig,
@@ -507,6 +524,7 @@ pub fn find_similar(
     cache: Option<&FingerprintCache>,
     progress: Option<&ProgressBar>,
     prioritize: &HashSet<PathBuf>,
+    cancel: &CancelToken,
 ) -> (Vec<SimilarGroup>, Vec<CacheWrite>) {
     let mut images = Vec::new();
     let mut videos = Vec::new();
@@ -557,6 +575,9 @@ pub fn find_similar(
         .par_iter()
         .enumerate()
         .filter_map(|(i, e)| {
+            if cancel.is_cancelled() {
+                return None;
+            }
             let fp = if needs_fp.contains(&i) {
                 image_fingerprint(e.clone())
             } else {
@@ -673,9 +694,12 @@ pub fn find_similar(
             .par_iter()
             .enumerate()
             .filter_map(|(i, e)| {
+                if cancel.is_cancelled() {
+                    return None;
+                }
                 let fp = if cand.contains(&i) && !cached_vid.contains_key(&i) {
                     let info = probe_map.get(&e.path);
-                    video_fingerprint(e.clone(), info)
+                    video_fingerprint(e.clone(), info, cancel)
                 } else {
                     None
                 };
@@ -787,9 +811,10 @@ pub fn merge_into_exact_groups(
                 // Reference members are never deletable, so they keep.
                 m.keep = m.keep && m.reference;
                 m.similarity = score;
-                // Their own group's shared full hash: the deletion safety
-                // re-hash must not fall back to the target group's hash,
-                // or these files could never be deleted.
+                // Their own group's shared full hash (already computed by
+                // the exact pass — free): the deletion safety re-hash must
+                // not fall back to the target group's hash, or these files
+                // could never be deleted.
                 m.content_hash = Some(groups[gi].hash.clone());
                 groups[target].members.push(m);
             }
@@ -842,6 +867,9 @@ pub fn merge_into_exact_groups(
 /// Convert perceptual groups into report-ready `Group`s (with media metadata,
 /// keep decisions, and a content hash per member used as a deletion safety
 /// check). `start_index` continues the numbering after the exact groups.
+/// `cancel` is polled per group: cancelled groups are dropped from the
+/// output (the caller discards a cancelled scan anyway).
+#[allow(clippy::too_many_arguments)]
 pub fn build_similar_groups(
     groups: Vec<SimilarGroup>,
     keep: KeepMode,
@@ -850,6 +878,7 @@ pub fn build_similar_groups(
     engine: &HashEngine,
     start_index: usize,
     progress: Option<&ProgressBar>,
+    cancel: &CancelToken,
 ) -> Result<Vec<Group>> {
     if let Some(bar) = progress {
         bar.set_position(0);
@@ -859,95 +888,128 @@ pub fn build_similar_groups(
     let built: Vec<Group> = groups
         .into_par_iter()
         .enumerate()
-        .map(|(i, sg)| {
-            if let Some(bar) = progress {
-                bar.inc(1);
+        .filter_map(|(i, sg)| {
+            if cancel.is_cancelled() {
+                return None;
             }
-            let index = start_index + i;
-            let mut members: Vec<GroupMember> = sg
-                .members
-                .iter()
-                .map(|m| {
-                    let reference = !reference_dirs.is_empty()
-                        && matching::is_under_ref(
-                            &matching::canonical_member(&m.entry.path),
-                            reference_dirs,
-                        );
-                    GroupMember {
-                        path: m.entry.path.clone(),
-                        size: m.entry.size,
-                        mtime_secs: m.entry.mtime_secs,
-                        keep: false,
-                        reference,
-                        media: None,
-                        similarity: Some(m.similarity),
-                        content_hash: None,
-                        fingerprint_res: (m.w > 0 && m.h > 0).then_some((m.w, m.h)),
-                    }
-                })
-                .collect();
-
-            if probe {
-                for m in &mut members {
-                    m.media = media::probe_media(&m.path);
-                }
-            }
-            // Content hash per member: re-verified before any deletion so a
-            // changed file is never removed, even though the members' bytes
-            // legitimately differ from each other.
-            for m in &mut members {
-                m.content_hash = engine.full(&m.path).ok();
-            }
-
-            // Keeper: reference-dir members are protected and win; among
-            // the candidates the keep rule applies — for `Smallest` the
-            // highest-resolution version (a smaller file is usually the
-            // re-encoded/lower-res copy, so the best original is kept),
-            // falling back to smallest size when unknown; for `BestQuality`
-            // ties break toward the largest file instead.
-            let pool: Vec<usize> = {
-                let refs: Vec<usize> = sg
-                    .members
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, m)| {
-                        matching::is_under_ref(
-                            &matching::canonical_member(&m.entry.path),
-                            reference_dirs,
-                        ) && !reference_dirs.is_empty()
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                if refs.is_empty() {
-                    (0..sg.members.len()).collect()
-                } else {
-                    refs
-                }
-            };
-            let keep_idx = best_similar_keep(&sg.members, &pool, keep);
-            members[keep_idx].keep = true;
-            let keeper = members.remove(keep_idx);
-            let mut rest = members;
-            rest.sort_by(|a, b| a.path.cmp(&b.path));
-            let mut ordered = vec![keeper];
-            ordered.extend(rest);
-
-            let similarity = sg
-                .members
-                .iter()
-                .map(|m| m.similarity)
-                .fold(1.0f64, f64::min);
-
-            Group {
-                index,
-                hash: format!("similar#{index}"),
-                media_kind: sg.kind,
-                similarity: Some(similarity),
-                members: ordered,
-            }
+            Some(build_one_similar_group(
+                i,
+                sg,
+                keep,
+                reference_dirs,
+                probe,
+                engine,
+                start_index,
+                progress,
+                cancel,
+            ))
         })
         .collect();
     Ok(built)
+}
+
+/// Build one report-ready similar group (extracted so the parallel map can
+/// skip cancelled work without touching the group-building logic).
+#[allow(clippy::too_many_arguments)]
+fn build_one_similar_group(
+    i: usize,
+    sg: SimilarGroup,
+    keep: KeepMode,
+    reference_dirs: &[PathBuf],
+    probe: bool,
+    engine: &HashEngine,
+    start_index: usize,
+    progress: Option<&ProgressBar>,
+    cancel: &CancelToken,
+) -> Group {
+    if let Some(bar) = progress {
+        bar.inc(1);
+    }
+    let index = start_index + i;
+    let mut members: Vec<GroupMember> = sg
+        .members
+        .iter()
+        .map(|m| {
+            let reference = !reference_dirs.is_empty()
+                && matching::is_under_ref(
+                    &matching::canonical_member(&m.entry.path),
+                    reference_dirs,
+                );
+            GroupMember {
+                path: m.entry.path.clone(),
+                size: m.entry.size,
+                mtime_secs: m.entry.mtime_secs,
+                keep: false,
+                reference,
+                media: None,
+                similarity: Some(m.similarity),
+                content_hash: None,
+                fingerprint_res: (m.w > 0 && m.h > 0).then_some((m.w, m.h)),
+            }
+        })
+        .collect();
+
+    if probe {
+        for m in &mut members {
+            m.media = media::probe_media(&m.path);
+        }
+    }
+    // Content hash per member: re-verified before any deletion so a
+    // changed file is never removed, even though the members' bytes
+    // legitimately differ from each other. Per-member granularity: a
+    // video member's full hash can take seconds; a Stop must land
+    // between members.
+    for m in &mut members {
+        if cancel.is_cancelled() {
+            break;
+        }
+        m.content_hash = engine.full(&m.path).ok();
+    }
+
+    // Keeper: reference-dir members are protected and win; among
+    // the candidates the keep rule applies — for `Smallest` the
+    // highest-resolution version (a smaller file is usually the
+    // re-encoded/lower-res copy, so the best original is kept),
+    // falling back to smallest size when unknown; for `BestQuality`
+    // ties break toward the largest file instead.
+    let pool: Vec<usize> = {
+        let refs: Vec<usize> = sg
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                matching::is_under_ref(&matching::canonical_member(&m.entry.path), reference_dirs)
+                    && !reference_dirs.is_empty()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if refs.is_empty() {
+            (0..sg.members.len()).collect()
+        } else {
+            refs
+        }
+    };
+    let keep_idx = best_similar_keep(&sg.members, &pool, keep);
+    members[keep_idx].keep = true;
+    let keeper = members.remove(keep_idx);
+    let mut rest = members;
+    rest.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut ordered = vec![keeper];
+    ordered.extend(rest);
+
+    let similarity = sg
+        .members
+        .iter()
+        .map(|m| m.similarity)
+        .fold(1.0f64, f64::min);
+
+    Group {
+        index,
+        hash: format!("similar#{index}"),
+        media_kind: sg.kind,
+        similarity: Some(similarity),
+        members: ordered,
+    }
 }
 
 /// Best keeper index among `pool` under `keep`.

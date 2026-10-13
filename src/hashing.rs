@@ -1,4 +1,5 @@
 use crate::cache::HashCache;
+use crate::cancel::CancelToken;
 use crate::cli::HashAlgo;
 use crate::scan::FileEntry;
 use anyhow::Result;
@@ -179,6 +180,7 @@ pub fn find_duplicate_groups(
     engine: &HashEngine,
     hash_cache: Option<&mut HashCache>,
     progress: Option<&ProgressBar>,
+    cancel: &CancelToken,
 ) -> Result<(Vec<DuplicateGroup>, u64)> {
     let algo = engine.name().to_string();
     let cache = hash_cache.map(Mutex::new);
@@ -209,10 +211,16 @@ pub fn find_duplicate_groups(
     // still meets a newly-hashed partner.
     let groups: Vec<DuplicateGroup> = candidate_groups
         .par_iter()
+        .filter(|_| !cancel.is_cancelled())
         .flat_map(|group| {
             let mut seeded_full: HashMap<String, Vec<FileEntry>> = HashMap::new();
             let mut by_partial: HashMap<String, Vec<FileEntry>> = HashMap::new();
             for entry in group {
+                // Per-file granularity: a Stop lands within one hash, not
+                // one whole size-group (which can be a multi-GB file).
+                if cancel.is_cancelled() {
+                    break;
+                }
                 let hit = cache.as_ref().and_then(|m| m.lock().ok()).and_then(|c| {
                     c.get(&entry.path, entry.size, entry.mtime_secs, &algo)
                         .map(|e| (e.partial.clone(), e.full.clone()))
@@ -349,7 +357,8 @@ mod tests {
             entry(d.clone(), fs::metadata(&d).unwrap().len()),
         ];
         let engine = HashEngine::new(HashAlgo::Blake3);
-        let (groups, _) = find_duplicate_groups(entries, &engine, None, None).unwrap();
+        let (groups, _) =
+            find_duplicate_groups(entries, &engine, None, None, &CancelToken::new()).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
         let mut paths: Vec<&std::path::Path> =
@@ -397,7 +406,8 @@ mod tests {
             entry(a, a_content.len() as u64),
             entry(b, b_content.len() as u64),
         ];
-        let (groups, _) = find_duplicate_groups(entries, &engine, None, None).unwrap();
+        let (groups, _) =
+            find_duplicate_groups(entries, &engine, None, None, &CancelToken::new()).unwrap();
         assert!(groups.is_empty(), "same head, different tail => no group");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -417,7 +427,8 @@ mod tests {
         }
         let engine = HashEngine::new(HashAlgo::Blake3);
         let bar = indicatif::ProgressBar::new(0);
-        let (groups, _) = find_duplicate_groups(entries, &engine, None, Some(&bar)).unwrap();
+        let (groups, _) =
+            find_duplicate_groups(entries, &engine, None, Some(&bar), &CancelToken::new()).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 8);
         assert!(

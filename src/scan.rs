@@ -1,3 +1,4 @@
+use crate::cancel::CancelToken;
 use crate::cli::Cli;
 use std::collections::HashSet;
 use std::fs;
@@ -47,13 +48,18 @@ impl ScanResult {
 ///
 /// Files outside the size range, or excluded by `--exclude*` / `--types`
 /// filters, are skipped. Directory read errors are collected (not fatal).
-pub fn scan(cli: &Cli, size_min: u64, size_max: u64) -> ScanResult {
+/// Polls `cancel` per walked entry and returns the partial result early,
+/// so a Stop during a long walk costs at most one file.
+pub fn scan(cli: &Cli, size_min: u64, size_max: u64, cancel: &CancelToken) -> ScanResult {
     let ext_filter = extension_filter(&cli.types);
     let type_filtered = !ext_filter.is_empty();
     let mut result = ScanResult::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
     for raw_path in &cli.paths {
+        if cancel.is_cancelled() {
+            return result;
+        }
         let path = Path::new(raw_path);
 
         // A directly-given file: include it if it passes the filters.
@@ -95,6 +101,9 @@ pub fn scan(cli: &Cli, size_min: u64, size_max: u64) -> ScanResult {
                 true
             });
         for entry in walker {
+            if cancel.is_cancelled() {
+                return result;
+            }
             let entry = match entry {
                 Ok(e) => e,
                 Err(err) => {
@@ -187,6 +196,7 @@ fn collect_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancel::CancelToken;
     use crate::cli::Cli;
     use std::fs;
 
@@ -207,12 +217,34 @@ mod tests {
     }
 
     #[test]
+    fn preset_cancel_stops_the_walk_immediately() {
+        let dir = tmpdir("cancel");
+        for i in 0..20 {
+            fs::write(dir.join(format!("f{i}.txt")), b"payload").unwrap();
+        }
+        let cli = Cli {
+            paths: vec![dir.display().to_string()],
+            ..zero_cli()
+        };
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let result = scan(&cli, 0, 0, &cancel);
+        assert!(
+            result.entries.is_empty(),
+            "a preset flag must stop before the first entry, got {}",
+            result.entries.len()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn missing_path_records_error_instead_of_panicking() {
         let cli = Cli {
             paths: vec![r"Z:\definitely\not\here-12345".to_string()],
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         assert!(result.entries.is_empty());
         assert_eq!(result.dir_read_errors.len(), 1);
     }
@@ -233,7 +265,7 @@ mod tests {
             types: vec!["jpg".into()],
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         let mut names: Vec<String> = result
             .entries
             .iter()
@@ -251,7 +283,7 @@ mod tests {
             max_size: Some("100KB".into()),
             ..zero_cli()
         };
-        let result = scan(&cli, 1_000, 102_400);
+        let result = scan(&cli, 1_000, 102_400, &CancelToken::new());
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].size, 5_000);
 
@@ -271,7 +303,7 @@ mod tests {
             max_depth: Some(0),
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         let names: Vec<String> = result
             .entries
             .iter()
@@ -296,7 +328,7 @@ mod tests {
             exclude_dir: vec!["node_modules".into()],
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         // Walkdir yields entries in filesystem order (NTFS vs ext4 vs
         // APFS differ), so sort before comparing.
         let mut names: Vec<String> = result
@@ -327,13 +359,19 @@ mod tests {
             max_depth: None,
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         // Scan sees all three names; the hashing stage filters the
         // hard link (same inode as orig.txt).
         assert_eq!(result.entries.len(), 3);
         let engine = crate::hashing::HashEngine::new(crate::cli::HashAlgo::Blake3);
-        let (groups, hardlinks) =
-            crate::hashing::find_duplicate_groups(result.entries, &engine, None, None).unwrap();
+        let (groups, hardlinks) = crate::hashing::find_duplicate_groups(
+            result.entries,
+            &engine,
+            None,
+            None,
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert_eq!(hardlinks, 1);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
@@ -352,7 +390,7 @@ mod tests {
             exclude_path: vec!["draft".into()],
             ..zero_cli()
         };
-        let result = scan(&cli, 0, 0);
+        let result = scan(&cli, 0, 0, &CancelToken::new());
         assert_eq!(result.entries.len(), 1);
         assert_eq!(
             result.entries[0].path.file_name().unwrap(),

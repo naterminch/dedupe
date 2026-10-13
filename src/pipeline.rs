@@ -5,6 +5,7 @@
 //! front ends get identical results. Progress display stays with the caller:
 //! pass indicatif bars from the CLI, `None` from the GUI.
 
+use crate::cancel::CancelToken;
 use crate::{cache, cli, hashing, matching, media, report, scan, similar, util};
 use anyhow::Result;
 use indicatif::ProgressBar;
@@ -46,18 +47,61 @@ pub struct ScanOutput {
     pub cache_save_errors: Vec<String>,
     /// Canonicalized reference dirs (for badges/tips).
     pub reference_dirs: Vec<std::path::PathBuf>,
+    /// The scan was cancelled (Stop) part-way: `groups` is empty by
+    /// design and `stats` covers whatever the walk completed.
+    pub cancelled: bool,
+}
+
+/// Walk stats for a cancelled scan: whatever the walk completed, plus
+/// `hardlinks_skipped` from wherever the pipeline stopped.
+fn partial_stats(scanned: &scan::ScanResult, hardlinks_skipped: u64) -> report::ScanStats {
+    report::ScanStats {
+        files_scanned: scanned.entries.len(),
+        bytes_scanned: scanned.entries.iter().map(|e| e.size).sum(),
+        dirs_skipped: scanned.dirs_skipped,
+        files_skipped: scanned.files_skipped,
+        hardlinks_skipped,
+        dir_read_errors: scanned.dir_read_errors.clone(),
+    }
+}
+
+/// Output for a cancelled scan: the partial walk stats, no groups.
+/// Front ends discard results when `cancelled` is set (the GUI shows
+/// "Scan cancelled" and keeps the pane empty).
+fn cancelled_output(
+    cli: &cli::Cli,
+    engine: &hashing::HashEngine,
+    stats: report::ScanStats,
+) -> ScanOutput {
+    ScanOutput {
+        paths: cli.paths.clone(),
+        hash_algo: engine.name(),
+        stats,
+        groups: Vec::new(),
+        ffprobe_used: false,
+        needs_ffprobe_note: false,
+        needs_ffmpeg_note: false,
+        cache_save_errors: Vec::new(),
+        reference_dirs: Vec::new(),
+        cancelled: true,
+    }
 }
 
 /// Run the full detection pipeline for `cli`.
 ///
 /// `progress` spans the exact-duplicate hashing work and `similar_progress`
 /// the perceptual pass; both are finished (cleared) here when given. Pass
-/// `None` for headless/GUI callers.
+/// `None` for headless/GUI callers. `cancel` is polled at every phase
+/// boundary (walk, hashing, fingerprinting, group building): once set, the
+/// pipeline stops at the next boundary and returns early with
+/// [`ScanOutput::cancelled`] set. Headless callers pass a fresh, never-set
+/// [`CancelToken`].
 pub fn run_scan(
     cli: &cli::Cli,
     progress: Option<&ProgressBar>,
     similar_progress: Option<&ProgressBar>,
     on_phase: &dyn Fn(ScanPhase),
+    cancel: &CancelToken,
 ) -> Result<ScanOutput> {
     if !(0.0..=100.0).contains(&cli.similarity) {
         anyhow::bail!(
@@ -95,6 +139,7 @@ pub fn run_scan(
     let reference_dirs = matching::canonicalize_refs(&cli.reference_dir);
     let mut cache_save_errors: Vec<String> = Vec::new();
     let similar_threshold = cli.similarity / 100.0;
+    let engine = hashing::HashEngine::new(cli.hash);
     let size_min = cli
         .min_size
         .as_deref()
@@ -109,7 +154,10 @@ pub fn run_scan(
         .unwrap_or(0);
 
     on_phase(ScanPhase::Scanning);
-    let scanned = scan::scan(cli, size_min, size_max);
+    let scanned = scan::scan(cli, size_min, size_max, cancel);
+    if cancel.is_cancelled() {
+        return Ok(cancelled_output(cli, &engine, partial_stats(&scanned, 0)));
+    }
 
     let has_media_candidates = scanned
         .entries
@@ -118,7 +166,6 @@ pub fn run_scan(
     let ffprobe_used = has_media_candidates && media::ffprobe_available();
 
     on_phase(ScanPhase::Hashing);
-    let engine = hashing::HashEngine::new(cli.hash);
     let files_scanned = scanned.entries.len();
     let bytes_scanned: u64 = scanned.entries.iter().map(|e| e.size).sum();
     let entries = scanned.entries;
@@ -136,7 +183,19 @@ pub fn run_scan(
         Some(cache::HashCache::load())
     };
     let (groups, hardlinks_skipped) =
-        hashing::find_duplicate_groups(entries, &engine, hash_cache.as_mut(), progress)?;
+        hashing::find_duplicate_groups(entries, &engine, hash_cache.as_mut(), progress, cancel)?;
+    if cancel.is_cancelled() {
+        // `scanned.entries` was consumed by hashing; the walk fields survive.
+        let stats = report::ScanStats {
+            files_scanned,
+            bytes_scanned,
+            dirs_skipped: scanned.dirs_skipped,
+            files_skipped: scanned.files_skipped,
+            hardlinks_skipped,
+            dir_read_errors: scanned.dir_read_errors,
+        };
+        return Ok(cancelled_output(cli, &engine, stats));
+    }
     if let Some(c) = &hash_cache
         && let Err(e) = c.save()
     {
@@ -211,7 +270,20 @@ pub fn run_scan(
             cache.as_ref(),
             similar_progress,
             &keepers,
+            cancel,
         );
+        if cancel.is_cancelled() {
+            // Save the fingerprints that did complete, then stop: merging
+            // and group building would only re-hash work for a scan whose
+            // results are about to be discarded.
+            if let Some(c) = &mut cache {
+                for w in writes {
+                    c.insert_write(w);
+                }
+                let _ = c.save();
+            }
+            return Ok(cancelled_output(cli, &engine, stats));
+        }
         if let Some(c) = &mut cache {
             for w in writes {
                 c.insert_write(w);
@@ -241,6 +313,7 @@ pub fn run_scan(
                 &engine,
                 groups.len() + 1,
                 similar_progress,
+                cancel,
             )?
         } else {
             Vec::new()
@@ -252,6 +325,9 @@ pub fn run_scan(
     }
 
     on_phase(ScanPhase::Finishing);
+    if cancel.is_cancelled() {
+        return Ok(cancelled_output(cli, &engine, stats));
+    }
     Ok(ScanOutput {
         paths: cli.paths.clone(),
         hash_algo: engine.name(),
@@ -262,6 +338,7 @@ pub fn run_scan(
         needs_ffmpeg_note,
         cache_save_errors,
         reference_dirs,
+        cancelled: false,
     })
 }
 
@@ -328,9 +405,15 @@ mod tests {
         for bad in [101.0, -1.0, f64::NAN] {
             let mut cli = test_cli(vec![".".to_string()]);
             cli.similarity = bad;
-            let err = run_scan(&cli, None, None, &|p| {
-                seen.lock().unwrap().push(p);
-            })
+            let err = run_scan(
+                &cli,
+                None,
+                None,
+                &|p| {
+                    seen.lock().unwrap().push(p);
+                },
+                &CancelToken::new(),
+            )
             .unwrap_err();
             assert!(
                 err.to_string().contains("--similarity"),
@@ -344,7 +427,7 @@ mod tests {
         let mut cli = test_cli(vec![".".to_string()]);
         cli.keep_smaller = true;
         cli.keep_newest = true;
-        let err = run_scan(&cli, None, None, &|_| {}).unwrap_err();
+        let err = run_scan(&cli, None, None, &|_| {}, &CancelToken::new()).unwrap_err();
         assert!(err.to_string().contains("conflict"), "{err}");
     }
 
@@ -352,7 +435,7 @@ mod tests {
     fn rejects_unparsable_size_filter() {
         let mut cli = test_cli(vec![".".to_string()]);
         cli.min_size = Some("not-a-size".to_string());
-        assert!(run_scan(&cli, None, None, &|_| {}).is_err());
+        assert!(run_scan(&cli, None, None, &|_| {}, &CancelToken::new()).is_err());
     }
 
     #[test]
@@ -370,6 +453,7 @@ mod tests {
             &|p| {
                 seen.lock().unwrap().push(p);
             },
+            &CancelToken::new(),
         )
         .unwrap();
         assert_eq!(out.groups.len(), 1);
@@ -390,6 +474,53 @@ mod tests {
     }
 
     #[test]
+    fn preset_cancel_flag_stops_before_any_work() {
+        let dir = tmpdir("cancel");
+        std::fs::write(dir.join("a.txt"), b"payload").unwrap();
+        std::fs::write(dir.join("b.txt"), b"payload").unwrap();
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let out = run_scan(
+            &test_cli(vec![dir.to_str().unwrap().to_string()]),
+            None,
+            None,
+            &|_| {},
+            &cancel,
+        )
+        .unwrap();
+        assert!(out.cancelled, "a preset flag must cancel immediately");
+        assert!(out.groups.is_empty(), "no groups on a cancelled scan");
+        assert_eq!(out.stats.files_scanned, 0, "the walk stops at entry one");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleared_token_runs_normally() {
+        // Regression guard: reset() must give the next scan a clean flag.
+        let dir = tmpdir("reset");
+        std::fs::write(dir.join("a.txt"), b"payload").unwrap();
+        std::fs::write(dir.join("b.txt"), b"payload").unwrap();
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        cancel.reset();
+        let out = run_scan(
+            &test_cli(vec![dir.to_str().unwrap().to_string()]),
+            None,
+            None,
+            &|_| {},
+            &cancel,
+        )
+        .unwrap();
+        assert!(!out.cancelled);
+        assert_eq!(out.groups.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn run_scan_on_empty_dir_succeeds_with_no_groups() {
         let dir = tmpdir("empty");
         let out = run_scan(
@@ -397,6 +528,7 @@ mod tests {
             None,
             None,
             &|_| {},
+            &CancelToken::new(),
         )
         .unwrap();
         assert!(out.groups.is_empty());
@@ -426,7 +558,7 @@ mod tests {
         let mut cli = test_cli(vec![dir.to_str().unwrap().to_string()]);
         cli.exact = false;
         cli.similarity = 90.0;
-        let out = run_scan(&cli, None, None, &|_| {}).unwrap();
+        let out = run_scan(&cli, None, None, &|_| {}, &CancelToken::new()).unwrap();
 
         assert_eq!(out.groups.len(), 1, "one picture => one group");
         let g = &out.groups[0];
@@ -477,7 +609,7 @@ mod tests {
         let mut cli = test_cli(vec![dir.to_str().unwrap().to_string()]);
         cli.exact = false;
         cli.similarity = 90.0;
-        let out = run_scan(&cli, None, None, &|_| {}).unwrap();
+        let out = run_scan(&cli, None, None, &|_| {}, &CancelToken::new()).unwrap();
 
         assert_eq!(out.groups.len(), 1, "one picture => one group");
         let g = &out.groups[0];
