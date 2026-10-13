@@ -22,3 +22,6 @@ pub mod ui;
 pub mod ui_helpers;
 pub mod ui_results;
 pub mod util;
+
+#[cfg(test)]
+mod ui_tests;

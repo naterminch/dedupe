@@ -866,3 +866,119 @@ fn consolidate_collision_gains_suffix() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// The user-facing merge fix, end to end through the CLI: an exact pair
+/// plus a downscaled re-encode of the same picture must land in ONE
+/// group. Before the fix the pair stayed a group of two and the variant
+/// was reported separately (or not at all).
+#[test]
+fn exact_pair_and_downscaled_variant_share_one_group() {
+    use image::ImageBuffer;
+    let dir = tmpdir("merge");
+    // Smooth gradient survives a 4x downscale under dHash.
+    let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 300, |x, y| {
+        image::Rgb([(x * 255 / 400) as u8, (y * 255 / 300) as u8, 128])
+    });
+    img.save(dir.join("big.png")).unwrap();
+    std::fs::copy(dir.join("big.png"), dir.join("big-copy.png")).unwrap();
+    let small = image::imageops::resize(&img, 100, 75, image::imageops::FilterType::Triangle);
+    small.save(dir.join("small.png")).unwrap();
+
+    // Isolate caches to a throwaway home.
+    let home = tmpdir("merge-home");
+    let (_, stdout) = run_with_env(
+        &["--json", "--similarity", "90", dir.to_str().unwrap()],
+        &[
+            ("USERPROFILE", home.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+        ],
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        parsed["duplicate_groups"], 1,
+        "one picture => one group, got: {stdout}"
+    );
+    assert_eq!(
+        parsed["groups"][0]["members"].as_array().unwrap().len(),
+        3,
+        "the downscaled variant must join the exact pair: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// Different pictures must stay apart even at the most aggressive
+/// sensible threshold: the merge logic may not fold unrelated images
+/// into one group.
+#[test]
+fn high_similarity_keeps_different_images_apart() {
+    use image::ImageBuffer;
+    let dir = tmpdir("distinct");
+    let gradient: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 300, |x, y| {
+        image::Rgb([(x * 255 / 400) as u8, (y * 255 / 300) as u8, 128])
+    });
+    let checker: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 300, |x, y| {
+        let c = if (x / 20 + y / 20) % 2 == 0 { 240 } else { 15 };
+        image::Rgb([c, c, c])
+    });
+    gradient.save(dir.join("gradient.png")).unwrap();
+    checker.save(dir.join("checker.png")).unwrap();
+
+    let home = tmpdir("distinct-home");
+    let (_, stdout) = run_with_env(
+        &["--json", dir.to_str().unwrap()],
+        &[
+            ("USERPROFILE", home.to_str().unwrap()),
+            ("HOME", home.to_str().unwrap()),
+        ],
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(
+        parsed["duplicate_groups"], 0,
+        "unrelated images must not group: {stdout}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&home);
+}
+
+/// --clear-cache removes the persisted caches after a scan created them.
+#[test]
+fn clear_cache_removes_cache_files() {
+    let dir = tmpdir("clearcache");
+    // Over the 256 KB caching floor so hashes.bin is written.
+    let payload = vec![b'x'; 300_000];
+    fs::write(dir.join("a.bin"), &payload).unwrap();
+    fs::write(dir.join("b.bin"), &payload).unwrap();
+
+    let home = tmpdir("clearcache-home");
+    let envs = [
+        ("USERPROFILE", home.to_str().unwrap()),
+        ("HOME", home.to_str().unwrap()),
+    ];
+    let cache_dir = home.join(".dedupe");
+
+    let (out, _) = run_with_env(&[dir.to_str().unwrap()], &envs);
+    assert!(out.status.success());
+    assert!(
+        cache_dir.join("hashes.bin").exists(),
+        "a scan of cacheable files must write the hash cache"
+    );
+
+    // Clear-only invocation (no path): `--clear-cache` with a path would
+    // clear and then immediately re-cache during the scan that follows.
+    let (out, _) = run_with_env(&["--clear-cache"], &envs);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !cache_dir.join("hashes.bin").exists() && !cache_dir.join("fingerprints.bin").exists(),
+        "clear-cache must remove both cache files"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&home);
+}

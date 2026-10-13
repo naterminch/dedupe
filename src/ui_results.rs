@@ -11,11 +11,11 @@ use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, IconName, WindowExt};
 use gpui_kit::{
-    Context, FontWeight, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
-    px,
+    Context, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
 };
 use std::path::PathBuf;
 
@@ -59,12 +59,6 @@ impl SnapshotGroup for crate::matching::Group {
             header: parts.join(" · "),
             members: self.members.clone(),
         }
-    }
-}
-
-impl GroupSnapshot {
-    pub(crate) fn header_label(&self, expanded: bool) -> String {
-        format!("{} {}", if expanded { "▾ " } else { "▸ " }, self.header)
     }
 }
 
@@ -155,18 +149,11 @@ pub(crate) fn render_member(
 
     let mut actions = h_flex().gap_2().items_center();
     if member.keep {
-        let (badge, color) = if member.reference {
-            ("◈ REF", cx.theme().accent)
+        actions = actions.child(if member.reference {
+            Tag::primary().child("REF")
         } else {
-            ("✓ KEEP", cx.theme().success)
-        };
-        actions = actions.child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(color)
-                .child(badge),
-        );
+            Tag::success().child("KEEP")
+        });
     } else {
         let key = member.path.clone();
         actions = actions
@@ -182,13 +169,7 @@ pub(crate) fn render_member(
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(cx.theme().warning)
-                    .child("DUP"),
-            );
+            .child(Tag::warning().child("DUP"));
     }
     actions = actions.child(
         div()
@@ -211,6 +192,7 @@ pub(crate) fn render_member(
         actions = actions.child(
             Button::new(SharedString::from(format!("play-{group_index}-{mi}")))
                 .icon(IconName::Play)
+                .tooltip("Open with default app")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Err(e) = open::that(&play_path) {
                         this.status = format!("Could not play file: {e}");
@@ -228,6 +210,7 @@ pub(crate) fn render_member(
         actions = actions.child(
             Button::new(SharedString::from(format!("reveal-{group_index}-{mi}")))
                 .icon(IconName::FolderOpen)
+                .tooltip("Reveal in folder")
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Err(e) = open::that(&reveal) {
                         this.status = format!("Could not open folder: {e}");
@@ -245,7 +228,7 @@ pub(crate) fn render_member(
         .child(
             v_flex()
                 .flex_1()
-                .gap_1()
+                .gap_1p5()
                 .child(div().text_sm().truncate().child(fit_text(&title, 120)))
                 .child(
                     div()
@@ -312,18 +295,11 @@ pub(crate) fn render_media_card(
 
     let mut actions = h_flex().gap_2().items_center().flex_wrap().w_full();
     if member.keep {
-        let (badge, color) = if member.reference {
-            ("◈ REF", cx.theme().accent)
+        actions = actions.child(if member.reference {
+            Tag::primary().child("REF")
         } else {
-            ("✓ KEEP", cx.theme().success)
-        };
-        actions = actions.child(
-            div()
-                .text_xs()
-                .font_weight(FontWeight::BOLD)
-                .text_color(color)
-                .child(badge),
-        );
+            Tag::success().child("KEEP")
+        });
     } else {
         let key = member.path.clone();
         actions = actions
@@ -339,13 +315,7 @@ pub(crate) fn render_media_card(
                         cx.notify();
                     })),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(cx.theme().warning)
-                    .child("DUP"),
-            );
+            .child(Tag::warning().child("DUP"));
     }
     actions = actions.child(
         div()
@@ -622,9 +592,6 @@ impl DedupeView {
         // every color here while the view Context is available.
         let c_secondary = cx.theme().secondary;
         let c_muted = cx.theme().muted_foreground;
-        let c_accent = cx.theme().accent;
-        let c_success = cx.theme().success;
-        let c_warning = cx.theme().warning;
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let gallery_view = view.clone();
@@ -689,27 +656,13 @@ impl DedupeView {
                         .gap_2()
                         .items_center()
                         .child(if member.keep {
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(if member.reference {
-                                    c_accent
-                                } else {
-                                    c_success
-                                })
-                                .child(if member.reference {
-                                    "◈ REF KEEPER"
-                                } else {
-                                    "✓ KEEPER"
-                                })
-                                .into_any_element()
+                            if member.reference {
+                                Tag::primary().child("REF KEEPER")
+                            } else {
+                                Tag::success().child("KEEPER")
+                            }
                         } else {
-                            div()
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(c_warning)
-                                .child("DUP")
-                                .into_any_element()
+                            Tag::warning().child("DUP")
                         })
                         .child(
                             div()
@@ -801,8 +754,6 @@ mod tests {
         assert!(snap.header.contains("FILE"));
         assert!(!snap.header.contains("deadbeef"), "hash is not actionable");
         assert!(!snap.header.contains("similar"));
-        assert_eq!(snap.header_label(true).chars().next().unwrap(), '▾');
-        assert_eq!(snap.header_label(false).chars().next().unwrap(), '▸');
     }
 
     #[test]
@@ -819,7 +770,35 @@ mod tests {
         };
         let snap = g.clone_snapshot();
         assert!(snap.header.contains("97.3% similar"), "{}", snap.header);
-        assert!(snap.header.contains("IMAGE"), "{}", snap.header);
-        assert!(snap.header.contains("reclaimable"), "{}", snap.header);
+        assert!(snap.header.contains("IMAGE"));
+        assert!(snap.header.contains("reclaimable"));
+    }
+
+    #[test]
+    fn grid_preview_covers_visual_kinds_only() {
+        assert!(is_grid_preview(&Thumb::Image));
+        assert!(is_grid_preview(&Thumb::Poster(PathBuf::from("poster.png"))));
+        assert!(is_grid_preview(&Thumb::PendingVideo));
+        assert!(!is_grid_preview(&Thumb::None));
+    }
+
+    #[test]
+    fn member_title_appends_similarity_then_media_summary() {
+        // Plain file: filename only.
+        let plain = member("photo.jpg", false, None);
+        assert_eq!(member_title(&plain), "photo.jpg");
+
+        // Similarity and media metadata follow, in that order.
+        let mut rich = member("photo.jpg", false, Some(0.973));
+        rich.media = Some(crate::media::MediaInfo {
+            width: Some(1920),
+            height: Some(1080),
+            duration_ms: None,
+            codec: Some("h264".to_string()),
+        });
+        let title = member_title(&rich);
+        assert!(title.starts_with("photo.jpg"), "{title}");
+        assert!(title.contains("97.3% similar"), "{title}");
+        assert!(title.ends_with("1920x1080"), "{title}");
     }
 }

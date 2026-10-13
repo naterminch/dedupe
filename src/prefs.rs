@@ -19,6 +19,13 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+/// Serializes every test that mutates the process-global `DEDUPE_PREFS`
+/// env var: this module's override test plus the view tests in
+/// [`crate::ui_tests`], which point prefs at a temp file so runs never
+/// touch the user's real `~/.dedupe/gui-prefs.json`.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Schema version; bump to invalidate previously stored preferences.
 const PREFS_VERSION: u32 = 1;
 
@@ -268,6 +275,11 @@ mod tests {
 
     #[test]
     fn save_and_load_use_the_env_override_path() {
+        // The env var is process-global: hold the shared lock so parallel
+        // tests (notably the UI tests in ui_tests) cannot race on it.
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = tmp_path("env");
         let _ = fs::remove_file(&path);
         unsafe {

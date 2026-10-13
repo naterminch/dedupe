@@ -183,14 +183,34 @@ fn aspect_key(w: u32, h: u32) -> i64 {
     ((w as f64 / h as f64) * 100.0).round() as i64
 }
 
+/// Order one bucket for star clustering: prioritized entries (exact-group
+/// keepers) lead, then path order for determinism. A prioritized entry
+/// therefore becomes its cluster's leader whenever one is present, which
+/// keeps every member's similarity score measured against that keeper —
+/// so a merged-into-exact group shows "X% similar to the keeper".
+fn sort_bucket<T>(
+    idxs: &mut [usize],
+    fps: &[T],
+    prioritize: &HashSet<PathBuf>,
+    path_of: impl Fn(&T) -> &PathBuf,
+) {
+    idxs.sort_by(|&a, &b| {
+        let pa = !prioritize.contains(path_of(&fps[a]));
+        let pb = !prioritize.contains(path_of(&fps[b]));
+        pa.cmp(&pb)
+            .then_with(|| path_of(&fps[a]).cmp(path_of(&fps[b])))
+    });
+}
+
 fn cluster_images(
     fps: &[ImageFp],
     buckets: HashMap<i64, Vec<usize>>,
     threshold: f64,
+    prioritize: &HashSet<PathBuf>,
 ) -> Vec<SimilarGroup> {
     let mut groups = Vec::new();
     for mut idxs in buckets.into_values() {
-        idxs.sort_by(|&a, &b| fps[a].entry.path.cmp(&fps[b].entry.path));
+        sort_bucket(idxs.as_mut_slice(), fps, prioritize, |fp| &fp.entry.path);
         let mut leaders: Vec<usize> = Vec::new();
         let mut cluster: Vec<Vec<usize>> = Vec::new();
         for &i in &idxs {
@@ -409,10 +429,11 @@ fn cluster_videos(
     fps: &[VideoFp],
     buckets: HashMap<(u32, u32), Vec<usize>>,
     threshold: f64,
+    prioritize: &HashSet<PathBuf>,
 ) -> Vec<SimilarGroup> {
     let mut groups = Vec::new();
     for mut idxs in buckets.into_values() {
-        idxs.sort_by(|&a, &b| fps[a].entry.path.cmp(&fps[b].entry.path));
+        sort_bucket(idxs.as_mut_slice(), fps, prioritize, |fp| &fp.entry.path);
         let mut leaders: Vec<usize> = Vec::new();
         let mut cluster: Vec<Vec<usize>> = Vec::new();
         for &i in &idxs {
@@ -463,23 +484,29 @@ fn make_video_group(fps: &[VideoFp], cluster: Vec<usize>) -> SimilarGroup {
 // Top level
 // ---------------------------------------------------------------------------
 
-/// Find perceptual duplicates among `entries` (which should be the files NOT
-/// already claimed by an exact-duplicate group). `probe` says whether ffprobe
-/// is available (needed for the fast video sampling path). `cache` supplies
-/// fingerprints from earlier runs — a hit skips decoding / frame sampling
-/// entirely for that file (valid only while its size and mtime are unchanged).
-/// When given, a `progress` bar spans the fingerprinting work (length = number
-/// of media files). Expensive work is pruned up front: images are bucketed by
-/// aspect ratio with header-only reads (no decode) and videos by resolution +
-/// a cheap duration check, so only files with a possible partner are
-/// fingerprinted. Returns the groups plus the newly computed fingerprints,
-/// which the caller should store back into the cache.
+/// Find perceptual duplicates among `entries`. `entries` should be the
+/// files NOT already claimed by an exact-duplicate group, PLUS the
+/// keepers of exact media groups (paths in `prioritize`) — without a
+/// keeper in the pool a rescaled or re-encoded variant has nothing to
+/// match against, even though its byte-identical siblings are right
+/// there. `probe` says whether ffprobe is available (needed for the fast
+/// video sampling path). `cache` supplies fingerprints from earlier runs
+/// — a hit skips decoding / frame sampling entirely for that file (valid
+/// only while its size and mtime are unchanged). When given, a `progress`
+/// bar spans the fingerprinting work (length = number of media files).
+/// Expensive work is pruned up front: images are bucketed by aspect ratio
+/// with header-only reads (no decode) and videos by resolution + a cheap
+/// duration check, so only files with a possible partner are fingerprinted
+/// (a lone prioritized keeper is never decoded). Returns the groups plus
+/// the newly computed fingerprints, which the caller should store back
+/// into the cache.
 pub fn find_similar(
     entries: Vec<FileEntry>,
     config: &SimilarConfig,
     probe: bool,
     cache: Option<&FingerprintCache>,
     progress: Option<&ProgressBar>,
+    prioritize: &HashSet<PathBuf>,
 ) -> (Vec<SimilarGroup>, Vec<CacheWrite>) {
     let mut images = Vec::new();
     let mut videos = Vec::new();
@@ -569,7 +596,12 @@ pub fn find_similar(
         for (i, fp) in img_fps.iter().enumerate() {
             buckets.entry(aspect_key(fp.w, fp.h)).or_default().push(i);
         }
-        groups.extend(cluster_images(&img_fps, buckets, config.threshold));
+        groups.extend(cluster_images(
+            &img_fps,
+            buckets,
+            config.threshold,
+            prioritize,
+        ));
     }
 
     // Videos: probe headers (if possible), bucket by resolution, and only
@@ -683,11 +715,128 @@ pub fn find_similar(
             for (i, fp) in vid_fps.iter().enumerate() {
                 buckets.entry((fp.w, fp.h)).or_default().push(i);
             }
-            groups.extend(cluster_videos(&vid_fps, buckets, config.threshold));
+            groups.extend(cluster_videos(
+                &vid_fps,
+                buckets,
+                config.threshold,
+                prioritize,
+            ));
         }
     }
 
     (groups, writes)
+}
+
+/// Merge similar clusters into the exact groups they belong to.
+///
+/// A cluster whose leader is an exact-group keeper describes the same
+/// picture as that byte-identical group. Everything the cluster touches
+/// folds into the lowest-index touched group:
+///
+/// - **Other touched exact groups** are absorbed whole — their members
+///   are byte-identical to their keeper, which the cluster matched, so
+///   they are the same picture (the user's "2 same size + 1 smaller"
+///   case, where the smaller variant is itself duplicated exactly).
+///   Absorbed members lose their keep flag unless reference-protected,
+///   which is never deletable and therefore always keep.
+/// - **Leftovers** (rescaled / re-encoded variants) are appended with
+///   their similarity score against the keeper, a media probe and a
+///   deletion-safety content hash.
+///
+/// The target group's keeper stands (any later keep-mode change
+/// re-elects keepers across the merged group). Emptied groups are
+/// dropped and indices renumbered so they stay contiguous.
+///
+/// Returns the clusters that touch no exact group; the caller builds
+/// those as fresh similar groups.
+pub fn merge_into_exact_groups(
+    groups: &mut Vec<Group>,
+    similar: Vec<SimilarGroup>,
+    keeper_group: &HashMap<PathBuf, usize>,
+    reference_dirs: &[PathBuf],
+    probe: bool,
+    engine: &HashEngine,
+) -> Vec<SimilarGroup> {
+    let mut leftover = Vec::new();
+    for sg in similar {
+        // Exact groups whose keeper sits in this cluster.
+        let touched: Vec<usize> = sg
+            .members
+            .iter()
+            .filter_map(|m| keeper_group.get(&m.entry.path).copied())
+            .collect();
+        if touched.is_empty() {
+            leftover.push(sg);
+            continue;
+        }
+        let target = touched.iter().copied().min().unwrap_or(0);
+        // Absorb the other touched exact groups whole.
+        for &gi in &touched {
+            if gi == target {
+                continue;
+            }
+            // The cluster's score for this group's keeper; its members
+            // are byte-identical to it, so they inherit the score.
+            let score = groups[gi].members.iter().find(|m| m.keep).and_then(|k| {
+                sg.members
+                    .iter()
+                    .find(|m| m.entry.path == k.path)
+                    .map(|m| m.similarity)
+            });
+            for mut m in std::mem::take(&mut groups[gi].members) {
+                // Reference members are never deletable, so they keep.
+                m.keep = m.keep && m.reference;
+                m.similarity = score;
+                // Their own group's shared full hash: the deletion safety
+                // re-hash must not fall back to the target group's hash,
+                // or these files could never be deleted.
+                m.content_hash = Some(groups[gi].hash.clone());
+                groups[target].members.push(m);
+            }
+        }
+        // Append the true leftovers (keepers were handled above).
+        for m in &sg.members {
+            if keeper_group.contains_key(&m.entry.path) {
+                continue;
+            }
+            let reference = !reference_dirs.is_empty()
+                && matching::is_under_ref(
+                    &matching::canonical_member(&m.entry.path),
+                    reference_dirs,
+                );
+            groups[target].members.push(GroupMember {
+                path: m.entry.path.clone(),
+                size: m.entry.size,
+                mtime_secs: m.entry.mtime_secs,
+                keep: false,
+                reference,
+                media: if probe {
+                    media::probe_media(&m.entry.path)
+                } else {
+                    None
+                },
+                similarity: Some(m.similarity),
+                content_hash: engine.full(&m.entry.path).ok(),
+                fingerprint_res: (m.w > 0 && m.h > 0).then_some((m.w, m.h)),
+            });
+        }
+        // A group that absorbed anything is no longer purely exact: its
+        // identity becomes the worst member match, not a hash that only
+        // the byte-identical members share.
+        let min_sim = groups[target]
+            .members
+            .iter()
+            .filter_map(|m| m.similarity)
+            .fold(f64::INFINITY, f64::min);
+        if min_sim.is_finite() {
+            groups[target].similarity = Some(min_sim);
+        }
+    }
+    groups.retain(|g| !g.members.is_empty());
+    for (i, g) in groups.iter_mut().enumerate() {
+        g.index = i + 1;
+    }
+    leftover
 }
 
 /// Convert perceptual groups into report-ready `Group`s (with media metadata,
@@ -1094,7 +1243,12 @@ mod tests {
         for (i, fp) in fps.iter().enumerate() {
             buckets.entry(aspect_key(fp.w, fp.h)).or_default().push(i);
         }
-        let groups = cluster_images(&fps, buckets, DEFAULT_SIMILARITY_PCT / 100.0);
+        let groups = cluster_images(
+            &fps,
+            buckets,
+            DEFAULT_SIMILARITY_PCT / 100.0,
+            &HashSet::new(),
+        );
         assert_eq!(groups.len(), 1, "a and b group, c stays alone");
         assert_eq!(groups[0].members.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);

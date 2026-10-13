@@ -22,14 +22,24 @@ use crate::ui_helpers::{
 use crate::ui_results::{SnapshotGroup, is_grid_preview, render_media_card, render_member};
 use crate::{actions, cache, cli, hashing, media, pipeline, poster, prefs, report, util};
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
+use gpui_kit::component::accordion::Accordion;
+use gpui_kit::component::alert::Alert;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::empty::{
+    Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
+};
+use gpui_kit::component::group_box::GroupBox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::label::Label;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::sidebar::{Sidebar, SidebarCollapsible, SidebarMenuItem};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
-use gpui_kit::component::{ActiveTheme, WindowExt};
+use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::{ActiveTheme, Side, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
     AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
@@ -199,7 +209,10 @@ struct ReportSnapshot {
 }
 
 impl DedupeView {
-    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Build the initial view: restore saved prefs, wire the slider/text
+    /// sync subscriptions, kick off the ffmpeg probe and the theme
+    /// restore before the first paint.
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let saved = prefs::GuiPrefs::load();
         let mk = |placeholder: &str, default: &str, window: &mut Window, cx: &mut Context<Self>| {
             cx.new(|cx| {
@@ -407,6 +420,17 @@ impl DedupeView {
         let initial_focus = view.folder_input.read(cx).focus_handle(cx);
         window.focus(&initial_focus, cx);
         view
+    }
+
+    /// Escape always does something: back out of Settings to the main
+    /// flow. No-op on the main view. Extracted from the key listener so
+    /// the state transition is directly testable (the offscreen test
+    /// harness does not route keystrokes into `open_window` windows).
+    pub(crate) fn leave_settings(&mut self, cx: &mut Context<Self>) {
+        if self.view == AppView::Settings {
+            self.view = AppView::Main;
+            cx.notify();
+        }
     }
 
     /// Read the sidebar form into CLI options. This is the GUI equivalent of
@@ -922,7 +946,7 @@ impl DedupeView {
     /// `t` (fraction). Exact groups always qualify; similar members need
     /// similarity-to-keeper >= `t`. Groups left with fewer than 2 members
     /// drop out (restorable by lowering the floor — no rescan).
-    fn apply_threshold(&mut self, t: f64, cx: &mut Context<Self>) {
+    pub(crate) fn apply_threshold(&mut self, t: f64, cx: &mut Context<Self>) {
         let t = t.clamp(self.scan_similarity, 1.0);
         self.min_sim = t;
         self.groups = self
@@ -1219,7 +1243,7 @@ impl DedupeView {
 
     /// Included-folders list with per-row Ref toggles (Krokiet pattern).
     fn render_folder_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = v_flex().gap_1();
+        let mut list = v_flex().gap_2();
         if self.folders.is_empty() {
             list = list.child(
                 div()
@@ -1231,7 +1255,7 @@ impl DedupeView {
         for (i, folder) in self.folders.iter().enumerate() {
             list = list.child(
                 v_flex()
-                    .gap_1()
+                    .gap_1p5()
                     .child(
                         div()
                             .text_xs()
@@ -1257,6 +1281,7 @@ impl DedupeView {
                             .child(
                                 Button::new(SharedString::from(format!("rm-folder-{i}")))
                                     .label("×")
+                                    .tooltip("Remove folder")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if i < this.folders.len() {
                                             this.folders.remove(i);
@@ -1282,18 +1307,13 @@ impl DedupeView {
             .bg(cx.theme().background)
             .child(
                 v_flex()
-                    .gap_1()
+                    .gap_2()
                     .p_4()
                     .pb_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "SCAN FOLDERS ({}) — TICK REF TO PROTECT",
-                                self.folders.len()
-                            )),
-                    )
+                    .child(self.sidebar_section(
+                        format!("Scan folders ({})", self.folders.len()),
+                        Some("tick Ref to protect"),
+                    ))
                     .child(self.render_folder_list(cx))
                     .child(
                         h_flex()
@@ -1327,37 +1347,41 @@ impl DedupeView {
                     v_flex()
                         .gap_3()
                         .px_4()
-                        .py_2()
-                        .child(self.sidebar_section("SCOPE (THIS SCAN)", cx))
+                        .py_3()
+                        .child(self.sidebar_section("Scope", Some("this scan")))
                         .child(self.sidebar_field(
-                            "FILE TYPES (EMPTY = ALL)",
+                            "File types",
+                            None,
                             Input::new(&self.types_input),
                             cx,
                         ))
                         .child(self.render_size_row(
-                            "MIN SIZE",
+                            "Min size",
                             &self.min_size_slider,
                             &self.min_size_input,
                             cx,
                         ))
                         .child(self.render_size_row(
-                            "MAX SIZE",
+                            "Max size",
                             &self.max_size_slider,
                             &self.max_size_input,
                             cx,
                         ))
                         .child(self.sidebar_field(
-                            "MAX DEPTH (EMPTY = UNLIMITED)",
+                            "Max depth",
+                            Some("empty = unlimited"),
                             Input::new(&self.max_depth_input),
                             cx,
                         ))
                         .child(self.sidebar_field(
-                            "SKIP DIRECTORIES (; SEPARATED)",
+                            "Skip directories",
+                            Some("; separated"),
                             Input::new(&self.exclude_dir_input),
                             cx,
                         ))
                         .child(self.sidebar_field(
-                            "SKIP PATHS CONTAINING (; SEPARATED)",
+                            "Skip paths containing",
+                            Some("; separated"),
                             Input::new(&self.exclude_path_input),
                             cx,
                         )),
@@ -1389,43 +1413,42 @@ impl DedupeView {
             )
     }
 
-    /// Settings page: side nav (General | Preferences) + content pane,
-    /// mirroring the main page layout. General holds everyday switches
-    /// (trash, remembered folders, cache); Preferences holds matching and
-    /// scan-engine tuning. Everything auto-saves to `gui-prefs.json`.
-    /// (The top bar ← Back button and Escape leave Settings.)
+    /// Settings page: kit Sidebar nav (General | Preferences) + content
+    /// pane, mirroring the main page layout. General holds everyday
+    /// switches (trash, remembered folders, cache); Preferences holds
+    /// matching and scan-engine tuning. Everything auto-saves to
+    /// `gui-prefs.json`. (The top bar ← Back button and Escape leave
+    /// Settings.)
     fn render_settings(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let view = cx.entity();
+        let nav_general = view.clone();
         h_flex()
             .size_full()
             .overflow_hidden()
             .child(
-                v_flex()
+                Sidebar::new("settings-nav")
+                    .side(Side::Left)
+                    .collapsible(SidebarCollapsible::None)
                     .w(px(200.))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(cx.theme().border)
-                    .bg(cx.theme().background)
-                    .p_4()
-                    .gap_2()
                     .child(
-                        Button::new("settings-tab-general")
-                            .label("General")
-                            .w_full()
-                            .selected(self.settings_tab == SettingsTab::General)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings_tab = SettingsTab::General;
-                                cx.notify();
-                            })),
+                        SidebarMenuItem::new("General")
+                            .active(self.settings_tab == SettingsTab::General)
+                            .on_click(move |_, _, cx| {
+                                nav_general.update(cx, |this, cx| {
+                                    this.settings_tab = SettingsTab::General;
+                                    cx.notify();
+                                });
+                            }),
                     )
                     .child(
-                        Button::new("settings-tab-preferences")
-                            .label("Preferences")
-                            .w_full()
-                            .selected(self.settings_tab == SettingsTab::Preferences)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.settings_tab = SettingsTab::Preferences;
-                                cx.notify();
-                            })),
+                        SidebarMenuItem::new("Preferences")
+                            .active(self.settings_tab == SettingsTab::Preferences)
+                            .on_click(move |_, _, cx| {
+                                view.update(cx, |this, cx| {
+                                    this.settings_tab = SettingsTab::Preferences;
+                                    cx.notify();
+                                });
+                            }),
                     ),
             )
             .child(
@@ -1443,16 +1466,17 @@ impl DedupeView {
             )
     }
 
-    /// General tab: everyday switches (trash, remembered folders, cache).
+    /// General tab: everyday switches (trash, remembered folders, cache),
+    /// each section a kit GroupBox with a Label title.
     fn render_settings_general(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_4()
-            .p_6()
+            .p_8()
             .max_w(px(640.))
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(self.settings_section("GENERAL", cx))
+                GroupBox::new()
+                    .id("settings-general")
+                    .title(Label::new("General"))
                     .child(
                         v_flex()
                             .gap_3()
@@ -1479,9 +1503,9 @@ impl DedupeView {
                     ),
             )
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(self.settings_section("CACHE", cx))
+                GroupBox::new()
+                    .id("settings-cache")
+                    .title(Label::new("Cache"))
                     .child(
                         v_flex()
                             .gap_3()
@@ -1521,20 +1545,21 @@ impl DedupeView {
             )
     }
 
-    /// Preferences tab: matching + scan-engine tuning.
+    /// Preferences tab: matching + scan-engine tuning, each section a kit
+    /// GroupBox with a Label title.
     fn render_settings_preferences(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .gap_4()
-            .p_6()
+            .p_8()
             .max_w(px(640.))
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(self.settings_section("MATCHING", cx))
+                GroupBox::new()
+                    .id("settings-matching")
+                    .title(Label::new("Matching"))
                     .child(
                         v_flex()
                             .gap_3()
-                            .child(self.sidebar_section("HASH ALGORITHM", cx))
+                            .child(self.sidebar_section("Hash algorithm", None))
                             .child(
                                 RadioGroup::new("hash")
                                     .children(["blake3", "sha256", "md5"])
@@ -1552,7 +1577,8 @@ impl DedupeView {
                                     .child(hash_caption(self.hash_index)),
                             )
                             .child(self.sidebar_field(
-                                "SIMILARITY % FOR IMAGES / VIDEO",
+                                "Similarity %",
+                                Some("images / video"),
                                 Input::new(&self.similarity_input),
                                 cx,
                             ))
@@ -1579,18 +1605,19 @@ impl DedupeView {
                     ),
             )
             .child(
-                v_flex()
-                    .gap_2()
-                    .child(self.settings_section("SYSTEM", cx))
+                GroupBox::new()
+                    .id("settings-system")
+                    .title(Label::new("System"))
                     .child(
                         v_flex()
                             .gap_3()
                             .child(self.sidebar_field(
-                                "WORKER THREADS (0 = AUTO)",
+                                "Worker threads",
+                                Some("0 = auto"),
                                 Input::new(&self.jobs_input),
                                 cx,
                             ))
-                            .child(self.sidebar_section("DEFAULT KEEP (NEW SCANS)", cx))
+                            .child(self.sidebar_section("Default keep", Some("for new scans")))
                             .child(
                                 RadioGroup::new("default-keep")
                                     .children([
@@ -1674,11 +1701,11 @@ impl DedupeView {
         label: &'static str,
         slider: &Entity<SliderState>,
         input: &Entity<InputState>,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
-            .gap_1()
-            .child(self.sidebar_section(label, cx))
+            .gap_1p5()
+            .child(self.sidebar_section(label, None))
             .child(
                 h_flex()
                     .gap_2()
@@ -1688,35 +1715,36 @@ impl DedupeView {
             )
     }
 
-    fn sidebar_section(&self, label: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(label)
-    }
-
-    fn settings_section(&self, label: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .text_sm()
-            .font_weight(FontWeight::BOLD)
-            .text_color(cx.theme().foreground)
-            .child(label)
+    /// Field/section label with an optional dimmed hint. The kit's `Label`
+    /// owns the typography: sentence-case label, hint after it in muted
+    /// color ("Max depth" + "empty = unlimited").
+    fn sidebar_section(
+        &self,
+        label: impl Into<SharedString>,
+        secondary: Option<&'static str>,
+    ) -> impl IntoElement {
+        let label = Label::new(label);
+        match secondary {
+            Some(hint) => label.secondary(hint),
+            None => label,
+        }
     }
 
     fn sidebar_field(
         &self,
         label: &'static str,
+        secondary: Option<&'static str>,
         input: Input,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
-            .gap_1()
-            .child(self.sidebar_section(label, cx))
+            .gap_1p5()
+            .child(self.sidebar_section(label, secondary))
             .child(input)
     }
 
-    /// First-run card: the sidebar holds a dozen options, so the empty
-    /// results pane teaches the 3-step flow instead of sitting blank.
+    /// First-run empty state: the sidebar holds a dozen options, so the
+    /// empty results pane teaches the 3-step flow instead of sitting blank.
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let step = |n: &'static str, text: &'static str| {
             h_flex()
@@ -1731,34 +1759,33 @@ impl DedupeView {
                 )
                 .child(div().text_sm().child(text))
         };
-        v_flex()
-            .w_full()
-            .gap_2()
-            .p_4()
-            .border_1()
-            .rounded_md()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .child("Find duplicate files in 3 steps"),
+        Empty::new()
+            .header(
+                EmptyHeader::new()
+                    .media(
+                        EmptyMedia::new()
+                            .with_variant(EmptyMediaVariant::Icon)
+                            .child(IconName::Search),
+                    )
+                    .title(EmptyTitle::new().child("Find duplicate files in 3 steps"))
+                    .description(EmptyDescription::new().child(
+                        "Keepers are never deleted. Deletion goes to the trash by default.",
+                    )),
             )
-            .child(step(
-                "1.",
-                "Add a folder on the left (type it and Add, or Browse…).",
-            ))
-            .child(step("2.", "Press “Scan for duplicates”."))
-            .child(step(
-                "3.",
-                "Review each group, untick anything that must survive, then Delete selected.",
-            ))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("Keepers are never deleted. Deletion goes to the trash by default."),
+            .content(
+                EmptyContent::new().child(
+                    v_flex()
+                        .gap_2()
+                        .child(step(
+                            "1.",
+                            "Add a folder on the left (type it and Add, or Browse…).",
+                        ))
+                        .child(step("2.", "Press “Scan for duplicates”."))
+                        .child(step(
+                            "3.",
+                            "Review each group, untick anything that must survive, then Delete selected.",
+                        )),
+                ),
             )
     }
 
@@ -1808,25 +1835,49 @@ impl DedupeView {
             list = list.child(self.render_stat_chips(cx));
         }
         if self.ffprobe_note {
-            list = list.child(div().text_xs().text_color(cx.theme().warning).child(
-                "⚠ ffprobe not found on PATH — install FFmpeg for media resolution/duration.",
+            list = list.child(Alert::warning(
+                "ffprobe-note",
+                "ffprobe not found on PATH — install FFmpeg for media resolution/duration.",
             ));
         }
         if self.has_scanned && self.groups.is_empty() {
-            list = list.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().success)
-                    .child("✔ No duplicate files found."),
-            );
+            list = list.child(Alert::success("no-dups", "No duplicate files found."));
         }
         // Render in pages: thousands of groups would otherwise build
         // thousands of elements up front and stall the UI. Order comes
         // from sort_groups (scan / toggle / filter events only) — rendering
         // itself never re-sorts, so keeper picks can't move groups around.
+        // All groups are ONE kit Accordion (bordered card, per-item
+        // chevron + animated reveal). The accordion reports its open set
+        // as positions; mirror it back to group indices so Expand all /
+        // Collapse all keep driving `expanded`.
         let total = self.groups.len();
-        for gi in 0..total.min(self.group_limit) {
-            list = list.child(self.render_group(gi, cx));
+        if total > 0 {
+            let view = cx.entity();
+            let mut acc = Accordion::new("groups")
+                .multiple(true)
+                .w_full()
+                .on_toggle_click(move |open: &[usize], _, cx| {
+                    view.update(cx, |this, cx| {
+                        this.expanded = open
+                            .iter()
+                            .filter_map(|&pos| this.groups.get(pos).map(|g| g.index))
+                            .collect();
+                        cx.notify();
+                    });
+                });
+            for gi in 0..total.min(self.group_limit) {
+                let expanded = self.expanded.contains(&self.groups[gi].index);
+                acc = acc.item(|item| {
+                    let item = item.title(self.group_header(gi)).open(expanded);
+                    if expanded {
+                        item.child(self.group_body(gi, cx))
+                    } else {
+                        item
+                    }
+                });
+            }
+            list = list.child(acc);
         }
         if total > self.group_limit {
             let remaining = total - self.group_limit;
@@ -1851,40 +1902,31 @@ impl DedupeView {
     /// Live scan progress card: phase label with "N of M" counts plus a
     /// real progress bar for the determinate hashing/comparing stages.
     fn render_progress(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut card = v_flex()
-            .w_full()
+        let title_row = h_flex()
+            .items_center()
+            .justify_between()
             .gap_2()
-            .p_3()
-            .border_1()
-            .rounded_md()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
             .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(cx.theme().accent)
-                            .child(self.status.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} file(s) scanned", self.files_scanned)),
-                    ),
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(cx.theme().accent)
+                    .child(self.status.clone()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{} file(s) scanned", self.files_scanned)),
             );
+        let mut card = GroupBox::new().id("scan-progress").title(title_row);
         if self.scan_determinate {
             let pct = if self.scan_total > 0 {
                 (self.scan_done as f32 / self.scan_total as f32 * 100.0).clamp(0.0, 100.0)
             } else {
                 0.0
             };
-            card = card.child(Progress::new("scan-progress").value(pct).w_full());
+            card = card.child(Progress::new("scan-progress-bar").value(pct).w_full());
         }
         card
     }
@@ -1894,8 +1936,8 @@ impl DedupeView {
         let chip = |value: String, label: &'static str, color: gpui_kit::Hsla| {
             v_flex()
                 .gap_0()
-                .px_3()
-                .py_1()
+                .px_4()
+                .py_1p5()
                 .border_1()
                 .rounded_md()
                 .border_color(cx.theme().border)
@@ -1917,17 +1959,17 @@ impl DedupeView {
             .gap_2()
             .child(chip(
                 self.files_scanned.to_string(),
-                "FILES SCANNED",
+                "Files scanned",
                 cx.theme().foreground,
             ))
             .child(chip(
                 self.groups.len().to_string(),
-                "GROUPS",
+                "Groups",
                 cx.theme().accent,
             ))
             .child(chip(
                 util::human_bytes(self.reclaim_bytes),
-                "RECLAIMABLE",
+                "Reclaimable",
                 cx.theme().success,
             ))
     }
@@ -1949,12 +1991,7 @@ impl DedupeView {
         h_flex()
             .gap_1()
             .items_center()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("SELECT"),
-            )
+            .child(Label::new("Select"))
             .child(
                 Button::new("sel-all")
                     .label("All")
@@ -2015,7 +2052,7 @@ impl DedupeView {
     /// results without rescanning (blank restores the scan floor).
     /// Shown only when similar-media groups exist; exact groups always
     /// qualify and are unaffected.
-    fn render_sim_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sim_filter(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         let has_sim = self.groups.iter().any(|g| g.similarity.is_some());
         if self.scanning || self.groups.is_empty() || !has_sim {
             return div().into_any_element();
@@ -2023,12 +2060,7 @@ impl DedupeView {
         h_flex()
             .gap_1()
             .items_center()
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("SIM ≥{:.0}%", self.min_sim * 100.0)),
-            )
+            .child(Label::new("Similarity floor"))
             .child(div().w(px(64.)).child(Input::new(&self.min_sim_input)))
             .into_any_element()
     }
@@ -2351,8 +2383,15 @@ impl DedupeView {
                                 .danger()
                                 .label(format!("Delete {count}"))
                                 .on_click(move |_, window, cx| {
-                                    confirm_view.update(cx, |v, cx| v.perform_delete(cx));
+                                    let message = confirm_view.update(cx, |v, cx| {
+                                        v.perform_delete(cx);
+                                        v.status.clone()
+                                    });
                                     window.close_dialog(cx);
+                                    window.push_notification(
+                                        Notification::success(message).autohide(true),
+                                        cx,
+                                    );
                                 }),
                         ),
                     )
@@ -2360,65 +2399,55 @@ impl DedupeView {
         );
     }
 
-    fn render_group(&mut self, gi: usize, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Group header for the accordion trigger. The kit trigger draws the
+    /// rotating chevron and the spring reveal, so no glyphs live here.
+    fn group_header(&self, gi: usize) -> impl IntoElement {
+        let snapshot = self.groups[gi].clone_snapshot();
+        div().text_sm().truncate().child(snapshot.header)
+    }
+
+    /// Expanded group body: the media card grid (when every member has a
+    /// large preview) or plain member rows, plus the lazy inline
+    /// video-strip extraction kickoff. Rendered only for expanded groups.
+    fn group_body(&mut self, gi: usize, cx: &mut Context<Self>) -> impl IntoElement {
         // Snapshot the group first: click handlers must own their data
         // ('static), so nothing borrowed from `self` may leak into them.
         let snapshot = self.groups[gi].clone_snapshot();
-        let expanded = self.expanded.contains(&snapshot.index);
-        let mut card = v_flex()
-            .w_full()
-            .gap_1()
-            .p_3()
-            .border_1()
-            .rounded_md()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .child(
-                Button::new(SharedString::from(format!("group-{}", snapshot.index)))
-                    .label(snapshot.header_label(expanded))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        let idx = snapshot.index;
-                        if !this.expanded.remove(&idx) {
-                            this.expanded.insert(idx);
-                        }
-                        cx.notify();
-                    })),
-            );
-        if expanded {
-            // Single-display grid for media groups: every member has a
-            // large visual (image or video poster), so render each once as
-            // a side-by-side card (left card / right card, info under each)
-            // instead of big-preview + duplicate rows. Keeper cards get a
-            // highlight border; clicking a preview promotes it to keeper.
-            let thumbs: Vec<crate::ui_results::Thumb> =
-                snapshot.members.iter().map(|m| self.thumb_for(m)).collect();
-            let grid = snapshot.members.len() >= 2 && thumbs.iter().all(is_grid_preview);
-            if grid {
-                for chunk in snapshot.members.chunks(2).enumerate() {
-                    let (ci, members) = chunk;
-                    // Stretch keeps both cards in a row the same height so
-                    // images and videos always display at the same size.
-                    let mut row = h_flex().gap_2().pl_6().items_stretch();
-                    for (offset, member) in members.iter().enumerate() {
-                        let mi = ci * 2 + offset;
-                        let checked = self.selected.contains(&member.path);
-                        let thumb = self.thumb_for(member);
-                        // Lazy inline strip: one background extraction per
-                        // video, kicked off on first sight (render may run
-                        // often; the loading set + disk cache dedupe it).
-                        if matches!(
-                            thumb,
-                            crate::ui_results::Thumb::Poster(_)
-                                | crate::ui_results::Thumb::PendingVideo
-                        ) && !self.strips.contains_key(&member.path)
-                            && !self.preview_loading.contains(&member.path)
-                        {
-                            self.preview_loading.insert(member.path.clone());
-                            let job_path = member.path.clone();
-                            let done_path = member.path.clone();
-                            let size = member.size;
-                            let mtime = member.mtime_secs;
-                            cx.spawn(async move |this, cx| {
+        let mut body = v_flex().gap_1();
+        // Single-display grid for media groups: every member has a
+        // large visual (image or video poster), so render each once as a
+        // side-by-side card (left card / right card, info under each)
+        // instead of big-preview + duplicate rows. Keeper cards get a
+        // highlight border; clicking a preview promotes it to keeper.
+        let thumbs: Vec<crate::ui_results::Thumb> =
+            snapshot.members.iter().map(|m| self.thumb_for(m)).collect();
+        let grid = snapshot.members.len() >= 2 && thumbs.iter().all(is_grid_preview);
+        if grid {
+            for chunk in snapshot.members.chunks(2).enumerate() {
+                let (ci, members) = chunk;
+                // Stretch keeps both cards in a row the same height so
+                // images and videos always display at the same size.
+                let mut row = h_flex().gap_2().pl_6().items_stretch();
+                for (offset, member) in members.iter().enumerate() {
+                    let mi = ci * 2 + offset;
+                    let checked = self.selected.contains(&member.path);
+                    let thumb = self.thumb_for(member);
+                    // Lazy inline strip: one background extraction per
+                    // video, kicked off on first sight (render may run
+                    // often; the loading set + disk cache dedupe it).
+                    if matches!(
+                        thumb,
+                        crate::ui_results::Thumb::Poster(_)
+                            | crate::ui_results::Thumb::PendingVideo
+                    ) && !self.strips.contains_key(&member.path)
+                        && !self.preview_loading.contains(&member.path)
+                    {
+                        self.preview_loading.insert(member.path.clone());
+                        let job_path = member.path.clone();
+                        let done_path = member.path.clone();
+                        let size = member.size;
+                        let mtime = member.mtime_secs;
+                        cx.spawn(async move |this, cx| {
                                 let frames = cx
                                     .background_executor()
                                     .spawn(async move {
@@ -2443,44 +2472,43 @@ impl DedupeView {
                                 .ok();
                             })
                             .detach();
-                        }
-                        let video = crate::ui_results::VideoPreview {
-                            strip: self.strips.get(&member.path).cloned(),
-                            loading: self.preview_loading.contains(&member.path),
-                        };
-                        row = row.child(render_media_card(
-                            snapshot.index,
-                            mi,
-                            member,
-                            checked,
-                            &thumb,
-                            video,
-                            cx,
-                        ));
                     }
-                    // Odd tail: keep the single card left-aligned at half
-                    // width instead of stretching full width.
-                    if members.len() == 1 {
-                        row = row.child(div().flex_1());
-                    }
-                    card = card.child(row);
-                }
-            } else {
-                for (mi, member) in snapshot.members.iter().enumerate() {
-                    let checked = self.selected.contains(&member.path);
-                    let thumb = self.thumb_for(member);
-                    card = card.child(render_member(
+                    let video = crate::ui_results::VideoPreview {
+                        strip: self.strips.get(&member.path).cloned(),
+                        loading: self.preview_loading.contains(&member.path),
+                    };
+                    row = row.child(render_media_card(
                         snapshot.index,
                         mi,
                         member,
                         checked,
                         &thumb,
+                        video,
                         cx,
                     ));
                 }
+                // Odd tail: keep the single card left-aligned at half
+                // width instead of stretching full width.
+                if members.len() == 1 {
+                    row = row.child(div().flex_1());
+                }
+                body = body.child(row);
+            }
+        } else {
+            for (mi, member) in snapshot.members.iter().enumerate() {
+                let checked = self.selected.contains(&member.path);
+                let thumb = self.thumb_for(member);
+                body = body.child(render_member(
+                    snapshot.index,
+                    mi,
+                    member,
+                    checked,
+                    &thumb,
+                    cx,
+                ));
             }
         }
-        card
+        body
     }
 }
 
@@ -2494,17 +2522,16 @@ impl Render for DedupeView {
             // Checklist C29: Escape always does something — backs out of
             // Settings to the main flow.
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
-                if ev.keystroke.key == "escape" && this.view == AppView::Settings {
-                    this.view = AppView::Main;
-                    cx.notify();
+                if ev.keystroke.key == "escape" {
+                    this.leave_settings(cx);
                 }
             }))
             .child(
                 h_flex()
                     .items_center()
                     .justify_between()
-                    .px_4()
-                    .py_2()
+                    .px_6()
+                    .py_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -2581,20 +2608,20 @@ impl Render for DedupeView {
                     .into_any_element()
             })
             .child(
-                h_flex()
-                    .items_center()
-                    .px_4()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(
+                StatusBar::new()
+                    .left(
                         div()
                             .text_xs()
                             .truncate()
                             .text_color(cx.theme().muted_foreground)
+                            .child(self.status.clone()),
+                    )
+                    .right(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
                             .child(format!(
-                                "{}  ·  scanned {} file(s) ({})",
-                                self.status,
+                                "scanned {} file(s) ({})",
                                 self.files_scanned,
                                 util::human_bytes(self.bytes_scanned)
                             )),

@@ -85,7 +85,7 @@ Shared pipeline (`pipeline::run_scan`): Scanning → Hashing → Comparing media
 1. Walk paths, apply `--types`/size/depth/exclude filters; record unreadable paths without aborting.
 2. Group by size; collapse hard links; partial-hash survivors, keep shared buckets.
 3. Full-hash survivors (cache-assisted); identical hashes form exact groups, keeper picked, `ffprobe` metadata attached.
-4. Similar pass on leftovers: bucket, fingerprint (dHash / 8 video frames), star-cluster at `--similarity`, per-member content hash stored.
+4. Similar pass: leftovers plus each exact group's keeper are bucketed and fingerprinted (dHash / 8 video frames), then star-clustered at `--similarity`; a rescaled or re-encoded variant merges into its byte-identical group instead of forming a separate one, and per-member content hashes are stored.
 5. Print human/JSON with reclaimable bytes; on `--delete`, prompt then re-hash and delete (trash/permanent).
 
 Repeat scans skip unchanged files via size+mtime caches (`hashes.bin`, `fingerprints.bin`).

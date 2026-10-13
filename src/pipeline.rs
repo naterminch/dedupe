@@ -8,6 +8,7 @@
 use crate::{cache, cli, hashing, matching, media, report, scan, similar, util};
 use anyhow::Result;
 use indicatif::ProgressBar;
+use std::collections::{HashMap, HashSet};
 
 /// Coarse scan stages. Reported through the `on_phase` callback so callers
 /// can show status (CLI prints a line, the GUI updates its status bar).
@@ -168,13 +169,37 @@ pub fn run_scan(
             .iter()
             .any(|e| media::classify(&e.path) == media::MediaKind::Video);
         needs_ffmpeg_note = has_videos && !media::ffmpeg_available();
-        let exact_paths: std::collections::HashSet<std::path::PathBuf> = groups
+        // Similar pass: leftovers PLUS the keeper of every exact media
+        // group. The keeper is the comparison target — without it a
+        // rescaled or re-encoded variant would have nothing to match
+        // against and be reported as its own (or no) group, even though
+        // its byte-identical siblings sit right there.
+        let keeper_group: HashMap<std::path::PathBuf, usize> = groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.similarity.is_none())
+            .filter_map(|(gi, g)| {
+                g.members
+                    .iter()
+                    .find(|m| m.keep)
+                    .map(|m| (m.path.clone(), gi))
+            })
+            .collect();
+        let exact_members: HashSet<std::path::PathBuf> = groups
             .iter()
             .flat_map(|g| g.members.iter().map(|m| m.path.clone()))
             .collect();
+        // Only media keepers seed the pool: non-media exact groups can
+        // never match perceptually, and find_similar's bucket pruning
+        // keeps a lone keeper from ever being decoded.
+        let keepers: HashSet<std::path::PathBuf> = keeper_group
+            .keys()
+            .filter(|p| media::classify(p) != media::MediaKind::Other)
+            .cloned()
+            .collect();
         let candidates: Vec<scan::FileEntry> = similar_entries
             .into_iter()
-            .filter(|e| !exact_paths.contains(&e.path))
+            .filter(|e| !exact_members.contains(&e.path) || keepers.contains(&e.path))
             .collect();
         let similar_cfg = similar::SimilarConfig {
             threshold: similar_threshold,
@@ -185,6 +210,7 @@ pub fn run_scan(
             ffprobe_used,
             cache.as_ref(),
             similar_progress,
+            &keepers,
         );
         if let Some(c) = &mut cache {
             for w in writes {
@@ -196,9 +222,19 @@ pub fn run_scan(
                 cache_save_errors.push(format!("fingerprint cache: {e}"));
             }
         }
-        let built = if !similar.is_empty() {
+        // Clusters that matched an exact keeper merge into that group; the
+        // rest become fresh similar groups.
+        let leftover = similar::merge_into_exact_groups(
+            &mut groups,
+            similar,
+            &keeper_group,
+            &reference_dirs,
+            ffprobe_used,
+            &engine,
+        );
+        let built = if !leftover.is_empty() {
             similar::build_similar_groups(
-                similar,
+                leftover,
                 keep,
                 &reference_dirs,
                 ffprobe_used,
@@ -365,6 +401,111 @@ mod tests {
         .unwrap();
         assert!(out.groups.is_empty());
         assert_eq!(out.stats.files_scanned, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user-facing bug: an exact-duplicate pair PLUS a downscaled
+    /// re-encode of the same picture must land in ONE group. The old
+    /// pipeline dropped every exact-group member from the similar-pass
+    /// candidate pool, so the variant had nothing to match against and
+    /// the pair stayed a group of two.
+    #[test]
+    fn downscaled_variant_joins_its_exact_group() {
+        use image::ImageBuffer;
+        let dir = tmpdir("merge");
+        // Smooth gradient: survives a 4x downscale under dHash.
+        let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 300, |x, y| {
+            image::Rgb([(x * 255 / 400) as u8, (y * 255 / 300) as u8, 128])
+        });
+        img.save(dir.join("photo.png")).unwrap();
+        std::fs::copy(dir.join("photo.png"), dir.join("photo-copy.png")).unwrap();
+        let small = image::imageops::resize(&img, 100, 75, image::imageops::FilterType::Triangle);
+        small.save(dir.join("photo-small.png")).unwrap();
+
+        let mut cli = test_cli(vec![dir.to_str().unwrap().to_string()]);
+        cli.exact = false;
+        cli.similarity = 90.0;
+        let out = run_scan(&cli, None, None, &|_| {}).unwrap();
+
+        assert_eq!(out.groups.len(), 1, "one picture => one group");
+        let g = &out.groups[0];
+        assert_eq!(
+            g.members.len(),
+            3,
+            "the downscaled variant must join the exact group, got {:?}",
+            g.members.iter().map(|m| m.path.clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            g.members
+                .iter()
+                .any(|m| m.path.ends_with("photo-small.png"))
+        );
+        // The merged group's identity is now its worst member match.
+        assert!(g.similarity.is_some_and(|s| s >= 0.9));
+        assert_eq!(g.members.iter().filter(|m| m.keep).count(), 1);
+        // The variant carries a similarity score and a deletion-safety hash.
+        let small = g
+            .members
+            .iter()
+            .find(|m| m.path.ends_with("photo-small.png"))
+            .unwrap();
+        assert!(!small.keep);
+        assert!(small.similarity.is_some_and(|s| s >= 0.9));
+        assert!(small.content_hash.is_some());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The user's actual Pictures shape: the smaller variant is itself
+    /// duplicated byte-for-byte, so the scan finds TWO exact groups of the
+    /// same picture (the big pair + the small pair). Both must fold into
+    /// ONE group of 4.
+    #[test]
+    fn duplicated_small_variant_folds_into_one_group() {
+        use image::ImageBuffer;
+        let dir = tmpdir("fold");
+        let img: ImageBuffer<image::Rgb<u8>, Vec<u8>> = ImageBuffer::from_fn(400, 300, |x, y| {
+            image::Rgb([(x * 255 / 400) as u8, (y * 255 / 300) as u8, 128])
+        });
+        img.save(dir.join("photo.png")).unwrap();
+        std::fs::copy(dir.join("photo.png"), dir.join("photo-copy.png")).unwrap();
+        let small = image::imageops::resize(&img, 100, 75, image::imageops::FilterType::Triangle);
+        small.save(dir.join("small.png")).unwrap();
+        std::fs::copy(dir.join("small.png"), dir.join("small-copy.png")).unwrap();
+
+        let mut cli = test_cli(vec![dir.to_str().unwrap().to_string()]);
+        cli.exact = false;
+        cli.similarity = 90.0;
+        let out = run_scan(&cli, None, None, &|_| {}).unwrap();
+
+        assert_eq!(out.groups.len(), 1, "one picture => one group");
+        let g = &out.groups[0];
+        assert_eq!(g.members.len(), 4, "both exact pairs fold together");
+        assert!(
+            g.similarity.is_some_and(|s| s >= 0.9),
+            "merged group identity = worst member match"
+        );
+        // Exactly one keeper, and it belongs to the big pair.
+        let keepers: Vec<&str> = g
+            .members
+            .iter()
+            .filter(|m| m.keep)
+            .map(|m| m.path.to_str().unwrap())
+            .collect();
+        assert_eq!(keepers.len(), 1, "one keeper, got {keepers:?}");
+        assert!(keepers[0].contains("photo"));
+        // Both smalls carry a similarity score; both bigs stay exact.
+        let smalls: Vec<_> = g
+            .members
+            .iter()
+            .filter(|m| m.path.to_string_lossy().contains("small"))
+            .collect();
+        assert_eq!(smalls.len(), 2);
+        for s in smalls {
+            assert!(s.similarity.is_some_and(|v| v >= 0.9));
+            assert!(s.content_hash.is_some());
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

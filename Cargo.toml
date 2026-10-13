@@ -37,6 +37,9 @@ walkdir = "2"
 [dev-dependencies]
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+# test-support unlocks gpui-kit's headless window harness (TestAppContext,
+# TestWindowExt) for the UI tests in src/ui_tests.rs.
+gpui-kit = { version = "0.7", features = ["test-support"] }
 
 [build-dependencies]
 winres = "0.1"
