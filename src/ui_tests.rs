@@ -320,6 +320,90 @@ fn scan_without_folders_sets_a_help_status(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn adding_a_folder_updates_the_sidebar_immediately(cx: &mut TestAppContext) {
+    let (handle, view, _guard) = open_view(cx);
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.folder_input.update(cx, |input, cx| {
+                input.set_value(gpui_kit::SharedString::from("C:\\media"), window, cx);
+            });
+        });
+        window.render_frame(cx);
+        window.click("add-folder", cx);
+        window.render_frame(cx);
+    });
+
+    assert_view(cx, &view, |v| {
+        assert_eq!(
+            v.folders
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["C:\\media"],
+            "folder must be in the list"
+        );
+    });
+
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            assert_eq!(v.folder_input.read(cx).value().as_ref(), "");
+        });
+        window.render_frame(cx);
+        assert!(window.find("rm-folder-0").bounds().size.width > px(0.));
+    });
+}
+
+#[gpui_kit::test]
+fn enter_in_the_folder_box_adds_and_clears_the_input(cx: &mut TestAppContext) {
+    let (handle, view, _guard) = open_view(cx);
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.folder_input.update(cx, |input, cx| {
+                input.set_value(gpui_kit::SharedString::from("D:\\photos"), window, cx);
+            });
+            v.add_from_input(window, cx);
+        });
+        window.render_frame(cx);
+    });
+
+    assert_view(cx, &view, |v| {
+        assert_eq!(
+            v.folders
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["D:\\photos"]
+        );
+    });
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            assert_eq!(v.folder_input.read(cx).value().as_ref(), "");
+        });
+        window.render_frame(cx);
+    });
+}
+
+#[gpui_kit::test]
+fn settings_switch_toggles_the_pref(cx: &mut TestAppContext) {
+    let (handle, view, _guard) = open_view(cx);
+    let before = assert_view(cx, &view, |v| v.trash);
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.view = AppView::Settings;
+            v.settings_tab = SettingsTab::General;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        positive(window.find("trash").bounds());
+        window.click("trash", cx);
+        window.render_frame(cx);
+    });
+    assert_view(cx, &view, |v| {
+        assert_eq!(v.trash, !before, "switch must flip the pref");
+    });
+}
+
+#[gpui_kit::test]
 fn theme_toggle_switches_to_dark_mode(cx: &mut TestAppContext) {
     let (handle, _view, _guard) = open_view(cx);
     cx.update(|app| assert!(!app.theme().is_dark(), "starts light"));

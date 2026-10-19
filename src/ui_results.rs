@@ -10,12 +10,14 @@ use crate::{media, report, util};
 use gpui_kit::base::{h_flex, v_flex};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, IconName, WindowExt};
 use gpui_kit::{
-    Context, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img, px,
+    ClipboardItem, Context, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
+    px,
 };
 use std::path::PathBuf;
 
@@ -99,7 +101,7 @@ pub(crate) fn render_thumb(
     path: &std::path::Path,
     thumb: &Thumb,
     cx: &mut Context<DedupeView>,
-) -> impl IntoElement {
+) -> gpui_kit::AnyElement {
     match thumb {
         Thumb::None => div().into_any_element(),
         Thumb::Image => fixed_thumb(img(path)),
@@ -220,11 +222,47 @@ pub(crate) fn render_member(
         );
     }
 
+    {
+        let copy_path = member.path.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("copy-{group_index}-{mi}")))
+                .icon(IconName::Copy)
+                .tooltip("Copy full path")
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        copy_path.display().to_string(),
+                    ));
+                    this.pending_toast = Some(("Path copied to clipboard.".to_string(), false));
+                    cx.notify();
+                })),
+        );
+    }
+
+    let thumb_element = render_thumb(&member.path, thumb, cx);
+    let preview_source = match thumb {
+        Thumb::Image => Some(member.path.clone()),
+        Thumb::Poster(poster) => Some(poster.clone()),
+        Thumb::None | Thumb::PendingVideo => None,
+    };
+    let thumb_element = match preview_source {
+        Some(source) => HoverCard::new(SharedString::from(format!("preview-{group_index}-{mi}")))
+            .trigger(thumb_element)
+            .content(move |_, _, _| {
+                img(source.clone())
+                    .max_w(px(360.))
+                    .max_h(px(360.))
+                    .object_fit(ObjectFit::Contain)
+                    .rounded_md()
+            })
+            .into_any_element(),
+        None => thumb_element.into_any_element(),
+    };
+
     h_flex()
         .gap_2()
         .items_start()
         .pl_6()
-        .child(render_thumb(&member.path, thumb, cx))
+        .child(thumb_element)
         .child(
             v_flex()
                 .flex_1()

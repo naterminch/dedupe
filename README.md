@@ -52,9 +52,9 @@ dedupe         # desktop app + terminal
 dedupe --gui   # same, explicit
 ```
 
-- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete selected** (trash by default, shows file count + bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
+- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete N** (trash by default; the tooltip carries the total bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
 - **Consolidate** gathers every group's keeper into one folder (two clicks: pick folder, confirm).
-- Per-folder **Ref** protection, **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
+- Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
 
 > GUI builds need VS 2022 C++ workload on Windows ([details](https://gpui-kit.com/docs/installation)).
 

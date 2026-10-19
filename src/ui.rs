@@ -24,21 +24,29 @@ use crate::{actions, cache, cli, hashing, media, pipeline, poster, prefs, report
 use gpui_kit::base::{Disableable as _, Selectable as _, h_flex, v_flex};
 use gpui_kit::component::accordion::Accordion;
 use gpui_kit::component::alert::Alert;
-use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants};
+use gpui_kit::component::button::{
+    Button, ButtonGroup, ButtonVariant, ButtonVariants, DropdownButton,
+};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::empty::{
     Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
 };
 use gpui_kit::component::group_box::GroupBox;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput, NumberStep};
 use gpui_kit::component::label::Label;
+use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::radio::RadioGroup;
+use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::sidebar::{Sidebar, SidebarCollapsible, SidebarMenuItem};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::{ActiveTheme, Side, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
@@ -140,6 +148,9 @@ pub(crate) struct DedupeView {
     pub(crate) scan_total: u64,
     pub(crate) scan_determinate: bool,
     pub(crate) status: String,
+    /// Toast text queued by a worker or dialog; delivered on the next frame
+    /// because those callbacks have no `Window` to push it to directly.
+    pub(crate) pending_toast: Option<(String, bool)>,
     pub(crate) files_scanned: usize,
     pub(crate) bytes_scanned: u64,
     pub(crate) has_scanned: bool,
@@ -227,6 +238,15 @@ impl DedupeView {
                     .default_value(default)
             })
         };
+        let mk_num =
+            |placeholder: &str, default: &str, window: &mut Window, cx: &mut Context<Self>| {
+                cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder(placeholder)
+                        .default_value(default)
+                        .step(NumberStep::Fixed(1.0))
+                })
+            };
         let folder_input = mk("Type a folder, then Add (or Browse…)", "", window, cx);
         let types_input = mk("jpg,png,mp4 (empty = all)", &saved.types, window, cx);
         // Legacy prefs stored a blank box for "no limit"; display the
@@ -243,14 +263,14 @@ impl DedupeView {
         };
         let min_size_input = mk("100KB", min_size_default, window, cx);
         let max_size_input = mk("500MB", max_size_default, window, cx);
-        let max_depth_input = mk("0 = top level only", &saved.max_depth, window, cx);
+        let max_depth_input = mk_num("unlimited", &saved.max_depth, window, cx);
         let exclude_dir_input = mk("node_modules", &saved.exclude_dir, window, cx);
         let exclude_path_input = mk("substring", &saved.exclude_path, window, cx);
-        let similarity_input = mk("0–100", &saved.similarity, window, cx);
-        let jobs_input = mk("0", &saved.jobs, window, cx);
+        let similarity_input = mk_num("0–100", &saved.similarity, window, cx);
+        let jobs_input = mk_num("0", &saved.jobs, window, cx);
         // Live similarity floor for the current results (blank = scan
         // default). Lowering below the scan floor needs a rescan.
-        let min_sim_input = mk("e.g. 98", "", window, cx);
+        let min_sim_input = mk_num("e.g. 98", "", window, cx);
         let mk_size_slider = |default: f32, cx: &mut Context<Self>| {
             // NOTE: max() must come before min(): the state clamps its
             // value on every builder call, and min(1024) with the default
@@ -319,6 +339,7 @@ impl DedupeView {
             scan_total: 0,
             scan_determinate: false,
             status: "Choose a folder and press Scan.".to_string(),
+            pending_toast: None,
             files_scanned: 0,
             bytes_scanned: 0,
             has_scanned: false,
@@ -399,6 +420,15 @@ impl DedupeView {
                 if matches!(event, InputEvent::Change) {
                     let raw = state.read(cx).value().trim().to_string();
                     this.apply_sim_input(&raw, cx);
+                }
+            },
+        ));
+        view._subs.push(cx.subscribe_in(
+            &view.folder_input,
+            window,
+            |this, _, event, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.add_from_input(window, cx);
                 }
             },
         ));
@@ -607,7 +637,7 @@ impl DedupeView {
             remember_folders: self.remember_folders,
             dark: cx.theme().is_dark(),
         };
-        let _ = out.save();
+        out.save_async();
     }
 
     fn start_scan(&mut self, cx: &mut Context<Self>) {
@@ -814,6 +844,7 @@ impl DedupeView {
         for e in &out.cache_save_errors {
             self.status.push_str(&format!(" (cache write failed: {e})"));
         }
+        self.pending_toast = Some((self.status.clone(), false));
         // Generate video posters off the UI thread; each completion
         // re-renders its row's thumbnail.
         let jobs: Vec<(PathBuf, u64, Option<i64>)> = self
@@ -870,8 +901,16 @@ impl DedupeView {
                 });
             }
         }
-        self.save_prefs(cx);
         cx.notify();
+        self.save_prefs(cx);
+    }
+
+    pub(crate) fn add_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.folder_input.read(cx).value().trim().to_string();
+        self.add_folders(&raw, cx);
+        self.folder_input.update(cx, |input, cx| {
+            input.set_value(SharedString::from(String::new()), window, cx);
+        });
     }
 
     fn browse(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1109,7 +1148,7 @@ impl DedupeView {
     fn perform_delete(&mut self, cx: &mut Context<Self>) {
         let targets = self.pending_targets();
         if targets.is_empty() {
-            self.status = "Nothing selected for deletion.".to_string();
+            self.status = "Tick the duplicate copies you want deleted first.".to_string();
             cx.notify();
             return;
         }
@@ -1181,7 +1220,7 @@ impl DedupeView {
                 if moves.is_empty() {
                     view.consolidate_dest = None;
                     view.status =
-                        "Nothing to consolidate: every keeper is protected or already there."
+                        "Nothing to move — every keeper is protected or already in that folder."
                             .to_string();
                 } else {
                     let bytes: u64 = moves.iter().map(|m| m.target.size).sum();
@@ -1207,14 +1246,14 @@ impl DedupeView {
     /// ticks follow moved files.
     fn perform_consolidate(&mut self, cx: &mut Context<Self>) {
         let Some(dest) = self.consolidate_dest.clone() else {
-            self.status = "Pick a consolidate folder first.".to_string();
+            self.status = "Choose the folder that keepers should be moved into.".to_string();
             cx.notify();
             return;
         };
         let (moves, skipped) = actions::plan_consolidation(&self.groups, &dest);
         if moves.is_empty() {
-            self.status =
-                "Nothing to consolidate: every keeper is protected or already there.".to_string();
+            self.status = "Nothing to move — every keeper is protected or already in that folder."
+                .to_string();
             self.consolidate_dest = None;
             cx.notify();
             return;
@@ -1251,7 +1290,7 @@ impl DedupeView {
     /// press Scan to refresh the groups.
     fn undo_delete(&mut self, cx: &mut Context<Self>) {
         if self.last_trashed.is_empty() {
-            self.status = "Nothing to undo.".to_string();
+            self.status = "Nothing to restore — nothing has been deleted yet.".to_string();
             cx.notify();
             return;
         }
@@ -1330,41 +1369,55 @@ impl DedupeView {
         }
         for (i, folder) in self.folders.iter().enumerate() {
             list = list.child(
-                v_flex()
-                    .gap_1p5()
+                ListItem::new(SharedString::from(format!("folder-{i}")))
+                    .px_0()
+                    .py_2()
+                    .selected(folder.reference)
+                    .accessibility_label(fit_text(&folder.path, 120))
                     .child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .child(fit_text(&folder.path, 120)),
-                    )
-                    .child(
-                        h_flex()
-                            .items_center()
-                            .justify_between()
+                        v_flex()
+                            .gap_1p5()
                             .child(
-                                Checkbox::new(SharedString::from(format!("ref-{i}")))
-                                    .label("Ref")
-                                    .checked(folder.reference)
-                                    .on_change(cx.listener(move |this, value, _, cx| {
-                                        if let Some(f) = this.folders.get_mut(i) {
-                                            f.reference = *value;
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        }
-                                    })),
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(IconName::Folder)
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .truncate()
+                                            .child(fit_text(&folder.path, 120)),
+                                    ),
                             )
                             .child(
-                                Button::new(SharedString::from(format!("rm-folder-{i}")))
-                                    .label("×")
-                                    .tooltip("Remove folder")
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if i < this.folders.len() {
-                                            this.folders.remove(i);
-                                            this.save_prefs(cx);
-                                            cx.notify();
-                                        }
-                                    })),
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        Checkbox::new(SharedString::from(format!("ref-{i}")))
+                                            .label("Protect")
+                                            .checked(folder.reference)
+                                            .on_change(cx.listener(move |this, value, _, cx| {
+                                                if let Some(f) = this.folders.get_mut(i) {
+                                                    f.reference = *value;
+                                                    this.save_prefs(cx);
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!("rm-folder-{i}")))
+                                            .label("×")
+                                            .tooltip("Remove folder")
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if i < this.folders.len() {
+                                                    this.folders.remove(i);
+                                                    this.save_prefs(cx);
+                                                    cx.notify();
+                                                }
+                                            })),
+                                    ),
                             ),
                     ),
             );
@@ -1376,38 +1429,36 @@ impl DedupeView {
         // Side nav: scan folders + per-run scope. Global tuning lives on the
         // Settings page — the main flow stays a 3-step scan.
         v_flex()
-            .w(px(320.))
+            .w_full()
             .h_full()
-            .border_r_1()
-            .border_color(cx.theme().border)
             .bg(cx.theme().background)
             .child(
                 v_flex()
                     .gap_2()
-                    .p_4()
-                    .pb_2()
+                    .px_4()
+                    .pt_4()
+                    .pb_3()
                     .child(self.sidebar_section(
                         format!("Scan folders ({})", self.folders.len()),
-                        Some("tick Ref to protect"),
+                        Some("Protect = never delete"),
                     ))
                     .child(self.render_folder_list(cx))
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().child(Input::new(&self.folder_input)))
-                            .child(Button::new("add-folder").label("Add").on_click(cx.listener(
-                                |this, _, window, cx| {
-                                    let raw = this.folder_input.read(cx).value().trim().to_string();
-                                    this.add_folders(&raw, cx);
-                                    this.folder_input.update(cx, |input, cx| {
-                                        input.set_value(
-                                            SharedString::from(String::new()),
-                                            window,
-                                            cx,
-                                        );
-                                    });
-                                },
-                            )))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .child(Input::new(&self.folder_input).cleanable(true)),
+                            )
+                            .child(
+                                Button::new("add-folder")
+                                    .icon(IconName::Plus)
+                                    .label("Add")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.add_from_input(window, cx);
+                                    })),
+                            )
                             .child(
                                 Button::new("browse")
                                     .icon(IconName::FolderOpen)
@@ -1446,7 +1497,7 @@ impl DedupeView {
                         .child(self.sidebar_field(
                             "Max depth",
                             Some("empty = unlimited"),
-                            Input::new(&self.max_depth_input),
+                            NumberInput::new(&self.max_depth_input),
                             cx,
                         ))
                         .child(self.sidebar_field(
@@ -1465,8 +1516,9 @@ impl DedupeView {
             )
             .child(
                 div()
-                    .p_4()
-                    .pt_2()
+                    .px_4()
+                    .pt_3()
+                    .pb_4()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(v_flex().gap_2().child(self.render_media_status(cx)).child(
@@ -1517,6 +1569,7 @@ impl DedupeView {
                     .w(px(200.))
                     .child(
                         SidebarMenuItem::new("General")
+                            .icon(IconName::Settings2)
                             .active(self.settings_tab == SettingsTab::General)
                             .on_click(move |_, _, cx| {
                                 nav_general.update(cx, |this, cx| {
@@ -1527,6 +1580,7 @@ impl DedupeView {
                     )
                     .child(
                         SidebarMenuItem::new("Preferences")
+                            .icon(IconName::Palette)
                             .active(self.settings_tab == SettingsTab::Preferences)
                             .on_click(move |_, _, cx| {
                                 view.update(cx, |this, cx| {
@@ -1566,7 +1620,7 @@ impl DedupeView {
                         v_flex()
                             .gap_3()
                             .child(
-                                Checkbox::new("trash")
+                                Switch::new("trash")
                                     .label("Move to trash (recoverable)")
                                     .checked(self.trash)
                                     .on_change(cx.listener(|this, value, _, cx| {
@@ -1576,7 +1630,7 @@ impl DedupeView {
                                     })),
                             )
                             .child(
-                                Checkbox::new("remember-folders")
+                                Switch::new("remember-folders")
                                     .label("Remember scan folders between runs")
                                     .checked(self.remember_folders)
                                     .on_change(cx.listener(|this, value, _, cx| {
@@ -1601,7 +1655,7 @@ impl DedupeView {
                                     .child({
                                         let (files, bytes) = cache::cache_summary();
                                         format!(
-                                            "hashes.bin + fingerprints.bin under ~/.dedupe/: {} file(s) · {}",
+                                            "On disk: {} file(s) · {} (hashes.bin + fingerprints.bin in ~/.dedupe/)",
                                             files,
                                             util::human_bytes(bytes),
                                         )
@@ -1609,6 +1663,7 @@ impl DedupeView {
                             )
                             .child(
                                 Button::new("clear-cache")
+                                    .icon(IconName::RefreshCw)
                                     .label("Clear caches")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         let (files, bytes) = cache::clear_caches();
@@ -1617,6 +1672,8 @@ impl DedupeView {
                                             files,
                                             util::human_bytes(bytes),
                                         );
+                                        this.pending_toast =
+                                            Some((format!("Cache cleared: {}", this.cache_msg), false));
                                         cx.notify();
                                     })),
                             )
@@ -1664,11 +1721,12 @@ impl DedupeView {
                             .child(self.sidebar_field(
                                 "Similarity %",
                                 Some("images / video"),
-                                Input::new(&self.similarity_input),
+                                NumberInput::new(&self.similarity_input)
+                                    .suffix(div().text_xs().child("%")),
                                 cx,
                             ))
                             .child(
-                                Checkbox::new("exact")
+                                Switch::new("exact")
                                     .label("Exact duplicates only")
                                     .checked(self.exact)
                                     .on_change(cx.listener(|this, value, _, cx| {
@@ -1678,8 +1736,8 @@ impl DedupeView {
                                     })),
                             )
                             .child(
-                                Checkbox::new("no-cache")
-                                    .label("Skip caches (hash + fingerprint)")
+                                Switch::new("no-cache")
+                                    .label("Ignore the cache and re-hash everything")
                                     .checked(self.no_cache)
                                     .on_change(cx.listener(|this, value, _, cx| {
                                         this.no_cache = *value;
@@ -1699,7 +1757,7 @@ impl DedupeView {
                             .child(self.sidebar_field(
                                 "Worker threads",
                                 Some("0 = auto"),
-                                Input::new(&self.jobs_input),
+                                NumberInput::new(&self.jobs_input),
                                 cx,
                             ))
                             .child(self.sidebar_section("Default keep", Some("for new scans")))
@@ -1714,8 +1772,8 @@ impl DedupeView {
                                     })),
                             )
                             .child(
-                                Checkbox::new("default-sort-biggest")
-                                    .label("Sort biggest reclaim first")
+                                Switch::new("default-sort-biggest")
+                                    .label("Sort by most reclaimable space")
                                     .checked(self.sort_biggest)
                                     .on_change(cx.listener(|this, value, _, cx| {
                                         this.sort_biggest = *value;
@@ -1736,47 +1794,22 @@ impl DedupeView {
     }
 
     /// ffmpeg/ffprobe availability line shown above the Scan button.
-    fn render_media_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_media_status(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         if !self.media_checked {
-            return h_flex()
-                .gap_1()
-                .items_center()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("Checking for ffmpeg…"),
-                )
+            return Tag::secondary()
+                .child("Checking for ffmpeg…")
                 .into_any_element();
         }
-        let (icon, text, color) = match (self.ffmpeg_ok, self.ffprobe_ok) {
-            (true, true) => (
-                IconName::CircleCheck,
-                "ffmpeg ready — video compare on",
-                cx.theme().success,
-            ),
-            (false, true) => (
-                IconName::TriangleAlert,
-                "ffmpeg missing — video compare off",
-                cx.theme().warning,
-            ),
-            (true, false) => (
-                IconName::TriangleAlert,
-                "ffprobe missing — media details off",
-                cx.theme().warning,
-            ),
+        let (tag, text) = match (self.ffmpeg_ok, self.ffprobe_ok) {
+            (true, true) => (Tag::success(), "ffmpeg ready — video compare on"),
+            (false, true) => (Tag::warning(), "ffmpeg missing — video compare off"),
+            (true, false) => (Tag::warning(), "ffprobe missing — media details off"),
             (false, false) => (
-                IconName::TriangleAlert,
+                Tag::warning(),
                 "ffmpeg missing — video compare + details off",
-                cx.theme().warning,
             ),
         };
-        h_flex()
-            .gap_1()
-            .items_center()
-            .child(icon)
-            .child(div().text_xs().text_color(color).child(text))
-            .into_any_element()
+        tag.child(text).into_any_element()
     }
 
     /// Size filter with a log-scale slider synced to an exact-value box.
@@ -1819,7 +1852,7 @@ impl DedupeView {
         &self,
         label: &'static str,
         secondary: Option<&'static str>,
-        input: Input,
+        input: impl IntoElement,
         _cx: &mut Context<Self>,
     ) -> impl IntoElement {
         v_flex()
@@ -1899,14 +1932,6 @@ impl DedupeView {
                     .child(self.render_sim_filter(cx))
                     .child(self.render_keep_segmented(cx))
                     .child(self.render_sort_toggle(cx))
-                    .child(
-                        Button::new("save-json")
-                            .label("Save JSON")
-                            .disabled(self.scanning || !self.has_scanned)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.save_report(window, cx);
-                            })),
-                    )
                     .child(self.render_delete_bar(cx)),
             );
         let mut list = v_flex().gap_2();
@@ -1968,6 +1993,7 @@ impl DedupeView {
             let remaining = total - self.group_limit;
             list = list.child(
                 Button::new("show-more-groups")
+                    .icon(IconName::ChevronDown)
                     .label(format!("Show more ({remaining} remaining)"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.group_limit += GROUP_PAGE;
@@ -1978,8 +2004,8 @@ impl DedupeView {
         v_flex()
             .flex_1()
             .h_full()
-            .gap_3()
-            .p_4()
+            .gap_4()
+            .p_6()
             .child(header)
             .child(div().flex_1().w_full().overflow_y_scrollbar().child(list))
     }
@@ -1987,16 +2013,22 @@ impl DedupeView {
     /// Live scan progress card: phase label with "N of M" counts plus a
     /// real progress bar for the determinate hashing/comparing stages.
     fn render_progress(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut heading = h_flex().gap_2().items_center();
+        if !self.scan_determinate {
+            heading = heading.child(Spinner::new().color(cx.theme().accent));
+        }
         let title_row = h_flex()
             .items_center()
             .justify_between()
             .gap_2()
             .child(
-                div()
-                    .text_sm()
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(cx.theme().accent)
-                    .child(self.status.clone()),
+                heading.child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(cx.theme().accent)
+                        .child(self.status.clone()),
+                ),
             )
             .child(
                 div()
@@ -2028,7 +2060,7 @@ impl DedupeView {
                 .border_color(cx.theme().border)
                 .child(
                     div()
-                        .text_sm()
+                        .text_base()
                         .font_weight(FontWeight::BOLD)
                         .text_color(color)
                         .child(value),
@@ -2146,7 +2178,11 @@ impl DedupeView {
             .gap_1()
             .items_center()
             .child(Label::new("Similarity floor"))
-            .child(div().w(px(64.)).child(Input::new(&self.min_sim_input)))
+            .child(
+                div().w(px(112.)).child(
+                    NumberInput::new(&self.min_sim_input).suffix(div().text_xs().child("%")),
+                ),
+            )
             .into_any_element()
     }
 
@@ -2236,9 +2272,11 @@ impl DedupeView {
                 match outcome {
                     Ok(()) => {
                         view.status = format!("Saved report to {}.", file.path().display());
+                        view.pending_toast = Some((view.status.clone(), false));
                     }
                     Err(e) => {
                         view.status = format!("Could not save report: {e}");
+                        view.pending_toast = Some((view.status.clone(), true));
                     }
                 }
                 cx.notify();
@@ -2251,49 +2289,82 @@ impl DedupeView {
         let targets = self.pending_targets();
         let pending_bytes: u64 = targets.iter().map(|t| t.size).sum();
         let can_undo = !self.scanning && !self.last_trashed.is_empty();
-        h_flex()
-            .gap_2()
-            .items_center()
-            .child(
+        let can_scan_actions = !self.scanning && !self.groups.is_empty();
+        let can_export = !self.scanning && self.has_scanned;
+        let undo_count = self.last_trashed.len();
+        let consolidate_label = match &self.consolidate_dest {
+            Some(dest) => format!(
+                "Move keepers to {}",
+                dest.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| dest.display().to_string())
+            ),
+            None => "Consolidate…".to_string(),
+        };
+        let view = cx.entity();
+        let menu_view = view.clone();
+        let delete_label: SharedString = if targets.is_empty() {
+            "Delete selected".into()
+        } else {
+            format!("Delete {}", targets.len()).into()
+        };
+        let delete_tooltip: SharedString = if targets.is_empty() {
+            "Nothing selected yet — tick the copies you want gone".into()
+        } else {
+            format!(
+                "Delete {} selected file(s) ({}) — keepers are never touched",
+                targets.len(),
+                util::human_bytes(pending_bytes)
+            )
+            .into()
+        };
+        DropdownButton::new("delete-actions")
+            .button(
                 Button::new("delete")
-                    .label(format!(
-                        "Delete selected ({}, {})",
-                        targets.len(),
-                        util::human_bytes(pending_bytes)
-                    ))
+                    .icon(IconName::Delete)
+                    .label(delete_label)
+                    .tooltip(delete_tooltip)
                     .disabled(self.scanning || self.groups.is_empty() || targets.is_empty())
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.open_delete_confirm(window, cx);
                     })),
             )
-            .child(
-                Button::new("undo-delete")
-                    .label(format!("Undo delete ({})", self.last_trashed.len()))
-                    .disabled(!can_undo)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.undo_delete(cx);
-                    })),
-            )
-            .child(
-                Button::new("consolidate")
-                    .label(match &self.consolidate_dest {
-                        Some(dest) => format!(
-                            "Move keepers to {}",
-                            dest.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| dest.display().to_string())
-                        ),
-                        None => "Consolidate…".to_string(),
-                    })
-                    .disabled(self.scanning || self.groups.is_empty())
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if this.consolidate_dest.is_some() {
-                            this.perform_consolidate(cx);
-                        } else {
-                            this.pick_consolidate_dir(cx);
-                        }
-                    })),
-            )
+            .menu_accessibility_label("More run actions")
+            .dropdown_menu(move |menu, _, _| {
+                let save_view = menu_view.clone();
+                let undo_view = menu_view.clone();
+                let consolidate_view = menu_view.clone();
+                menu.item(
+                    PopupMenuItem::new("Save JSON…")
+                        .icon(IconName::FileText)
+                        .disabled(!can_export)
+                        .on_click(move |_, window, cx| {
+                            save_view.update(cx, |this, cx| this.save_report(window, cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(format!("Undo delete ({undo_count})"))
+                        .icon(IconName::Undo2)
+                        .disabled(!can_undo)
+                        .on_click(move |_, _, cx| {
+                            undo_view.update(cx, |this, cx| this.undo_delete(cx));
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(consolidate_label.clone())
+                        .icon(IconName::FolderOpen)
+                        .disabled(!can_scan_actions)
+                        .on_click(move |_, _, cx| {
+                            consolidate_view.update(cx, |this, cx| {
+                                if this.consolidate_dest.is_some() {
+                                    this.perform_consolidate(cx);
+                                } else {
+                                    this.pick_consolidate_dir(cx);
+                                }
+                            });
+                        }),
+                )
+            })
             .into_any_element()
     }
 
@@ -2304,7 +2375,7 @@ impl DedupeView {
     fn open_delete_confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let targets = self.pending_targets();
         if targets.is_empty() {
-            self.status = "Nothing selected for deletion.".to_string();
+            self.status = "Tick the duplicate copies you want deleted first.".to_string();
             cx.notify();
             return;
         }
@@ -2377,13 +2448,11 @@ impl DedupeView {
             })
             .count()
             .saturating_sub(confirm_groups.len());
-        window.open_dialog(
+        window.open_alert_dialog(
             cx,
-            move |dialog, _, _| {
+            move |alert, _, _| {
                 let confirm_view = view.clone();
-                let mut body = v_flex().gap_2().child(format!(
-                    "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
-                ));
+                let mut body = v_flex().gap_2();
                 for cg in &confirm_groups {
                     let mut section = v_flex()
                         .gap_1()
@@ -2453,33 +2522,26 @@ impl DedupeView {
                             .child(format!("… and {hidden_groups} more group(s)")),
                     );
                 }
-                dialog
+                alert
                     .title(format!("Delete {count} file(s)?"))
+                    .description(format!(
+                        "This will {action} {count} file(s) ({bytes_str}). Keepers are kept; every file is re-hashed before removal."
+                    ))
                     .child(body)
-                    .footer(
-                        h_flex().gap_2().justify_end().child(
-                            Button::new("cancel-delete").label("Cancel").on_click(
-                                |_, window, cx| {
-                                    window.close_dialog(cx);
-                                },
-                            ),
-                        ).child(
-                            Button::new("confirm-delete")
-                                .danger()
-                                .label(format!("Delete {count}"))
-                                .on_click(move |_, window, cx| {
-                                    let message = confirm_view.update(cx, |v, cx| {
-                                        v.perform_delete(cx);
-                                        v.status.clone()
-                                    });
-                                    window.close_dialog(cx);
-                                    window.push_notification(
-                                        Notification::success(message).autohide(true),
-                                        cx,
-                                    );
-                                }),
-                        ),
-                    )
+                    .confirm()
+                    .ok_text(format!("Delete {count}"))
+                    .ok_variant(ButtonVariant::Danger)
+                    .on_ok(move |_, window, cx| {
+                        let message = confirm_view.update(cx, |v, cx| {
+                            v.perform_delete(cx);
+                            v.status.clone()
+                        });
+                        window.push_notification(
+                            Notification::success(message).autohide(true),
+                            cx,
+                        );
+                        true
+                    })
             },
         );
     }
@@ -2598,8 +2660,18 @@ impl DedupeView {
 }
 
 impl Render for DedupeView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let dark = cx.theme().is_dark();
+        if let Some((message, is_error)) = self.pending_toast.take() {
+            window.defer(cx, move |window, cx| {
+                let note = if is_error {
+                    Notification::error(message).autohide(true)
+                } else {
+                    Notification::success(message).autohide(true)
+                };
+                window.push_notification(note, cx);
+            });
+        }
         v_flex()
             .size_full()
             .bg(cx.theme().background)
@@ -2626,7 +2698,7 @@ impl Render for DedupeView {
                             .child(img("icons/logo.png").w(px(22.)).h(px(22.)).rounded_md())
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_base()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(cx.theme().accent)
                                     .child("dedupe"),
@@ -2644,13 +2716,15 @@ impl Render for DedupeView {
                             .items_center()
                             .child(if self.view == AppView::Settings {
                                 Button::new("nav-back")
-                                    .label("← Back")
+                                    .icon(IconName::ArrowLeft)
+                                    .label("Back")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.view = AppView::Main;
                                         cx.notify();
                                     }))
                             } else {
                                 Button::new("nav-settings")
+                                    .icon(IconName::Settings)
                                     .label("Settings")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.view = AppView::Settings;
@@ -2684,29 +2758,45 @@ impl Render for DedupeView {
                     .child(self.render_settings(cx))
                     .into_any_element()
             } else {
-                h_flex()
+                div()
                     .flex_1()
+                    .min_h_0()
                     .w_full()
                     .overflow_hidden()
-                    .child(self.render_sidebar(cx))
-                    .child(self.render_results(cx))
+                    .child(
+                        h_resizable("main-split")
+                            .child(
+                                resizable_panel()
+                                    .size(px(320.))
+                                    .size_range(px(240.)..px(560.))
+                                    .fixed()
+                                    .child(self.render_sidebar(cx)),
+                            )
+                            .child(resizable_panel().child(self.render_results(cx))),
+                    )
                     .into_any_element()
             })
             .child(
                 StatusBar::new()
-                    .left(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.status.clone()),
-                    )
+                    .left({
+                        let mut left = h_flex().gap_2().items_center();
+                        if self.scanning {
+                            left = left.child(Spinner::new().color(cx.theme().accent));
+                        }
+                        left.child(
+                            div()
+                                .text_xs()
+                                .truncate()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(self.status.clone()),
+                        )
+                    })
                     .right(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
-                                "scanned {} file(s) ({})",
+                                "{} file(s) scanned · {}",
                                 self.files_scanned,
                                 util::human_bytes(self.bytes_scanned)
                             )),

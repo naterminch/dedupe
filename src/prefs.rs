@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::sync::{OnceLock, mpsc};
 
 /// Serializes every test that mutates the process-global `DEDUPE_PREFS`
 /// env var: this module's override test plus the view tests in
@@ -158,6 +159,33 @@ impl GuiPrefs {
         fs::write(&tmp, bytes)?;
         fs::rename(&tmp, &path)?;
         Ok(())
+    }
+
+    /// Persist off the UI thread. Bursts are coalesced so only the newest
+    /// snapshot reaches disk, and callers never wait on the filesystem.
+    pub fn save_async(self) {
+        type Job = (GuiPrefs, PathBuf);
+        static WRITER: OnceLock<Option<mpsc::Sender<Job>>> = OnceLock::new();
+        let path = default_prefs_path();
+        let tx = WRITER.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<Job>();
+            std::thread::Builder::new()
+                .name("dedupe-prefs-writer".into())
+                .spawn(move || {
+                    while let Ok((mut prefs, mut path)) = rx.recv() {
+                        while let Ok((next, next_path)) = rx.try_recv() {
+                            prefs = next;
+                            path = next_path;
+                        }
+                        let _ = prefs.save_to(path);
+                    }
+                })
+                .ok()
+                .map(|_| tx)
+        });
+        if let Some(tx) = tx {
+            let _ = tx.send((self, path));
+        }
     }
 }
 
