@@ -191,6 +191,64 @@ fn settings_page_renders_both_tabs(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn preferences_sections_follow_scan_mode(cx: &mut TestAppContext) {
+    let (handle, view, _guard) = open_view(cx);
+    draw(cx, handle);
+
+    in_window(cx, handle, |window, cx| {
+        view.update(cx, |v, cx| {
+            v.view = AppView::Settings;
+            v.settings_tab = SettingsTab::Preferences;
+            v.find_index = Some(0);
+            v.exact = false;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(
+            window.try_find("exact").is_some(),
+            "duplicate options show for a duplicate scan"
+        );
+        assert!(
+            window.try_find("partial-clips").is_some(),
+            "similar-media options show when not exact-only"
+        );
+        assert!(window.try_find("default-sort-biggest").is_some());
+
+        view.update(cx, |v, cx| {
+            v.exact = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("exact").is_some());
+        assert!(
+            window.try_find("partial-clips").is_none(),
+            "exact-only hides similar-media options"
+        );
+
+        view.update(cx, |v, cx| {
+            v.find_index = Some(3);
+            v.exact = false;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(
+            window.try_find("exact").is_none(),
+            "non-duplicate scans hide duplicate options"
+        );
+        assert!(window.try_find("partial-clips").is_none());
+
+        view.update(cx, |v, cx| {
+            v.find_index = Some(10);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("exact").is_none());
+        assert!(window.try_find("partial-clips").is_none());
+        assert!(window.try_find("default-sort-biggest").is_some());
+    });
+}
+
+#[gpui_kit::test]
 fn stop_button_resets_the_ui_immediately(cx: &mut TestAppContext) {
     let (handle, view, _guard) = open_view(cx);
     // A scan in flight with results already on screen.

@@ -6,7 +6,7 @@
 //! pass indicatif bars from the CLI, `None` from the GUI.
 
 use crate::cancel::CancelToken;
-use crate::{cache, cli, hashing, matching, media, report, scan, similar, util};
+use crate::{cache, cli, hashing, matching, media, modes, report, scan, similar, util};
 use anyhow::Result;
 use indicatif::ProgressBar;
 use std::collections::{HashMap, HashSet};
@@ -50,6 +50,9 @@ pub struct ScanOutput {
     /// The scan was cancelled (Stop) part-way: `groups` is empty by
     /// design and `stats` covers whatever the walk completed.
     pub cancelled: bool,
+    /// Set when a non-duplicate cleanup tool (`--find`) ran. The duplicate
+    /// `groups` vector is empty in that case.
+    pub mode_result: Option<modes::ModeResult>,
 }
 
 /// Walk stats for a cancelled scan: whatever the walk completed, plus
@@ -84,6 +87,7 @@ fn cancelled_output(
         cache_save_errors: Vec::new(),
         reference_dirs: Vec::new(),
         cancelled: true,
+        mode_result: None,
     }
 }
 
@@ -140,6 +144,31 @@ pub fn run_scan(
     let mut cache_save_errors: Vec<String> = Vec::new();
     let similar_threshold = cli.similarity / 100.0;
     let engine = hashing::HashEngine::new(cli.hash);
+    if cli.find != cli::FindMode::Duplicates {
+        let mode_result = modes::run_mode(cli, cancel);
+        let stats = report::ScanStats {
+            files_scanned: mode_result.files_scanned as usize,
+            bytes_scanned: mode_result.bytes_scanned,
+            dirs_skipped: mode_result.dirs_skipped,
+            files_skipped: mode_result.files_skipped,
+            hardlinks_skipped: 0,
+            dir_read_errors: mode_result.errors.clone(),
+        };
+        let cancelled = mode_result.cancelled;
+        return Ok(ScanOutput {
+            paths: cli.paths.clone(),
+            hash_algo: engine.name(),
+            stats,
+            groups: Vec::new(),
+            ffprobe_used: false,
+            needs_ffprobe_note: false,
+            needs_ffmpeg_note: false,
+            cache_save_errors: Vec::new(),
+            reference_dirs: Vec::new(),
+            cancelled,
+            mode_result: Some(mode_result),
+        });
+    }
     let size_min = cli
         .min_size
         .as_deref()
@@ -157,6 +186,41 @@ pub fn run_scan(
     let scanned = scan::scan(cli, size_min, size_max, cancel);
     if cancel.is_cancelled() {
         return Ok(cancelled_output(cli, &engine, partial_stats(&scanned, 0)));
+    }
+
+    if cli.r#match != cli::MatchMode::Content {
+        let files_scanned = scanned.entries.len();
+        let bytes_scanned: u64 = scanned.entries.iter().map(|e| e.size).sum();
+        let buckets = modes::match_entries(&scanned.entries, cli.r#match, cli.fuzzy_threshold);
+        let duplicate_groups: Vec<hashing::DuplicateGroup> = buckets
+            .into_iter()
+            .map(|bucket| hashing::DuplicateGroup {
+                hash: bucket.key,
+                members: bucket.entries,
+            })
+            .collect();
+        let groups = matching::assemble_groups(duplicate_groups, keep, &reference_dirs, false);
+        let stats = report::ScanStats {
+            files_scanned,
+            bytes_scanned,
+            dirs_skipped: scanned.dirs_skipped,
+            files_skipped: scanned.files_skipped,
+            hardlinks_skipped: 0,
+            dir_read_errors: scanned.dir_read_errors,
+        };
+        return Ok(ScanOutput {
+            paths: cli.paths.clone(),
+            hash_algo: engine.name(),
+            stats,
+            groups,
+            ffprobe_used: false,
+            needs_ffprobe_note: false,
+            needs_ffmpeg_note: false,
+            cache_save_errors,
+            reference_dirs,
+            cancelled: false,
+            mode_result: None,
+        });
     }
 
     let has_media_candidates = scanned
@@ -262,6 +326,9 @@ pub fn run_scan(
             .collect();
         let similar_cfg = similar::SimilarConfig {
             threshold: similar_threshold,
+            image_hash: cli.image_hash,
+            partial_clips: cli.partial_clips,
+            partial_similarity: cli.partial_similarity,
         };
         let (similar, writes) = similar::find_similar(
             candidates,
@@ -339,6 +406,7 @@ pub fn run_scan(
         cache_save_errors,
         reference_dirs,
         cancelled: false,
+        mode_result: None,
     })
 }
 
@@ -375,6 +443,20 @@ mod tests {
             quiet: true,
             jobs: 0,
             gui: false,
+            find: cli::FindMode::Duplicates,
+            r#match: cli::MatchMode::Content,
+            fuzzy_threshold: 85.0,
+            top: 50,
+            image_hash: cli::ImageHashAlgo::Auto,
+            partial_clips: false,
+            partial_similarity: 85.0,
+            music_by: cli::MusicMode::Tags,
+            csv: None,
+            html: None,
+            move_dir: None,
+            hardlink: false,
+            strip_exif: false,
+            ignore: vec![],
         }
     }
 
@@ -516,6 +598,29 @@ mod tests {
         .unwrap();
         assert!(!out.cancelled);
         assert_eq!(out.groups.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_scan_dispatches_cleanup_modes_without_duplicate_groups() {
+        let dir = tmpdir("mode");
+        std::fs::write(dir.join("empty.txt"), b"").unwrap();
+        std::fs::write(dir.join("full.txt"), b"content").unwrap();
+
+        let mut cli = test_cli(vec![dir.to_str().unwrap().to_string()]);
+        cli.find = cli::FindMode::EmptyFiles;
+        let out = run_scan(&cli, None, None, &|_| {}, &CancelToken::new()).unwrap();
+
+        assert!(
+            out.groups.is_empty(),
+            "cleanup modes have no duplicate groups"
+        );
+        assert_eq!(out.stats.files_scanned, 2);
+        let mode = out.mode_result.expect("cleanup result is attached");
+        assert_eq!(mode.mode, cli::FindMode::EmptyFiles);
+        assert_eq!(mode.findings.len(), 1);
+        assert!(mode.findings[0].path.ends_with("empty.txt"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

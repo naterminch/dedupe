@@ -64,6 +64,31 @@ pub struct GuiPrefs {
     pub hash_index: usize,
     #[serde(default)]
     pub keep_index: usize,
+    /// Index into the scan-type list (0 = duplicates).
+    #[serde(default)]
+    pub find_index: usize,
+    /// Index into content / size / name / fuzzy duplicate matching.
+    #[serde(default)]
+    pub match_index: usize,
+    /// Index into auto / dHash / pHash / aHash / color image fingerprints.
+    #[serde(default)]
+    pub image_hash_index: usize,
+    /// Also find shorter clips contained inside longer videos.
+    #[serde(default)]
+    pub partial_clips: bool,
+    #[serde(default = "default_partial_similarity")]
+    pub partial_similarity: String,
+    #[serde(default = "default_fuzzy_threshold")]
+    pub fuzzy_threshold: String,
+    /// `big-files`: how many of the largest files to report.
+    #[serde(default = "default_top")]
+    pub top: String,
+    /// Cleanup-mode ignore globs (one per line or `;` separated).
+    #[serde(default)]
+    pub ignore: String,
+    /// Music matching: true = audio fingerprint, false = embedded tags.
+    #[serde(default)]
+    pub music_by_content: bool,
     #[serde(default)]
     pub exact: bool,
     #[serde(default)]
@@ -89,6 +114,18 @@ fn default_similarity() -> String {
     "97".to_string()
 }
 
+fn default_partial_similarity() -> String {
+    "85".to_string()
+}
+
+fn default_fuzzy_threshold() -> String {
+    "85".to_string()
+}
+
+fn default_top() -> String {
+    "50".to_string()
+}
+
 fn default_no_limit() -> String {
     NO_LIMIT_LABEL.to_string()
 }
@@ -112,6 +149,15 @@ impl Default for GuiPrefs {
             jobs: String::new(),
             hash_index: 0,
             keep_index: 0,
+            find_index: 0,
+            match_index: 0,
+            image_hash_index: 0,
+            partial_clips: false,
+            partial_similarity: default_partial_similarity(),
+            fuzzy_threshold: default_fuzzy_threshold(),
+            top: default_top(),
+            ignore: String::new(),
+            music_by_content: false,
             exact: false,
             no_cache: false,
             trash: true,
@@ -230,6 +276,15 @@ mod tests {
             min_size: "100KB".to_string(),
             hash_index: 1,
             keep_index: 2,
+            find_index: 4,
+            match_index: 3,
+            image_hash_index: 2,
+            partial_clips: true,
+            partial_similarity: "80".to_string(),
+            fuzzy_threshold: "90".to_string(),
+            top: "25".to_string(),
+            ignore: "*.tmp".to_string(),
+            music_by_content: true,
             exact: true,
             trash: false,
             sort_biggest: true,
@@ -257,6 +312,15 @@ mod tests {
         assert!(loaded.remember_folders);
         assert_eq!(loaded.types, "mp4");
         assert!(loaded.folders.is_empty());
+        assert_eq!(loaded.find_index, 0);
+        assert_eq!(loaded.match_index, 0);
+        assert_eq!(loaded.image_hash_index, 0);
+        assert!(!loaded.partial_clips);
+        assert_eq!(loaded.partial_similarity, "85");
+        assert_eq!(loaded.fuzzy_threshold, "85");
+        assert_eq!(loaded.top, "50");
+        assert!(loaded.ignore.is_empty());
+        assert!(!loaded.music_by_content);
         let _ = fs::remove_file(&path);
     }
 

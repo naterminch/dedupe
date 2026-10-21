@@ -169,6 +169,74 @@ pub struct Cli {
     /// The GUI also opens when no scan path is given.
     #[arg(long)]
     pub gui: bool,
+
+    /// Which cleanup tool to run (czkawka-style tools). `duplicates` is the
+    /// default file-deduplication scan; the other modes report or remove
+    /// other kinds of disk clutter and ignore --similarity/--exact.
+    #[arg(long, value_enum, default_value_t = FindMode::Duplicates)]
+    pub find: FindMode,
+
+    /// How duplicate files are matched: full content (default), size only,
+    /// exact file name, or fuzzy file name.
+    #[arg(long, value_enum, default_value_t = MatchMode::Content)]
+    pub r#match: MatchMode,
+
+    /// Fuzzy-name similarity threshold (0-100) for `--match fuzzy`.
+    #[arg(long, value_name = "PCT", default_value_t = 85.0)]
+    pub fuzzy_threshold: f64,
+
+    /// Number of files reported by `--find big-files` (default: 50).
+    #[arg(long, value_name = "N", default_value_t = 50)]
+    pub top: usize,
+
+    /// Perceptual image fingerprint family. `auto` keeps dHash (the default);
+    /// pick pHash, aHash or a colour-grid hash explicitly. Videos always use
+    /// frame dHash.
+    #[arg(long, value_enum, default_value_t = ImageHashAlgo::Auto)]
+    pub image_hash: ImageHashAlgo,
+
+    /// Also detect partial clips: a shorter video contained inside a longer
+    /// one, matched by frame sequence (Video Duplicate Finder parity).
+    #[arg(long)]
+    pub partial_clips: bool,
+
+    /// Similarity threshold (0-100) for partial-clip matching (default 85).
+    #[arg(long, value_name = "PCT", default_value_t = 85.0)]
+    pub partial_similarity: f64,
+
+    /// How `--find music` compares tracks: embedded tags (default) or audio
+    /// content fingerprints.
+    #[arg(long, value_enum, default_value_t = MusicMode::Tags)]
+    pub music_by: MusicMode,
+
+    /// Write the report as CSV to this file (in addition to the normal
+    /// stdout/JSON report).
+    #[arg(long, value_name = "FILE")]
+    pub csv: Option<String>,
+
+    /// Write the report as a standalone HTML page to this file.
+    #[arg(long, value_name = "FILE")]
+    pub html: Option<String>,
+
+    /// Move duplicates into DIR instead of deleting them (flattened, name
+    /// collisions gain a " (2)" suffix). Implies --delete but is reversible.
+    #[arg(long, value_name = "DIR")]
+    pub move_dir: Option<String>,
+
+    /// Replace duplicate files with hard links to the keeper instead of
+    /// deleting them. Requires the duplicates to live on one filesystem.
+    #[arg(long)]
+    pub hardlink: bool,
+
+    /// Remove embedded EXIF/metadata from scanned JPEG/PNG images in place
+    /// (with --yes; otherwise lists what would be rewritten).
+    #[arg(long)]
+    pub strip_exif: bool,
+
+    /// Skip files whose path matches this glob (repeatable, e.g.
+    /// `*.log`, `**/node_modules/**`). `*` does not cross `/` or `\`.
+    #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
+    pub ignore: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -176,6 +244,45 @@ pub enum HashAlgo {
     Blake3,
     Sha256,
     Md5,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum FindMode {
+    #[default]
+    Duplicates,
+    EmptyFiles,
+    EmptyDirs,
+    BigFiles,
+    TempFiles,
+    InvalidSymlinks,
+    BrokenFiles,
+    BadExtensions,
+    BadNames,
+    DuplicateFolders,
+    Music,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum MatchMode {
+    Content,
+    Size,
+    Name,
+    Fuzzy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ImageHashAlgo {
+    Dhash,
+    Phash,
+    Ahash,
+    Color,
+    Auto,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum MusicMode {
+    Tags,
+    Content,
 }
 
 #[cfg(test)]
@@ -222,6 +329,58 @@ mod tests {
         assert_eq!(cli.types, vec!["jpg".to_string(), "png".to_string()]);
         assert_eq!(cli.reference_dir, vec!["/backup".to_string()]);
         assert_eq!(cli.paths, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn cleanup_and_report_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "dedupe",
+            "--find",
+            "big-files",
+            "--match",
+            "fuzzy",
+            "--fuzzy-threshold",
+            "91",
+            "--top",
+            "7",
+            "--image-hash",
+            "phash",
+            "--partial-clips",
+            "--partial-similarity",
+            "77",
+            "--music-by",
+            "content",
+            "--csv",
+            "report.csv",
+            "--html",
+            "report.html",
+            "--move-dir",
+            "D:\\moved",
+            "--hardlink",
+            "--strip-exif",
+            "--ignore",
+            "*.log",
+            "--ignore",
+            "**/node_modules/**",
+            ".",
+        ])
+        .unwrap();
+        assert_eq!(cli.find, FindMode::BigFiles);
+        assert_eq!(cli.r#match, MatchMode::Fuzzy);
+        assert!((cli.fuzzy_threshold - 91.0).abs() < f64::EPSILON);
+        assert_eq!(cli.top, 7);
+        assert_eq!(cli.image_hash, ImageHashAlgo::Phash);
+        assert!(cli.partial_clips);
+        assert!((cli.partial_similarity - 77.0).abs() < f64::EPSILON);
+        assert_eq!(cli.music_by, MusicMode::Content);
+        assert_eq!(cli.csv.as_deref(), Some("report.csv"));
+        assert_eq!(cli.html.as_deref(), Some("report.html"));
+        assert_eq!(cli.move_dir.as_deref(), Some("D:\\moved"));
+        assert!(cli.hardlink && cli.strip_exif);
+        assert_eq!(
+            cli.ignore,
+            vec!["*.log".to_string(), "**/node_modules/**".to_string()]
+        );
     }
 
     #[test]

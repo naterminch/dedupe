@@ -15,6 +15,7 @@
 //! GPUI thread, deletions honor the OS trash, and theme mode persists to
 //! `gui-prefs.json` and is restored before first paint.
 
+use crate::ui_helpers;
 use crate::ui_helpers::{
     NO_LIMIT_LABEL, bar_pos, fit_text, hash_caption, is_no_limit, parse_size_limit,
     prefs_size_to_slider, size_slider_to_text, size_text_to_slider,
@@ -28,10 +29,7 @@ use gpui_kit::component::button::{
     Button, ButtonGroup, ButtonVariant, ButtonVariants, DropdownButton,
 };
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::empty::{
-    Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle,
-};
-use gpui_kit::component::group_box::GroupBox;
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput, NumberStep};
 use gpui_kit::component::label::Label;
 use gpui_kit::component::list::ListItem;
@@ -41,18 +39,21 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::separator::Separator;
 use gpui_kit::component::sidebar::{Sidebar, SidebarCollapsible, SidebarMenuItem};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderScale, SliderState};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::tag::Tag;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Side, WindowExt};
 use gpui_kit::component::{IconName, Theme, ThemeMode};
 use gpui_kit::{
-    AppContext as _, Context, Entity, Focusable as _, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString, Size, Styled as _,
-    Subscription, TitlebarOptions, Window, WindowOptions, div, img, px,
+    AnyElement, App, AppContext as _, Context, Entity, Focusable as _, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, SharedString,
+    Size, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
+    WindowOptions, div, img, linear_color_stop, linear_gradient, px, rgb,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -69,6 +70,85 @@ pub(crate) const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "w
 /// Groups rendered before a "Show more" button takes over; keeps huge
 /// result sets fast and navigable.
 pub(crate) const GROUP_PAGE: usize = 100;
+
+pub(crate) trait ThemeReadability {
+    fn text_xs_px(&self) -> f32;
+    fn text_sm_px(&self) -> f32;
+    fn text_heading_px(&self) -> f32;
+    fn card_surface(&self) -> Hsla;
+    fn accent_wash(&self) -> Hsla;
+    fn accent_wash_strong(&self) -> Hsla;
+}
+
+impl ThemeReadability for Theme {
+    fn text_xs_px(&self) -> f32 {
+        12.
+    }
+
+    fn text_sm_px(&self) -> f32 {
+        14.
+    }
+
+    fn text_heading_px(&self) -> f32 {
+        23.
+    }
+
+    fn card_surface(&self) -> Hsla {
+        if self.is_dark() {
+            rgb(0x171717).into()
+        } else {
+            rgb(0xffffff).into()
+        }
+    }
+
+    fn accent_wash(&self) -> Hsla {
+        if self.is_dark() {
+            rgb(0x0a1624).into()
+        } else {
+            rgb(0xf2f7fd).into()
+        }
+    }
+
+    fn accent_wash_strong(&self) -> Hsla {
+        if self.is_dark() {
+            rgb(0x0e2033).into()
+        } else {
+            rgb(0xe5f0fc).into()
+        }
+    }
+}
+
+fn apply_readable_theme(cx: &mut App) {
+    Theme::update(cx, |theme| {
+        if theme.is_dark() {
+            let accent = rgb(0x8cc4fa);
+            theme.font_size = px(14.);
+            theme.foreground = rgb(0xf2f2f2).into();
+            theme.muted_foreground = rgb(0xbdbdbd).into();
+            theme.group_box_foreground = rgb(0xf2f2f2).into();
+            theme.sidebar_foreground = rgb(0xf2f2f2).into();
+            theme.border = rgb(0x343434).into();
+            theme.group_box = rgb(0x121212).into();
+            theme.accent = accent.into();
+            theme.accent_foreground = rgb(0x07233f).into();
+            theme.ring = accent.into();
+            theme.shadow = false;
+        } else {
+            let accent = rgb(0x073b87);
+            theme.font_size = px(14.);
+            theme.foreground = rgb(0x171717).into();
+            theme.muted_foreground = rgb(0x565656).into();
+            theme.group_box_foreground = rgb(0x171717).into();
+            theme.sidebar_foreground = rgb(0x171717).into();
+            theme.border = rgb(0xdedede).into();
+            theme.group_box = rgb(0xf2f2f2).into();
+            theme.accent = accent.into();
+            theme.accent_foreground = rgb(0xffffff).into();
+            theme.ring = accent.into();
+            theme.shadow = true;
+        }
+    });
+}
 
 /// Boot the GUI application. Returns when the window is closed.
 pub fn run() {
@@ -116,9 +196,18 @@ pub(crate) struct DedupeView {
     pub(crate) exclude_dir_input: Entity<InputState>,
     pub(crate) exclude_path_input: Entity<InputState>,
     pub(crate) similarity_input: Entity<InputState>,
+    pub(crate) partial_similarity_input: Entity<InputState>,
+    pub(crate) fuzzy_threshold_input: Entity<InputState>,
+    pub(crate) top_input: Entity<InputState>,
+    pub(crate) ignore_input: Entity<InputState>,
     pub(crate) jobs_input: Entity<InputState>,
     pub(crate) hash_index: Option<usize>,
     pub(crate) keep_index: Option<usize>,
+    pub(crate) find_index: Option<usize>,
+    pub(crate) match_index: Option<usize>,
+    pub(crate) image_hash_index: Option<usize>,
+    pub(crate) partial_clips: bool,
+    pub(crate) music_by_content: bool,
     pub(crate) exact: bool,
     pub(crate) no_cache: bool,
     pub(crate) cache_msg: String,
@@ -156,6 +245,9 @@ pub(crate) struct DedupeView {
     pub(crate) has_scanned: bool,
     pub(crate) ffprobe_note: bool,
     pub(crate) groups: Vec<crate::matching::Group>,
+    /// Non-duplicate cleanup scan output (`--find` modes). Mutually
+    /// exclusive with `groups`: a mode scan never fills the duplicate list.
+    pub(crate) mode_result: Option<crate::modes::ModeResult>,
     /// Pristine scan results: `groups` is a live view over this,
     /// re-derived whenever the similarity floor changes. Keep decisions
     /// are mirrored back here so tightening never loses keeper choices.
@@ -267,6 +359,10 @@ impl DedupeView {
         let exclude_dir_input = mk("node_modules", &saved.exclude_dir, window, cx);
         let exclude_path_input = mk("substring", &saved.exclude_path, window, cx);
         let similarity_input = mk_num("0–100", &saved.similarity, window, cx);
+        let partial_similarity_input = mk_num("85", &saved.partial_similarity, window, cx);
+        let fuzzy_threshold_input = mk_num("85", &saved.fuzzy_threshold, window, cx);
+        let top_input = mk_num("50", &saved.top, window, cx);
+        let ignore_input = mk("*.tmp; node_modules", &saved.ignore, window, cx);
         let jobs_input = mk_num("0", &saved.jobs, window, cx);
         // Live similarity floor for the current results (blank = scan
         // default). Lowering below the scan floor needs a rescan.
@@ -310,9 +406,18 @@ impl DedupeView {
             exclude_dir_input,
             exclude_path_input,
             similarity_input,
+            partial_similarity_input,
+            fuzzy_threshold_input,
+            top_input,
+            ignore_input,
             jobs_input,
             hash_index: Some(saved.hash_index.min(2)),
             keep_index: Some(saved.keep_index.min(4)),
+            find_index: Some(saved.find_index.min(10)),
+            match_index: Some(saved.match_index.min(3)),
+            image_hash_index: Some(saved.image_hash_index.min(4)),
+            partial_clips: saved.partial_clips,
+            music_by_content: saved.music_by_content,
             exact: saved.exact,
             no_cache: saved.no_cache,
             cache_msg: String::new(),
@@ -345,6 +450,7 @@ impl DedupeView {
             has_scanned: false,
             ffprobe_note: false,
             groups: Vec::new(),
+            mode_result: None,
             base_groups: Vec::new(),
             scan_similarity: crate::similar::DEFAULT_SIMILARITY_PCT / 100.0,
             min_sim: crate::similar::DEFAULT_SIMILARITY_PCT / 100.0,
@@ -450,9 +556,16 @@ impl DedupeView {
         .detach();
         // Restore the saved theme before first paint to avoid a light-flash
         // when the user left the app in dark mode.
-        if saved.dark {
-            Theme::change(ThemeMode::Dark, None, cx);
-        }
+        Theme::change(
+            if saved.dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
+            None,
+            cx,
+        );
+        apply_readable_theme(cx);
         // Checklist A4: initial focus lands in the folder input so the user
         // can type immediately after launch.
         let initial_focus = view.folder_input.read(cx).focus_handle(cx);
@@ -481,6 +594,7 @@ impl DedupeView {
         self.scan_determinate = false;
         self.has_scanned = false;
         self.groups.clear();
+        self.mode_result = None;
         self.base_groups.clear();
         self.selected.clear();
         self.expanded.clear();
@@ -528,6 +642,43 @@ impl DedupeView {
             return Err(format!(
                 "Similarity must be between 0 and 100 (got {similarity})."
             ));
+        }
+        let partial_raw = val(&self.partial_similarity_input).trim().to_string();
+        let partial_similarity: f64 = if partial_raw.is_empty() {
+            85.0
+        } else {
+            partial_raw.parse().map_err(|_| {
+                "Partial-clip similarity must be a number between 0 and 100.".to_string()
+            })?
+        };
+        if !(0.0..=100.0).contains(&partial_similarity) {
+            return Err(format!(
+                "Partial-clip similarity must be between 0 and 100 (got {partial_similarity})."
+            ));
+        }
+        let fuzzy_raw = val(&self.fuzzy_threshold_input).trim().to_string();
+        let fuzzy_threshold: f64 = if fuzzy_raw.is_empty() {
+            85.0
+        } else {
+            fuzzy_raw
+                .parse()
+                .map_err(|_| "Fuzzy threshold must be a number between 0 and 100.".to_string())?
+        };
+        if !(0.0..=100.0).contains(&fuzzy_threshold) {
+            return Err(format!(
+                "Fuzzy threshold must be between 0 and 100 (got {fuzzy_threshold})."
+            ));
+        }
+        let top_raw = val(&self.top_input).trim().to_string();
+        let top: usize = if top_raw.is_empty() {
+            50
+        } else {
+            top_raw
+                .parse()
+                .map_err(|_| "Largest-files count must be a whole number above 0.".to_string())?
+        };
+        if top == 0 {
+            return Err("Largest-files count must be above 0.".to_string());
         }
         let jobs_raw = val(&self.jobs_input).trim().to_string();
         let jobs: usize = if jobs_raw.is_empty() {
@@ -596,6 +747,24 @@ impl DedupeView {
             quiet: true,
             jobs,
             gui: false,
+            find: ui_helpers::find_mode(self.find_index),
+            r#match: ui_helpers::match_mode(self.match_index),
+            fuzzy_threshold,
+            top,
+            image_hash: ui_helpers::image_hash_algo(self.image_hash_index),
+            partial_clips: self.partial_clips,
+            partial_similarity,
+            music_by: if self.music_by_content {
+                cli::MusicMode::Content
+            } else {
+                cli::MusicMode::Tags
+            },
+            csv: None,
+            html: None,
+            move_dir: None,
+            hardlink: false,
+            strip_exif: false,
+            ignore: split_multi(&val(&self.ignore_input)),
         })
     }
 
@@ -627,9 +796,18 @@ impl DedupeView {
             exclude_dir: val(&self.exclude_dir_input),
             exclude_path: val(&self.exclude_path_input),
             similarity: val(&self.similarity_input),
+            partial_similarity: val(&self.partial_similarity_input),
+            fuzzy_threshold: val(&self.fuzzy_threshold_input),
+            top: val(&self.top_input),
+            ignore: val(&self.ignore_input),
             jobs: val(&self.jobs_input),
             hash_index: self.hash_index.unwrap_or(0),
             keep_index: self.keep_index.unwrap_or(0),
+            find_index: self.find_index.unwrap_or(0),
+            match_index: self.match_index.unwrap_or(0),
+            image_hash_index: self.image_hash_index.unwrap_or(0),
+            partial_clips: self.partial_clips,
+            music_by_content: self.music_by_content,
             exact: self.exact,
             no_cache: self.no_cache,
             trash: self.trash,
@@ -665,6 +843,7 @@ impl DedupeView {
         self.scan_determinate = false;
         self.has_scanned = false;
         self.groups.clear();
+        self.mode_result = None;
         self.selected.clear();
         self.expanded.clear();
         self.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
@@ -775,6 +954,7 @@ impl DedupeView {
         // state remains up.
         if out.cancelled {
             self.groups.clear();
+            self.mode_result = None;
             self.base_groups.clear();
             self.selected.clear();
             self.expanded.clear();
@@ -798,6 +978,46 @@ impl DedupeView {
         self.last_hash_algo = out.hash_algo.to_string();
         self.last_ffprobe = out.ffprobe_used;
         self.last_ref_dirs = out.reference_dirs;
+        if let Some(mode) = out.mode_result {
+            let title = crate::modes::mode_title(mode.mode);
+            let findings = mode.finding_count();
+            let group_count = mode.groups.len();
+            let reclaim = mode.reclaimable();
+            let empty = mode.is_empty();
+            self.mode_result = Some(mode);
+            self.groups.clear();
+            self.base_groups.clear();
+            self.selected.clear();
+            self.expanded.clear();
+            self.consolidate_dest = None;
+            self.group_limit = GROUP_PAGE;
+            self.dup_files = findings as u64;
+            self.reclaim_bytes = reclaim;
+            self.status = if empty {
+                format!(
+                    "{title}: nothing found in {} file(s) ({}).",
+                    self.files_scanned,
+                    util::human_bytes(self.bytes_scanned)
+                )
+            } else if group_count > 0 {
+                format!(
+                    "{title}: {group_count} group(s) · {findings} item(s) · {} reclaimable.",
+                    util::human_bytes(reclaim)
+                )
+            } else {
+                format!(
+                    "{title}: {findings} finding(s) · {} reclaimable.",
+                    util::human_bytes(reclaim)
+                )
+            };
+            self.pending_toast = Some((self.status.clone(), false));
+            self.posters.clear();
+            self.strips.clear();
+            self.preview_loading.clear();
+            cx.notify();
+            return;
+        }
+        self.mode_result = None;
         self.groups = out.groups;
         // Pristine copy for live re-thresholding; the floor starts at the
         // scan threshold (everything qualifies).
@@ -1361,30 +1581,93 @@ impl DedupeView {
         let mut list = v_flex().gap_2();
         if self.folders.is_empty() {
             list = list.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No folders yet — add one below."),
+                v_flex()
+                    .gap_1()
+                    .p_3()
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(cx.theme().border)
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .size(px(26.))
+                                    .rounded_full()
+                                    .bg(cx.theme().muted)
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(IconName::Folder),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(cx.theme().text_sm_px()))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("No folders yet"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(cx.theme().text_xs_px()))
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Add a folder below or browse to begin."),
+                    ),
             );
         }
         for (i, folder) in self.folders.iter().enumerate() {
+            let reference = folder.reference;
             list = list.child(
                 ListItem::new(SharedString::from(format!("folder-{i}")))
-                    .px_0()
+                    .px_2()
                     .py_2()
-                    .selected(folder.reference)
+                    .rounded(px(12.))
+                    .border_1()
+                    .border_color(if reference {
+                        cx.theme().accent.opacity(0.35)
+                    } else {
+                        cx.theme().border
+                    })
+                    .bg(if reference {
+                        cx.theme().accent_wash()
+                    } else {
+                        cx.theme().background
+                    })
+                    .selected(reference)
                     .accessibility_label(fit_text(&folder.path, 120))
                     .child(
                         v_flex()
-                            .gap_1p5()
+                            .gap_2()
                             .child(
                                 h_flex()
-                                    .gap_1p5()
+                                    .gap_2()
                                     .items_center()
-                                    .child(IconName::Folder)
                                     .child(
                                         div()
-                                            .text_xs()
+                                            .size(px(28.))
+                                            .rounded(px(9.))
+                                            .bg(if reference {
+                                                cx.theme().accent.opacity(0.14)
+                                            } else {
+                                                cx.theme().muted
+                                            })
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .text_color(if reference {
+                                                cx.theme().accent
+                                            } else {
+                                                cx.theme().muted_foreground
+                                            })
+                                            .child(IconName::Folder),
+                                    )
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .flex_1()
+                                            .text_size(px(cx.theme().text_sm_px()))
                                             .truncate()
                                             .child(fit_text(&folder.path, 120)),
                                     ),
@@ -1397,7 +1680,7 @@ impl DedupeView {
                                     .child(
                                         Checkbox::new(SharedString::from(format!("ref-{i}")))
                                             .label("Protect")
-                                            .checked(folder.reference)
+                                            .checked(reference)
                                             .on_change(cx.listener(move |this, value, _, cx| {
                                                 if let Some(f) = this.folders.get_mut(i) {
                                                     f.reference = *value;
@@ -1408,7 +1691,7 @@ impl DedupeView {
                                     )
                                     .child(
                                         Button::new(SharedString::from(format!("rm-folder-{i}")))
-                                            .label("×")
+                                            .icon(IconName::Delete)
                                             .tooltip("Remove folder")
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 if i < this.folders.len() {
@@ -1431,17 +1714,49 @@ impl DedupeView {
         v_flex()
             .w_full()
             .h_full()
-            .bg(cx.theme().background)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(cx.theme().background, 0.),
+                linear_color_stop(cx.theme().muted.opacity(0.28), 1.),
+            ))
+            .border_r_1()
+            .border_color(cx.theme().border)
             .child(
                 v_flex()
-                    .gap_2()
+                    .gap_3()
                     .px_4()
-                    .pt_4()
-                    .pb_3()
-                    .child(self.sidebar_section(
-                        format!("Scan folders ({})", self.folders.len()),
-                        Some("Protect = never delete"),
-                    ))
+                    .pt_5()
+                    .pb_4()
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .items_start()
+                            .gap_3()
+                            .child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_xs_px()))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(cx.theme().accent)
+                                            .child("Source folders"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_sm_px()))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child("Where to look"),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_xs_px()))
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child("Protected folders are never deleted."),
+                                    ),
+                            )
+                            .child(Tag::secondary().child(self.folders.len().to_string())),
+                    )
                     .child(self.render_folder_list(cx))
                     .child(
                         h_flex()
@@ -1453,6 +1768,7 @@ impl DedupeView {
                             )
                             .child(
                                 Button::new("add-folder")
+                                    .primary()
                                     .icon(IconName::Plus)
                                     .label("Add")
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -1461,8 +1777,9 @@ impl DedupeView {
                             )
                             .child(
                                 Button::new("browse")
+                                    .outline()
                                     .icon(IconName::FolderOpen)
-                                    .label("Browse…")
+                                    .label("Browse")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.browse(window, cx);
                                     })),
@@ -1471,58 +1788,140 @@ impl DedupeView {
             )
             .child(
                 div().flex_1().w_full().overflow_y_scrollbar().child(
-                    v_flex()
-                        .gap_3()
-                        .px_4()
-                        .py_3()
-                        .child(self.sidebar_section("Scope", Some("this scan")))
-                        .child(self.sidebar_field(
-                            "File types",
-                            None,
-                            Input::new(&self.types_input),
-                            cx,
-                        ))
-                        .child(self.render_size_row(
-                            "Min size",
-                            &self.min_size_slider,
-                            &self.min_size_input,
-                            cx,
-                        ))
-                        .child(self.render_size_row(
-                            "Max size",
-                            &self.max_size_slider,
-                            &self.max_size_input,
-                            cx,
-                        ))
-                        .child(self.sidebar_field(
-                            "Max depth",
-                            Some("empty = unlimited"),
-                            NumberInput::new(&self.max_depth_input),
-                            cx,
-                        ))
-                        .child(self.sidebar_field(
-                            "Skip directories",
-                            Some("; separated"),
-                            Input::new(&self.exclude_dir_input),
-                            cx,
-                        ))
-                        .child(self.sidebar_field(
-                            "Skip paths containing",
-                            Some("; separated"),
-                            Input::new(&self.exclude_path_input),
-                            cx,
-                        )),
+                    v_flex().gap_3().px_4().pb_4().child(
+                        v_flex()
+                            .gap_3()
+                            .p_3()
+                            .rounded(px(14.))
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .bg(cx.theme().card_surface())
+                            .shadow_sm()
+                            .child(
+                                h_flex()
+                                    .justify_between()
+                                    .items_start()
+                                    .gap_3()
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .child(
+                                                div()
+                                                    .text_size(px(cx.theme().text_xs_px()))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(cx.theme().accent)
+                                                    .child("Scan scope"),
+                                            )
+                                            .child(Label::new("Narrow the search")),
+                                    )
+                                    .child(Tag::secondary().child("Optional")),
+                            )
+                            .child(self.sidebar_field(
+                                "File types",
+                                None,
+                                Input::new(&self.types_input),
+                                cx,
+                            ))
+                            .child(self.render_size_row(
+                                "Min size",
+                                &self.min_size_slider,
+                                &self.min_size_input,
+                                cx,
+                            ))
+                            .child(self.render_size_row(
+                                "Max size",
+                                &self.max_size_slider,
+                                &self.max_size_input,
+                                cx,
+                            ))
+                            .child(self.sidebar_field(
+                                "Max depth",
+                                Some("empty = unlimited"),
+                                NumberInput::new(&self.max_depth_input),
+                                cx,
+                            ))
+                            .child(self.sidebar_field(
+                                "Skip directories",
+                                Some("; separated"),
+                                Input::new(&self.exclude_dir_input),
+                                cx,
+                            ))
+                            .child(self.sidebar_field(
+                                "Skip paths containing",
+                                Some("; separated"),
+                                Input::new(&self.exclude_path_input),
+                                cx,
+                            ))
+                            .child(self.sidebar_field(
+                                "Ignore globs",
+                                Some("; separated"),
+                                Input::new(&self.ignore_input),
+                                cx,
+                            )),
+                    ),
                 ),
             )
             .child(
-                div()
-                    .px_4()
-                    .pt_3()
-                    .pb_4()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(v_flex().gap_2().child(self.render_media_status(cx)).child(
-                        if self.scanning {
+                div().px_4().pt_2().pb_4().child(
+                    v_flex()
+                        .gap_3()
+                        .p_3()
+                        .rounded(px(16.))
+                        .border_1()
+                        .border_color(cx.theme().accent.opacity(0.25))
+                        .bg(linear_gradient(
+                            145.,
+                            linear_color_stop(cx.theme().accent_wash_strong(), 0.),
+                            linear_color_stop(cx.theme().background, 1.),
+                        ))
+                        .shadow_md()
+                        .child(
+                            h_flex()
+                                .justify_between()
+                                .items_start()
+                                .gap_3()
+                                .child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            div()
+                                                .text_size(px(cx.theme().text_xs_px()))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(cx.theme().accent)
+                                                .child(if self.scanning {
+                                                    "Scanning"
+                                                } else {
+                                                    "Ready to scan"
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(cx.theme().text_sm_px()))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(if self.scanning {
+                                                    "Working through your files"
+                                                } else {
+                                                    "Your files stay on this PC."
+                                                }),
+                                        ),
+                                )
+                                .child(
+                                    Tag::secondary()
+                                        .child(format!("{} folders", self.folders.len())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(if self.scanning {
+                                    "Stop at any time; the view resets instantly."
+                                } else {
+                                    "No uploads."
+                                }),
+                        )
+                        .child(self.render_media_status(cx))
+                        .child(if self.scanning {
                             // Stop replaces Scan for the duration of the run:
                             // the pipeline notices at its next phase
                             // boundary (bounded by one small unit of work).
@@ -1540,13 +1939,21 @@ impl DedupeView {
                                 .primary()
                                 .icon(IconName::Search)
                                 .w_full()
-                                .label("Scan for duplicates")
+                                .label(
+                                    if ui_helpers::find_mode(self.find_index)
+                                        == cli::FindMode::Duplicates
+                                    {
+                                        "Scan for duplicates"
+                                    } else {
+                                        "Run cleanup scan"
+                                    },
+                                )
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.start_scan(cx);
                                 }))
                                 .into_any_element()
-                        },
-                    )),
+                        }),
+                ),
             )
     }
 
@@ -1567,6 +1974,13 @@ impl DedupeView {
                     .side(Side::Left)
                     .collapsible(SidebarCollapsible::None)
                     .w(px(200.))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(cx.theme().background, 0.),
+                        linear_color_stop(cx.theme().muted.opacity(0.28), 1.),
+                    ))
+                    .border_r_1()
+                    .border_color(cx.theme().border)
                     .child(
                         SidebarMenuItem::new("General")
                             .icon(IconName::Settings2)
@@ -1596,6 +2010,11 @@ impl DedupeView {
                     .h_full()
                     .w_full()
                     .overflow_y_scrollbar()
+                    .bg(linear_gradient(
+                        145.,
+                        linear_color_stop(cx.theme().background, 0.),
+                        linear_color_stop(cx.theme().accent_wash(), 1.),
+                    ))
                     .child(match self.settings_tab {
                         SettingsTab::General => self.render_settings_general(cx).into_any_element(),
                         SettingsTab::Preferences => {
@@ -1605,203 +2024,409 @@ impl DedupeView {
             )
     }
 
-    /// General tab: everyday switches (trash, remembered folders, cache),
-    /// each section a kit GroupBox with a Label title.
     fn render_settings_general(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_4()
-            .p_8()
-            .max_w(px(640.))
-            .child(
-                GroupBox::new()
-                    .id("settings-general")
-                    .title(Label::new("General"))
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .child(
-                                Switch::new("trash")
-                                    .label("Move to trash (recoverable)")
-                                    .checked(self.trash)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.trash = *value;
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Switch::new("remember-folders")
-                                    .label("Remember scan folders between runs")
-                                    .checked(self.remember_folders)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.remember_folders = *value;
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
+        let (files, bytes) = cache::cache_summary();
+        let cache_summary = format!("{} file(s) · {}", files, util::human_bytes(bytes));
+        let behavior_rows = vec![
+            self.setting_row(
+                "tip-trash",
+                "Move deleted files to trash",
+                "Deleted duplicates go to the system trash so they can be restored.",
+                Switch::new("trash")
+                    .checked(self.trash)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.trash = *value;
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
             )
+            .into_any_element(),
+            self.setting_row(
+                "tip-remember-folders",
+                "Remember scan folders",
+                "Restore the last folder list the next time the app opens.",
+                Switch::new("remember-folders")
+                    .checked(self.remember_folders)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.remember_folders = *value;
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        ];
+        let cache_rows = vec![
+            self.setting_row(
+                "tip-cache-disk",
+                "Cache on disk",
+                "Hashes and fingerprints stored in ~/.dedupe/ to speed up repeat scans.",
+                div()
+                    .text_size(px(cx.theme().text_sm_px()))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(cache_summary),
+            )
+            .into_any_element(),
+            self.setting_row(
+                "tip-clear-cache",
+                "Clear cached hashes and fingerprints",
+                "Force the next scan to re-read and re-fingerprint every file.",
+                Button::new("clear-cache")
+                    .icon(IconName::RefreshCw)
+                    .label("Clear caches")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        let (files, bytes) = cache::clear_caches();
+                        this.cache_msg =
+                            format!("Cleared {} file(s) ({})", files, util::human_bytes(bytes),);
+                        this.pending_toast =
+                            Some((format!("Cache cleared: {}", this.cache_msg), false));
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        ];
+
+        v_flex()
+            .w_full()
+            .max_w(px(780.))
+            .mx_auto()
+            .p_8()
+            .gap_5()
+            .child(self.settings_header(
+                cx,
+                "General",
+                "Everyday behavior and the local scan cache.",
+            ))
+            .child(self.settings_card(
+                "settings-general",
+                "tip-general",
+                "Behavior",
+                "App-wide behavior for scans and deletions.",
+                behavior_rows,
+            ))
+            .child(self.settings_card(
+                "settings-cache",
+                "tip-cache",
+                "Cache",
+                "Hashes and fingerprints cached between runs.",
+                cache_rows,
+            ))
             .child(
-                GroupBox::new()
-                    .id("settings-cache")
-                    .title(Label::new("Cache"))
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child({
-                                        let (files, bytes) = cache::cache_summary();
-                                        format!(
-                                            "On disk: {} file(s) · {} (hashes.bin + fingerprints.bin in ~/.dedupe/)",
-                                            files,
-                                            util::human_bytes(bytes),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                Button::new("clear-cache")
-                                    .icon(IconName::RefreshCw)
-                                    .label("Clear caches")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let (files, bytes) = cache::clear_caches();
-                                        this.cache_msg = format!(
-                                            "Cleared {} file(s) ({})",
-                                            files,
-                                            util::human_bytes(bytes),
-                                        );
-                                        this.pending_toast =
-                                            Some((format!("Cache cleared: {}", this.cache_msg), false));
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(self.cache_msg.clone()),
-                            ),
-                    ),
+                div()
+                    .text_size(px(cx.theme().text_xs_px()))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.cache_msg.clone()),
             )
     }
 
-    /// Preferences tab: matching + scan-engine tuning, each section a kit
-    /// GroupBox with a Label title.
     fn render_settings_preferences(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .gap_4()
+        let mode = ui_helpers::find_mode(self.find_index);
+        let duplicates = mode == cli::FindMode::Duplicates;
+        let music = mode == cli::FindMode::Music;
+
+        let mut scan_rows: Vec<AnyElement> = vec![
+            v_flex()
+                .gap_2()
+                .child(self.pref_title(
+                    "tip-find",
+                    "What to find",
+                    ui_helpers::find_mode_caption(self.find_index),
+                ))
+                .child(
+                    RadioGroup::horizontal("find-mode")
+                        .children([
+                            "Duplicates",
+                            "Empty files",
+                            "Empty folders",
+                            "Big files",
+                            "Temp files",
+                            "Broken symlinks",
+                            "Corrupt media",
+                            "Wrong extension",
+                            "Bad names",
+                            "Duplicate folders",
+                            "Music",
+                        ])
+                        .selected_index(self.find_index)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.find_index = Some(*value);
+                            this.save_prefs(cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+        ];
+        if mode == cli::FindMode::BigFiles {
+            scan_rows.push(
+                self.setting_row(
+                    "tip-top",
+                    "Largest files to report",
+                    "How many entries the big-files scan lists, biggest first.",
+                    NumberInput::new(&self.top_input),
+                )
+                .into_any_element(),
+            );
+        }
+        let scan_type = self.settings_card(
+            "settings-scan-type",
+            "tip-scan-type",
+            "Scan type",
+            "Choose what the next scan looks for.",
+            scan_rows,
+        );
+
+        let mut duplicate_rows = vec![
+            self.setting_row(
+                "tip-matching",
+                "Match duplicates by",
+                "Content hashes bytes. Size groups same-size files. Name matches base names. Fuzzy tolerates small typos.",
+                RadioGroup::horizontal("match-mode")
+                    .children(["Content", "Size", "Name", "Fuzzy name"])
+                    .selected_index(self.match_index)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.match_index = Some(*value);
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        ];
+        if ui_helpers::match_mode(self.match_index) == cli::MatchMode::Fuzzy {
+            duplicate_rows.push(
+                self.setting_row(
+                    "tip-fuzzy",
+                    "Fuzzy threshold %",
+                    "Minimum base-name similarity. 85% is a good default.",
+                    NumberInput::new(&self.fuzzy_threshold_input)
+                        .suffix(div().text_size(px(cx.theme().text_xs_px())).child("%")),
+                )
+                .into_any_element(),
+            );
+        }
+        duplicate_rows.push(
+            self.setting_row(
+                "tip-hash",
+                "Hash algorithm",
+                format!(
+                    "{} Choose another algorithm only to match hashes from a different tool.",
+                    hash_caption(self.hash_index)
+                ),
+                RadioGroup::horizontal("hash")
+                    .children(["blake3", "sha256", "md5"])
+                    .selected_index(self.hash_index)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.hash_index = Some(*value);
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        );
+        duplicate_rows.push(
+            self.setting_row(
+                "tip-exact",
+                "Exact duplicates only",
+                "Skip the similar-media pass; only byte-identical files are grouped.",
+                Switch::new("exact")
+                    .checked(self.exact)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.exact = *value;
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        );
+        duplicate_rows.push(
+            self.setting_row(
+                "tip-no-cache",
+                "Ignore cache and re-hash everything",
+                "Ignore cached hashes and fingerprints for this run.",
+                Switch::new("no-cache")
+                    .checked(self.no_cache)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.no_cache = *value;
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        );
+        let duplicates_group = self.settings_card(
+            "settings-duplicates",
+            "tip-duplicates",
+            "Duplicates",
+            "Only shown when scanning for duplicates.",
+            duplicate_rows,
+        );
+
+        let mut media_rows = vec![
+            self.setting_row(
+                "tip-similarity",
+                "Similarity %",
+                "How close two images or videos must be to group. 97% catches re-encodes.",
+                NumberInput::new(&self.similarity_input)
+                    .suffix(div().text_size(px(cx.theme().text_xs_px())).child("%")),
+            )
+            .into_any_element(),
+            self.setting_row(
+                "tip-image-hash",
+                "Image fingerprint",
+                "dHash is fast and default. pHash tolerates crops and colour shifts. aHash ignores colour. Color grid compares average colours.",
+                RadioGroup::horizontal("image-hash")
+                    .children(["Auto (dHash)", "dHash", "pHash", "aHash", "Color grid"])
+                    .selected_index(self.image_hash_index)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.image_hash_index = Some(*value);
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+            self.setting_row(
+                "tip-partial-clips",
+                "Find shorter clips inside longer videos",
+                "Also look for a shorter video contained in a longer one.",
+                Switch::new("partial-clips")
+                    .checked(self.partial_clips)
+                    .on_change(cx.listener(|this, value, _, cx| {
+                        this.partial_clips = *value;
+                        this.save_prefs(cx);
+                        cx.notify();
+                    })),
+            )
+            .into_any_element(),
+        ];
+        if self.partial_clips {
+            media_rows.push(
+                self.setting_row(
+                    "tip-partial-similarity",
+                    "Partial-clip similarity %",
+                    "How much of the shorter clip must match inside the longer one.",
+                    NumberInput::new(&self.partial_similarity_input)
+                        .suffix(div().text_size(px(cx.theme().text_xs_px())).child("%")),
+                )
+                .into_any_element(),
+            );
+        }
+        let media_group = self.settings_card(
+            "settings-media",
+            "tip-media",
+            "Images & video",
+            "Similar-media detection runs alongside exact duplicate matching.",
+            media_rows,
+        );
+
+        let music_group = self.settings_card(
+            "settings-music",
+            "tip-music",
+            "Music",
+            "How duplicate tracks are matched when scanning for music.",
+            vec![
+                self.setting_row(
+                    "tip-music-mode",
+                    "Match tracks by",
+                    "Embedded tags compare artist, title and album. Audio fingerprint compares the audio itself.",
+                    RadioGroup::horizontal("music-mode")
+                        .children(["Embedded tags", "Audio fingerprint"])
+                        .selected_index(Some(usize::from(self.music_by_content)))
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.music_by_content = *value == 1;
+                            this.save_prefs(cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            ],
+        );
+
+        let system_group = self.settings_card(
+            "settings-system",
+            "tip-system",
+            "System",
+            "Performance and the defaults applied to new scans.",
+            vec![
+                self.setting_row(
+                    "tip-jobs",
+                    "Worker threads",
+                    "Parallel hash workers. 0 uses every core but one.",
+                    NumberInput::new(&self.jobs_input),
+                )
+                .into_any_element(),
+                self.setting_row(
+                    "tip-keep",
+                    "Default keep",
+                    "Which copy a new scan keeps when duplicates are found.",
+                    RadioGroup::horizontal("default-keep")
+                        .children(["First", "Smallest", "Newest", "Oldest", "Best quality"])
+                        .selected_index(self.keep_index)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.apply_keep_mode(*value, cx);
+                        })),
+                )
+                .into_any_element(),
+                self.setting_row(
+                    "tip-sort-biggest",
+                    "Sort by most reclaimable space",
+                    "List groups with the most reclaimable bytes first.",
+                    Switch::new("default-sort-biggest")
+                        .checked(self.sort_biggest)
+                        .on_change(cx.listener(|this, value, _, cx| {
+                            this.sort_biggest = *value;
+                            this.save_prefs(cx);
+                            cx.notify();
+                        })),
+                )
+                .into_any_element(),
+            ],
+        );
+
+        let mut page = v_flex()
+            .w_full()
+            .max_w(px(780.))
+            .mx_auto()
             .p_8()
-            .max_w(px(640.))
-            .child(
-                GroupBox::new()
-                    .id("settings-matching")
-                    .title(Label::new("Matching"))
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .child(self.sidebar_section("Hash algorithm", None))
-                            .child(
-                                RadioGroup::new("hash")
-                                    .children(["blake3", "sha256", "md5"])
-                                    .selected_index(self.hash_index)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.hash_index = Some(*value);
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(hash_caption(self.hash_index)),
-                            )
-                            .child(self.sidebar_field(
-                                "Similarity %",
-                                Some("images / video"),
-                                NumberInput::new(&self.similarity_input)
-                                    .suffix(div().text_xs().child("%")),
-                                cx,
-                            ))
-                            .child(
-                                Switch::new("exact")
-                                    .label("Exact duplicates only")
-                                    .checked(self.exact)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.exact = *value;
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Switch::new("no-cache")
-                                    .label("Ignore the cache and re-hash everything")
-                                    .checked(self.no_cache)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.no_cache = *value;
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    ),
-            )
-            .child(
-                GroupBox::new()
-                    .id("settings-system")
-                    .title(Label::new("System"))
-                    .child(
-                        v_flex()
-                            .gap_3()
-                            .child(self.sidebar_field(
-                                "Worker threads",
-                                Some("0 = auto"),
-                                NumberInput::new(&self.jobs_input),
-                                cx,
-                            ))
-                            .child(self.sidebar_section("Default keep", Some("for new scans")))
-                            .child(
-                                RadioGroup::new("default-keep")
-                                    .children([
-                                        "First", "Smallest", "Newest", "Oldest", "Best quality",
-                                    ])
-                                    .selected_index(self.keep_index)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.apply_keep_mode(*value, cx);
-                                    })),
-                            )
-                            .child(
-                                Switch::new("default-sort-biggest")
-                                    .label("Sort by most reclaimable space")
-                                    .checked(self.sort_biggest)
-                                    .on_change(cx.listener(|this, value, _, cx| {
-                                        this.sort_biggest = *value;
-                                        this.save_prefs(cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(
-                                        "Per-scan scope (folders, types, sizes) lives in the side nav. Theme lives in the top bar. All settings save automatically.",
-                                    ),
-                            ),
-                    ),
-            )
+            .gap_5()
+            .child(self.settings_header(
+                cx,
+                "Preferences",
+                "Defaults for the next scan. Hover an option name for details.",
+            ))
+            .child(scan_type);
+        if duplicates {
+            page = page.child(duplicates_group);
+            if !self.exact {
+                page = page.child(media_group);
+            }
+        }
+        if music {
+            page = page.child(music_group);
+        }
+        page.child(system_group).child(
+            div()
+                .text_size(px(cx.theme().text_xs_px()))
+                .text_color(cx.theme().muted_foreground)
+                .child("Changes save automatically."),
+        )
     }
 
     /// ffmpeg/ffprobe availability line shown above the Scan button.
-    fn render_media_status(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_media_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.media_checked {
             return Tag::secondary()
                 .child("Checking for ffmpeg…")
                 .into_any_element();
         }
+        let theme = cx.theme();
         let (tag, text) = match (self.ffmpeg_ok, self.ffprobe_ok) {
-            (true, true) => (Tag::success(), "ffmpeg ready — video compare on"),
+            (true, true) => (
+                Tag::custom(
+                    theme.accent_wash_strong(),
+                    theme.accent,
+                    theme.accent_wash_strong(),
+                )
+                .rounded_full(),
+                "ffmpeg ready",
+            ),
             (false, true) => (Tag::warning(), "ffmpeg missing — video compare off"),
             (true, false) => (Tag::warning(), "ffprobe missing — media details off"),
             (false, false) => (
@@ -1809,7 +2434,7 @@ impl DedupeView {
                 "ffmpeg missing — video compare + details off",
             ),
         };
-        tag.child(text).into_any_element()
+        tag.self_start().child(text).into_any_element()
     }
 
     /// Size filter with a log-scale slider synced to an exact-value box.
@@ -1831,6 +2456,97 @@ impl DedupeView {
                     .child(div().flex_1().child(Slider::new(slider).horizontal()))
                     .child(div().w(px(96.)).child(Input::new(input))),
             )
+    }
+
+    fn pref_title(
+        &self,
+        id: &'static str,
+        title: impl Into<SharedString>,
+        hint: impl Into<SharedString>,
+    ) -> impl IntoElement {
+        let hint: SharedString = hint.into();
+        div()
+            .id(id)
+            .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+            .child(Label::new(title))
+    }
+
+    fn settings_header(
+        &self,
+        cx: &mut Context<Self>,
+        title: &'static str,
+        description: &'static str,
+    ) -> impl IntoElement {
+        v_flex()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(cx.theme().text_xs_px()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().accent)
+                    .child("Settings"),
+            )
+            .child(
+                div()
+                    .text_size(px(cx.theme().text_heading_px()))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(
+                div()
+                    .text_size(px(cx.theme().text_sm_px()))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(description),
+            )
+            .child(
+                div()
+                    .h(px(2.))
+                    .w(px(56.))
+                    .rounded_full()
+                    .bg(cx.theme().accent),
+            )
+    }
+
+    fn setting_row(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        hint: impl Into<SharedString>,
+        control: impl IntoElement,
+    ) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_6()
+            .child(div().flex_1().child(self.pref_title(id, label, hint)))
+            .child(div().flex_shrink_0().max_w(px(480.)).child(control))
+    }
+
+    fn settings_rows(&self, rows: Vec<AnyElement>) -> impl IntoElement {
+        let mut body = v_flex().w_full();
+        for (ix, row) in rows.into_iter().enumerate() {
+            if ix > 0 {
+                body = body.child(Separator::horizontal().my_1());
+            }
+            body = body.child(row);
+        }
+        body
+    }
+
+    fn settings_card(
+        &self,
+        id: &'static str,
+        title_id: &'static str,
+        title: &'static str,
+        hint: impl Into<SharedString>,
+        rows: Vec<AnyElement>,
+    ) -> impl IntoElement {
+        GroupBox::new()
+            .id(id)
+            .fill()
+            .title(self.pref_title(title_id, title, hint))
+            .child(self.settings_rows(rows))
     }
 
     /// Field/section label with an optional dimmed hint. The kit's `Label`
@@ -1864,58 +2580,318 @@ impl DedupeView {
     /// First-run empty state: the sidebar holds a dozen options, so the
     /// empty results pane teaches the 3-step flow instead of sitting blank.
     fn render_empty_state(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let step = |n: &'static str, text: &'static str| {
-            h_flex()
+        let duplicates = ui_helpers::find_mode(self.find_index) == cli::FindMode::Duplicates;
+        let muted = cx.theme().muted_foreground;
+        let border = cx.theme().border;
+        let step = |n: &'static str, title: &'static str, text: &'static str, icon: IconName| {
+            v_flex()
+                .flex_1()
+                .min_w_0()
                 .gap_2()
-                .items_start()
+                .p_3()
+                .rounded(px(12.))
+                .border_1()
+                .border_color(border)
+                .bg(cx.theme().card_surface())
+                .shadow_sm()
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .items_center()
+                        .child(
+                            div()
+                                .size(px(30.))
+                                .rounded(px(9.))
+                                .bg(cx.theme().accent.opacity(0.12))
+                                .text_color(cx.theme().accent)
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(icon),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(muted)
+                                .child(n),
+                        ),
+                )
                 .child(
                     div()
-                        .text_sm()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(cx.theme().accent)
-                        .child(n),
+                        .text_size(px(cx.theme().text_sm_px()))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
                 )
-                .child(div().text_sm().child(text))
+                .child(
+                    div()
+                        .text_size(px(cx.theme().text_xs_px()))
+                        .text_color(muted)
+                        .child(text),
+                )
         };
-        Empty::new()
-            .header(
-                EmptyHeader::new()
-                    .media(
-                        EmptyMedia::new()
-                            .with_variant(EmptyMediaVariant::Icon)
-                            .child(IconName::Search),
-                    )
-                    .title(EmptyTitle::new().child("Find duplicate files in 3 steps"))
-                    .description(EmptyDescription::new().child(
-                        "Keepers are never deleted. Deletion goes to the trash by default.",
-                    )),
-            )
-            .content(
-                EmptyContent::new().child(
+        let preview_row = |icon: IconName, label: &'static str, value: String| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(
+                    div()
+                        .size(px(24.))
+                        .rounded(px(8.))
+                        .bg(cx.theme().muted)
+                        .text_color(muted)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon),
+                )
+                .child(
                     v_flex()
-                        .gap_2()
-                        .child(step(
-                            "1.",
-                            "Add a folder on the left (type it and Add, or Browse…).",
-                        ))
-                        .child(step("2.", "Press “Scan for duplicates”."))
-                        .child(step(
-                            "3.",
-                            "Review each group, untick anything that must survive, then Delete selected.",
-                        )),
-                ),
+                        .gap_0()
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .text_color(muted)
+                                .child(label),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_sm_px()))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(value),
+                        ),
+                )
+        };
+        v_flex()
+            .flex_1()
+            .w_full()
+            .items_center()
+            .justify_center()
+            .py_4()
+            .child(
+                v_flex()
+                    .w_full()
+                    .max_w(px(980.))
+                    .gap_5()
+                    .p_6()
+                    .rounded(px(24.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(linear_gradient(
+                        135.,
+                        linear_color_stop(cx.theme().background, 0.),
+                        linear_color_stop(cx.theme().accent_wash_strong(), 1.),
+                    ))
+                    .shadow_md()
+                    .child(
+                        h_flex()
+                            .gap_8()
+                            .items_center()
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap_3()
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_xs_px()))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(cx.theme().accent)
+                                            .child(if duplicates {
+                                                "Duplicate scanning"
+                                            } else {
+                                                "Cleanup scanning"
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_heading_px()))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(if duplicates {
+                                                "Find every copy. Keep the one you want."
+                                            } else {
+                                                "Put every stray file back in its place."
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(cx.theme().text_sm_px()))
+                                            .text_color(muted)
+                                            .child(if duplicates {
+                                                "One copy is always kept. Review each group and remove the rest."
+                                            } else {
+                                                "Scan for empty files, broken media, bad names, and duplicate folders."
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                v_flex()
+                                    .w(px(250.))
+                                    .flex_shrink_0()
+                                    .gap_3()
+                                    .p_4()
+                                    .rounded(px(18.))
+                                    .border_1()
+                                    .border_color(border)
+                                    .bg(cx.theme().card_surface())
+                                    .shadow_sm()
+                                    .child(
+                                        h_flex()
+                                            .justify_between()
+                                            .items_center()
+                                            .child(
+                                                div()
+                                                    .text_size(px(cx.theme().text_sm_px()))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child("Scan preview"),
+                                            )
+                                            .child(Tag::success().child("Ready")),
+                                    )
+                                    .child(preview_row(
+                                        IconName::Folder,
+                                        "Folders",
+                                        format!("{} queued", self.folders.len()),
+                                    ))
+                                    .child(preview_row(
+                                        IconName::Search,
+                                        "Mode",
+                                        if duplicates {
+                                            "Duplicate scan".to_string()
+                                        } else {
+                                            "Cleanup scan".to_string()
+                                        },
+                                    ))
+                                    .child(preview_row(
+                                        IconName::RefreshCw,
+                                        "Matching",
+                                        if duplicates {
+                                            "Content + media".to_string()
+                                        } else {
+                                            "Cleanup rules".to_string()
+                                        },
+                                    ))
+                                    .child(preview_row(
+                                        IconName::Delete,
+                                        "Delete",
+                                        if self.trash {
+                                            "To trash".to_string()
+                                        } else {
+                                            "Permanently".to_string()
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .h(px(4.))
+                                            .w_full()
+                                            .rounded_full()
+                                            .bg(cx.theme().accent.opacity(0.14))
+                                            .child(
+                                                div()
+                                                    .h(px(4.))
+                                                    .w(px(96.))
+                                                    .rounded_full()
+                                                    .bg(cx.theme().accent),
+                                            ),
+                                    ),
+                            ),
+                    )
+                    .child(div().h(px(1.)).w_full().bg(border))
+                    .child(
+                        h_flex()
+                            .items_stretch()
+                            .gap_3()
+                            .child(step(
+                                "01",
+                                "Add folders",
+                                "Choose the folders you want to scan.",
+                                IconName::Folder,
+                            ))
+                            .child(step(
+                                "02",
+                                "Run a scan",
+                                if duplicates {
+                                    "Files, photos, and videos are compared on this PC."
+                                } else {
+                                    "Cleanup rules check for specific problems."
+                                },
+                                IconName::Search,
+                            ))
+                            .child(step(
+                                "03",
+                                "Review results",
+                                if duplicates {
+                                    "Keep the right copy and remove the rest."
+                                } else {
+                                    "Inspect every finding before using the CLI."
+                                },
+                                IconName::Check,
+                            )),
+                    ),
             )
     }
 
     fn render_results(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.mode_result.is_some() {
+            return self.render_mode_results(cx).into_any_element();
+        }
         // Two rows: expand/collapse + select-all on top, all action
         // controls on the second row right-aligned. The scan status lives
         // in the status bar (and the progress card while scanning), so the
         // header never repeats it. Flex items will not shrink below
         // content width here, so controls must never share a row with
         // free-length text — otherwise they clip off the edge.
+        let title = if self.has_scanned {
+            "Review duplicates"
+        } else {
+            "Find duplicate files"
+        };
+        let subtitle = if self.scanning {
+            "Scanning. Results will appear here."
+        } else if self.has_scanned {
+            "Keep one copy. Select the rest."
+        } else {
+            "Add folders and scan. Nothing is uploaded."
+        };
+        let state = if self.scanning {
+            "Running".to_string()
+        } else if self.has_scanned {
+            format!("{} groups", self.groups.len())
+        } else {
+            "Ready".to_string()
+        };
         let header = v_flex()
-            .gap_2()
+            .gap_3()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .items_end()
+                    .gap_4()
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(cx.theme().text_xs_px()))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(cx.theme().accent)
+                                    .child("Duplicate workspace"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(cx.theme().text_heading_px()))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(title),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(cx.theme().text_sm_px()))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(subtitle),
+                            ),
+                    )
+                    .child(Tag::secondary().child(state)),
+            )
             .child(
                 h_flex()
                     .gap_2()
@@ -1976,10 +2952,13 @@ impl DedupeView {
                         cx.notify();
                     });
                 });
+            let header_size = cx.theme().text_sm_px();
             for gi in 0..total.min(self.group_limit) {
                 let expanded = self.expanded.contains(&self.groups[gi].index);
                 acc = acc.item(|item| {
-                    let item = item.title(self.group_header(gi)).open(expanded);
+                    let item = item
+                        .title(self.group_header(gi, header_size))
+                        .open(expanded);
                     if expanded {
                         item.child(self.group_body(gi, cx))
                     } else {
@@ -2006,10 +2985,302 @@ impl DedupeView {
             .h_full()
             .gap_4()
             .p_6()
+            .bg(linear_gradient(
+                145.,
+                linear_color_stop(cx.theme().background, 0.),
+                linear_color_stop(cx.theme().accent_wash(), 1.),
+            ))
             .child(header)
             .child(div().flex_1().w_full().overflow_y_scrollbar().child(list))
+            .into_any_element()
     }
 
+    fn render_mode_results(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let Some(mode) = self.mode_result.as_ref() else {
+            return div().into_any_element();
+        };
+        let title = crate::modes::mode_title(mode.mode);
+        let findings = mode.finding_count();
+        let groups = mode.groups.len();
+        let group_members: usize = mode.groups.iter().map(|g| g.members.len()).sum();
+        let results = findings + group_members;
+        let summary = if groups > 0 {
+            format!("{groups} group(s) · {results} item(s)")
+        } else {
+            format!("{findings} finding(s)")
+        };
+        let note = if mode.mode == cli::FindMode::DuplicateFolders {
+            "Duplicate-folder scans are report-only."
+        } else {
+            "Cleanup scan results are read-only here. Run the CLI with --delete or --trash to act on them."
+        };
+        let reclaim = mode.reclaimable();
+        let limit = self.group_limit;
+        let border = cx.theme().border;
+        let background = cx.theme().card_surface();
+        let muted = cx.theme().muted_foreground;
+        let xs = px(cx.theme().text_xs_px());
+        let value_size = px(cx.theme().text_sm_px() + 3.);
+        let summary_card =
+            |icon: IconName, value: String, label: &'static str, color: gpui_kit::Hsla| {
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_3()
+                    .items_center()
+                    .p_3()
+                    .border_1()
+                    .rounded(px(12.))
+                    .border_color(border)
+                    .bg(background)
+                    .shadow_sm()
+                    .child(
+                        div()
+                            .size(px(34.))
+                            .rounded(px(10.))
+                            .bg(color.opacity(0.12))
+                            .text_color(color)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(icon),
+                    )
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .gap_0()
+                            .child(
+                                div()
+                                    .text_size(value_size)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(color)
+                                    .child(value),
+                            )
+                            .child(div().text_size(xs).text_color(muted).child(label)),
+                    )
+            };
+        let header = v_flex().gap_3().child(
+            h_flex()
+                .justify_between()
+                .items_end()
+                .gap_4()
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(cx.theme().accent)
+                                .child("Cleanup results"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_heading_px()))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_sm_px()))
+                                .text_color(muted)
+                                .child(note),
+                        ),
+                )
+                .child(Tag::secondary().child(summary)),
+        );
+        let mut list = v_flex().gap_2();
+        if self.scanning {
+            list = list.child(self.render_progress(cx));
+        }
+        if !self.has_scanned && !self.scanning {
+            list = list.child(self.render_empty_state(cx));
+        }
+        if self.has_scanned {
+            list = list.child(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .child(summary_card(
+                        IconName::Search,
+                        self.files_scanned.to_string(),
+                        "Files scanned",
+                        cx.theme().foreground,
+                    ))
+                    .child(summary_card(
+                        IconName::Folder,
+                        if groups > 0 {
+                            results.to_string()
+                        } else {
+                            findings.to_string()
+                        },
+                        if groups > 0 { "Items" } else { "Findings" },
+                        cx.theme().accent,
+                    ))
+                    .child(summary_card(
+                        IconName::Delete,
+                        util::human_bytes(reclaim),
+                        "Reclaimable",
+                        cx.theme().success,
+                    )),
+            );
+        }
+        for note in &mode.notes {
+            list = list.child(
+                div()
+                    .text_size(px(cx.theme().text_xs_px()))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(note.clone()),
+            );
+        }
+        if !mode.errors.is_empty() {
+            list = list.child(Alert::warning(
+                "mode-errors",
+                format!("{} path(s) could not be read.", mode.errors.len()),
+            ));
+        }
+        if mode.is_empty() {
+            list = list.child(Alert::success(
+                "mode-empty",
+                format!("Nothing found in {} file(s).", mode.files_scanned),
+            ));
+        }
+        for finding in mode.findings.iter().take(limit) {
+            list = list.child(
+                v_flex()
+                    .gap_1()
+                    .p_3()
+                    .border_1()
+                    .rounded(px(12.))
+                    .border_color(border)
+                    .bg(background)
+                    .shadow_sm()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .child(Tag::secondary().child(finding.kind))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_size(px(cx.theme().text_sm_px()))
+                                    .truncate()
+                                    .child(ui_helpers::fit_text(
+                                        &finding.path.display().to_string(),
+                                        110,
+                                    )),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(cx.theme().text_xs_px()))
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if finding.is_dir {
+                                        "folder".to_string()
+                                    } else {
+                                        util::human_bytes(finding.size)
+                                    }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(cx.theme().text_xs_px()))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(finding.detail.clone()),
+                    ),
+            );
+        }
+        for group in mode.groups.iter().take(limit) {
+            let mut card = v_flex()
+                .gap_1()
+                .p_3()
+                .border_1()
+                .rounded(px(12.))
+                .border_color(border)
+                .bg(background)
+                .shadow_sm()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_sm_px()))
+                                .font_weight(FontWeight::BOLD)
+                                .child(group.label.clone()),
+                        )
+                        .child(Tag::secondary().child(format!("{} copies", group.members.len()))),
+                )
+                .child(
+                    div()
+                        .text_size(px(cx.theme().text_xs_px()))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "{} · {} reclaimable",
+                            group.detail,
+                            util::human_bytes(group.reclaimable)
+                        )),
+                );
+            for (index, member) in group.members.iter().enumerate().take(12) {
+                let size = group.sizes.get(index).copied().unwrap_or(0);
+                card = card.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .truncate()
+                                .child(ui_helpers::fit_text(&member.display().to_string(), 110)),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(util::human_bytes(size)),
+                        ),
+                );
+            }
+            if group.members.len() > 12 {
+                card = card.child(
+                    div()
+                        .text_size(px(cx.theme().text_xs_px()))
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("+{} more", group.members.len() - 12)),
+                );
+            }
+            list = list.child(card);
+        }
+        let shown = findings.min(limit) + groups.min(limit);
+        let total_items = findings + groups;
+        if total_items > shown {
+            let remaining = total_items - shown;
+            list = list.child(
+                Button::new("show-more-mode")
+                    .icon(IconName::ChevronDown)
+                    .label(format!("Show more ({remaining} remaining)"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.group_limit += GROUP_PAGE;
+                        cx.notify();
+                    })),
+            );
+        }
+        v_flex()
+            .flex_1()
+            .h_full()
+            .gap_4()
+            .p_6()
+            .bg(linear_gradient(
+                145.,
+                linear_color_stop(cx.theme().background, 0.),
+                linear_color_stop(cx.theme().accent_wash(), 1.),
+            ))
+            .child(header)
+            .child(div().flex_1().w_full().overflow_y_scrollbar().child(list))
+            .into_any_element()
+    }
     /// Live scan progress card: phase label with "N of M" counts plus a
     /// real progress bar for the determinate hashing/comparing stages.
     fn render_progress(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2024,7 +3295,7 @@ impl DedupeView {
             .child(
                 heading.child(
                     div()
-                        .text_sm()
+                        .text_size(px(cx.theme().text_sm_px()))
                         .font_weight(FontWeight::BOLD)
                         .text_color(cx.theme().accent)
                         .child(self.status.clone()),
@@ -2032,7 +3303,7 @@ impl DedupeView {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_size(px(cx.theme().text_xs_px()))
                     .text_color(cx.theme().muted_foreground)
                     .child(format!("{} file(s) scanned", self.files_scanned)),
             );
@@ -2050,41 +3321,65 @@ impl DedupeView {
 
     /// Summary chips: files scanned, groups found, reclaimable bytes.
     fn render_stat_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let chip = |value: String, label: &'static str, color: gpui_kit::Hsla| {
-            v_flex()
-                .gap_0()
-                .px_4()
-                .py_1p5()
+        let chip = |icon: IconName, value: String, label: &'static str, color: gpui_kit::Hsla| {
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_3()
+                .items_center()
+                .p_3()
                 .border_1()
-                .rounded_md()
+                .rounded(px(12.))
                 .border_color(cx.theme().border)
+                .bg(cx.theme().card_surface())
+                .shadow_sm()
                 .child(
                     div()
-                        .text_base()
-                        .font_weight(FontWeight::BOLD)
+                        .size(px(34.))
+                        .rounded(px(10.))
+                        .bg(color.opacity(0.12))
                         .text_color(color)
-                        .child(value),
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(icon),
                 )
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(label),
+                    v_flex()
+                        .min_w_0()
+                        .gap_0()
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_sm_px() + 3.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(color)
+                                .child(value),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(cx.theme().text_xs_px()))
+                                .text_color(cx.theme().muted_foreground)
+                                .child(label),
+                        ),
                 )
         };
         h_flex()
+            .w_full()
             .gap_2()
             .child(chip(
+                IconName::Search,
                 self.files_scanned.to_string(),
                 "Files scanned",
                 cx.theme().foreground,
             ))
             .child(chip(
+                IconName::Folder,
                 self.groups.len().to_string(),
                 "Groups",
                 cx.theme().accent,
             ))
             .child(chip(
+                IconName::Delete,
                 util::human_bytes(self.reclaim_bytes),
                 "Reclaimable",
                 cx.theme().success,
@@ -2169,7 +3464,7 @@ impl DedupeView {
     /// results without rescanning (blank restores the scan floor).
     /// Shown only when similar-media groups exist; exact groups always
     /// qualify and are unaffected.
-    fn render_sim_filter(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sim_filter(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let has_sim = self.groups.iter().any(|g| g.similarity.is_some());
         if self.scanning || self.groups.is_empty() || !has_sim {
             return div().into_any_element();
@@ -2179,8 +3474,9 @@ impl DedupeView {
             .items_center()
             .child(Label::new("Similarity floor"))
             .child(
-                div().w(px(112.)).child(
-                    NumberInput::new(&self.min_sim_input).suffix(div().text_xs().child("%")),
+                div().w(px(160.)).child(
+                    NumberInput::new(&self.min_sim_input)
+                        .suffix(div().text_size(px(cx.theme().text_xs_px())).child("%")),
                 ),
             )
             .into_any_element()
@@ -2448,6 +3744,7 @@ impl DedupeView {
             })
             .count()
             .saturating_sub(confirm_groups.len());
+        let dialog_xs = px(cx.theme().text_xs_px());
         window.open_alert_dialog(
             cx,
             move |alert, _, _| {
@@ -2459,7 +3756,7 @@ impl DedupeView {
                         .py_1()
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(dialog_xs)
                                 .font_weight(FontWeight::BOLD)
                                 .child(format!(
                                     "Group #{} · keeps {} · deletes {} ({})",
@@ -2479,7 +3776,7 @@ impl DedupeView {
                                 .items_center()
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(dialog_xs)
                                         .truncate()
                                         .child(format!(
                                             "{} ({})",
@@ -2509,7 +3806,7 @@ impl DedupeView {
                     if cg.hidden_rows > 0 {
                         section = section.child(
                             div()
-                                .text_xs()
+                                .text_size(dialog_xs)
                                 .child(format!("… and {} more in this group", cg.hidden_rows)),
                         );
                     }
@@ -2518,7 +3815,7 @@ impl DedupeView {
                 if hidden_groups > 0 {
                     body = body.child(
                         div()
-                            .text_xs()
+                            .text_size(dialog_xs)
                             .child(format!("… and {hidden_groups} more group(s)")),
                     );
                 }
@@ -2548,9 +3845,12 @@ impl DedupeView {
 
     /// Group header for the accordion trigger. The kit trigger draws the
     /// rotating chevron and the spring reveal, so no glyphs live here.
-    fn group_header(&self, gi: usize) -> impl IntoElement {
+    fn group_header(&self, gi: usize, font_size: f32) -> impl IntoElement {
         let snapshot = self.groups[gi].clone_snapshot();
-        div().text_sm().truncate().child(snapshot.header)
+        div()
+            .text_size(px(font_size))
+            .truncate()
+            .child(snapshot.header)
     }
 
     /// Expanded group body: the media card grid (when every member has a
@@ -2684,69 +3984,118 @@ impl Render for DedupeView {
                 }
             }))
             .child(
-                h_flex()
-                    .items_center()
-                    .justify_between()
-                    .px_6()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
+                v_flex()
                     .child(
                         h_flex()
-                            .gap_3()
                             .items_center()
-                            .child(img("icons/logo.png").w(px(22.)).h(px(22.)).rounded_md())
+                            .justify_between()
+                            .gap_4()
+                            .px_6()
+                            .py_3()
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(cx.theme().background, 0.),
+                                linear_color_stop(cx.theme().muted.opacity(0.35), 1.),
+                            ))
                             .child(
-                                div()
-                                    .text_base()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(cx.theme().accent)
-                                    .child("dedupe"),
+                                h_flex()
+                                    .gap_3()
+                                    .items_center()
+                                    .child(
+                                        img("icons/logo.png")
+                                            .w(px(34.))
+                                            .h(px(34.))
+                                            .rounded(px(10.)),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .gap_0p5()
+                                            .child(
+                                                h_flex()
+                                                    .gap_2()
+                                                    .items_center()
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(
+                                                                cx.theme().text_sm_px() + 1.
+                                                            ))
+                                                            .font_weight(FontWeight::SEMIBOLD)
+                                                            .child("dedupe"),
+                                                    )
+                                                    .child(
+                                                        div()
+                                                            .text_size(px(cx.theme().text_xs_px()))
+                                                            .text_color(cx.theme().muted_foreground)
+                                                            .child(concat!(
+                                                                "v",
+                                                                env!("CARGO_PKG_VERSION")
+                                                            )),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(px(cx.theme().text_xs_px()))
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(if self.view == AppView::Settings {
+                                                        "Tune the scanner, not your files."
+                                                    } else {
+                                                        "Find duplicates. Keep the one you want."
+                                                    }),
+                                            ),
+                                    ),
                             )
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(concat!("v", env!("CARGO_PKG_VERSION"))),
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(if self.view == AppView::Settings {
+                                        Button::new("nav-back")
+                                            .icon(IconName::ArrowLeft)
+                                            .label("Back")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.view = AppView::Main;
+                                                cx.notify();
+                                            }))
+                                    } else {
+                                        Button::new("nav-settings")
+                                            .icon(IconName::Settings)
+                                            .label("Settings")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.view = AppView::Settings;
+                                                cx.notify();
+                                            }))
+                                    })
+                                    .child(
+                                        Button::new("theme-toggle")
+                                            .icon(if dark { IconName::Sun } else { IconName::Moon })
+                                            .label(if dark { "Light" } else { "Dark" })
+                                            .w(px(88.))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                Theme::change(
+                                                    if dark {
+                                                        ThemeMode::Light
+                                                    } else {
+                                                        ThemeMode::Dark
+                                                    },
+                                                    None,
+                                                    cx,
+                                                );
+                                                this.save_prefs(cx);
+                                                apply_readable_theme(cx);
+                                            })),
+                                    ),
                             ),
                     )
                     .child(
                         h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(if self.view == AppView::Settings {
-                                Button::new("nav-back")
-                                    .icon(IconName::ArrowLeft)
-                                    .label("Back")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.view = AppView::Main;
-                                        cx.notify();
-                                    }))
-                            } else {
-                                Button::new("nav-settings")
-                                    .icon(IconName::Settings)
-                                    .label("Settings")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.view = AppView::Settings;
-                                        cx.notify();
-                                    }))
-                            })
+                            .h(px(1.))
+                            .w_full()
+                            .child(div().flex_1().bg(cx.theme().border))
                             .child(
-                                Button::new("theme-toggle")
-                                    .icon(if dark { IconName::Sun } else { IconName::Moon })
-                                    .label(if dark { "Light" } else { "Dark" })
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        Theme::change(
-                                            if dark {
-                                                ThemeMode::Light
-                                            } else {
-                                                ThemeMode::Dark
-                                            },
-                                            None,
-                                            cx,
-                                        );
-                                        this.save_prefs(cx);
-                                    })),
+                                div()
+                                    .w(px(180.))
+                                    .h(px(1.))
+                                    .bg(cx.theme().accent.opacity(0.65)),
                             ),
                     ),
             )
@@ -2785,7 +4134,7 @@ impl Render for DedupeView {
                         }
                         left.child(
                             div()
-                                .text_xs()
+                                .text_size(px(cx.theme().text_xs_px()))
                                 .truncate()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(self.status.clone()),
@@ -2793,7 +4142,7 @@ impl Render for DedupeView {
                     })
                     .right(
                         div()
-                            .text_xs()
+                            .text_size(px(cx.theme().text_xs_px()))
                             .text_color(cx.theme().muted_foreground)
                             .child(format!(
                                 "{} file(s) scanned · {}",

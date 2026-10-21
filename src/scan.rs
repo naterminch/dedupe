@@ -428,6 +428,20 @@ mod tests {
             quiet: true,
             jobs: 0,
             gui: false,
+            find: crate::cli::FindMode::Duplicates,
+            r#match: crate::cli::MatchMode::Content,
+            fuzzy_threshold: 85.0,
+            top: 50,
+            image_hash: crate::cli::ImageHashAlgo::Auto,
+            partial_clips: false,
+            partial_similarity: 85.0,
+            music_by: crate::cli::MusicMode::Tags,
+            csv: None,
+            html: None,
+            move_dir: None,
+            hardlink: false,
+            strip_exif: false,
+            ignore: vec![],
         }
     }
 }

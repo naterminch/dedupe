@@ -88,6 +88,41 @@ fn run(cli: &cli::Cli) -> Result<()> {
     };
     // The CLI has no Stop button; a fresh token is never set.
     let cancel = cancel::CancelToken::new();
+
+    if cli.strip_exif {
+        let exif = dedupe::modes::strip_exif(cli, &cancel)?;
+        if !cli.quiet && !cli.json {
+            if exif.applied {
+                eprintln!(
+                    "{} Removed EXIF/XMP metadata from {} of {} image(s) ({} saved); {} skipped.",
+                    style("✔").green().bold(),
+                    style(exif.rewritten).green().bold(),
+                    exif.images_scanned,
+                    style(dedupe::util::human_bytes(exif.bytes_saved))
+                        .green()
+                        .bold(),
+                    exif.skipped
+                );
+            } else if exif.images_with_metadata > 0 {
+                eprintln!(
+                    "{} Dry run: {} of {} image(s) carry EXIF/XMP metadata ({} would be saved); nothing was changed.",
+                    style("◌").cyan().bold(),
+                    style(exif.images_with_metadata).cyan().bold(),
+                    exif.images_scanned,
+                    style(dedupe::util::human_bytes(exif.bytes_saved))
+                        .cyan()
+                        .bold(),
+                );
+            } else {
+                eprintln!(
+                    "{} No EXIF/XMP metadata found in {} image(s).",
+                    style("◌").dim(),
+                    exif.images_scanned
+                );
+            }
+        }
+    }
+
     let out = pipeline::run_scan(
         cli,
         progress_bar.as_ref(),
@@ -121,19 +156,39 @@ fn run(cli: &cli::Cli) -> Result<()> {
         ffprobe_used: out.ffprobe_used,
     };
 
+    if let Some(mode_result) = &out.mode_result {
+        if cli.json {
+            report::print_mode_json(&ctx, mode_result);
+        } else {
+            report::print_mode_human(&ctx, mode_result);
+        }
+        write_exports(cli, &ctx, &out.stats, &out.groups, Some(mode_result))?;
+        run_mode_actions(cli, mode_result)?;
+        return Ok(());
+    }
+
     if cli.json {
         report::print_json(&ctx, &out.stats, &out.groups);
     } else {
         report::print_human(&ctx, &out.stats, &out.groups);
     }
+    write_exports(cli, &ctx, &out.stats, &out.groups, None)?;
 
     let consolidate_dest: Option<std::path::PathBuf> =
         cli.consolidate_dir.as_ref().map(std::path::PathBuf::from);
 
-    if cli.delete || consolidate_dest.is_some() {
+    if cli.move_dir.is_some() && cli.hardlink {
+        anyhow::bail!("--move-dir and --hardlink cannot be combined");
+    }
+
+    if cli.delete || consolidate_dest.is_some() || cli.move_dir.is_some() || cli.hardlink {
         if out.groups.is_empty() {
             if !cli.quiet {
-                let msg = if cli.delete {
+                let msg = if cli.move_dir.is_some() {
+                    "Nothing to move."
+                } else if cli.hardlink {
+                    "Nothing to hard-link."
+                } else if cli.delete {
                     "Nothing to delete."
                 } else {
                     "Nothing to consolidate."
@@ -163,7 +218,78 @@ fn run(cli: &cli::Cli) -> Result<()> {
                     );
                 }
             }
-            if cli.delete {
+            if let Some(dest) = &cli.move_dir {
+                let dest = std::path::PathBuf::from(dest);
+                if cli.dry_run {
+                    let mut count = 0u64;
+                    let mut bytes = 0u64;
+                    for group in &out.groups {
+                        for member in group.members.iter().filter(|m| !m.keep) {
+                            count += 1;
+                            bytes += member.size;
+                            if !cli.quiet && !cli.json {
+                                println!(
+                                    "would move {} -> {} ({})",
+                                    member.path.display(),
+                                    dest.display(),
+                                    dedupe::util::human_bytes(member.size)
+                                );
+                            }
+                        }
+                    }
+                    println!(
+                        "{} Dry run: would move {} duplicate file(s) ({}); nothing was moved.",
+                        style("◌").cyan().bold(),
+                        style(count).cyan().bold(),
+                        style(dedupe::util::human_bytes(bytes)).cyan().bold(),
+                    );
+                } else {
+                    let moved =
+                        dedupe::actions::move_duplicates(&out.groups, &dest, &engine, cli.yes)?;
+                    println!(
+                        "{} Moved {} duplicate file(s) ({}) into {}; {} skipped.",
+                        style("✔").green().bold(),
+                        style(moved.files_moved).green().bold(),
+                        style(dedupe::util::human_bytes(moved.bytes_moved))
+                            .green()
+                            .bold(),
+                        dest.display(),
+                        moved.files_skipped
+                    );
+                }
+            } else if cli.hardlink {
+                if cli.dry_run {
+                    let count: u64 = out
+                        .groups
+                        .iter()
+                        .map(|g| g.members.iter().filter(|m| !m.keep).count() as u64)
+                        .sum();
+                    let bytes: u64 = out
+                        .groups
+                        .iter()
+                        .flat_map(|g| g.members.iter().filter(|m| !m.keep))
+                        .map(|m| m.size)
+                        .sum();
+                    println!(
+                        "{} Dry run: would replace {} duplicate file(s) with hard links ({} saved); nothing was changed.",
+                        style("◌").cyan().bold(),
+                        style(count).cyan().bold(),
+                        style(dedupe::util::human_bytes(bytes)).cyan().bold(),
+                    );
+                } else {
+                    let linked =
+                        dedupe::actions::hardlink_duplicates(&out.groups, &engine, cli.yes)?;
+                    println!(
+                        "{} Hard-linked {} duplicate file(s) ({} saved); {} skipped.",
+                        style("✔").green().bold(),
+                        style(linked.linked).green().bold(),
+                        style(dedupe::util::human_bytes(linked.bytes_saved))
+                            .green()
+                            .bold(),
+                        linked.files_skipped
+                    );
+                }
+            } else if cli.delete {
                 let disposition = if cli.trash {
                     dedupe::actions::Disposition::Trash
                 } else {
@@ -234,6 +360,110 @@ fn run(cli: &cli::Cli) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn write_exports(
+    cli: &cli::Cli,
+    ctx: &report::ReportContext,
+    stats: &report::ScanStats,
+    groups: &[dedupe::matching::Group],
+    mode_result: Option<&dedupe::modes::ModeResult>,
+) -> Result<()> {
+    if let Some(path) = &cli.csv {
+        let path = std::path::Path::new(path);
+        report::write_csv(path, ctx, stats, groups, mode_result)?;
+        if !cli.quiet && !cli.json {
+            eprintln!(
+                "{} CSV report written to {}",
+                style("✔").green().bold(),
+                path.display()
+            );
+        }
+    }
+    if let Some(path) = &cli.html {
+        let path = std::path::Path::new(path);
+        report::write_html(path, ctx, stats, groups, mode_result)?;
+        if !cli.quiet && !cli.json {
+            eprintln!(
+                "{} HTML report written to {}",
+                style("✔").green().bold(),
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Result<()> {
+    if !cli.delete && cli.move_dir.is_none() && !cli.hardlink {
+        return Ok(());
+    }
+    if cli.move_dir.is_some() || cli.hardlink {
+        anyhow::bail!(
+            "--move-dir and --hardlink apply to duplicate matching, not --find cleanup modes"
+        );
+    }
+    if result.mode == cli::FindMode::DuplicateFolders {
+        if !cli.quiet {
+            eprintln!(
+                "{} duplicate folder trees are report-only; remove them manually after review",
+                style("⚠").yellow()
+            );
+        }
+        return Ok(());
+    }
+    if result.is_empty() {
+        if !cli.quiet {
+            eprintln!("{}", style("Nothing to delete.").dim());
+        }
+        return Ok(());
+    }
+    if cli.dry_run {
+        println!(
+            "{} Dry run: would delete {} finding(s) and {} duplicate group member(s); nothing was removed.",
+            style("◌").cyan().bold(),
+            result.findings.len(),
+            result
+                .groups
+                .iter()
+                .map(|g| g.members.len().saturating_sub(1))
+                .sum::<usize>(),
+        );
+        return Ok(());
+    }
+    let disposition = if cli.trash {
+        dedupe::actions::Disposition::Trash
+    } else {
+        dedupe::actions::Disposition::Permanent
+    };
+    let mut deleted = 0u64;
+    let mut bytes = 0u64;
+    let mut skipped = 0u64;
+    if !result.findings.is_empty() {
+        let stats = dedupe::actions::delete_findings(&result.findings, disposition, cli.yes)?;
+        deleted += stats.deleted;
+        bytes += stats.bytes_freed;
+        skipped += stats.skipped;
+    }
+    if !result.groups.is_empty() {
+        let stats = dedupe::actions::delete_finding_groups(&result.groups, disposition, cli.yes)?;
+        deleted += stats.deleted;
+        bytes += stats.bytes_freed;
+        skipped += stats.skipped;
+    }
+    let verb = if cli.trash {
+        "Moved to trash"
+    } else {
+        "Deleted"
+    };
+    println!(
+        "{} {verb} {} item(s) ({} freed); {} skipped.",
+        style("✔").green().bold(),
+        style(deleted).green().bold(),
+        style(dedupe::util::human_bytes(bytes)).green().bold(),
+        skipped
+    );
     Ok(())
 }
 

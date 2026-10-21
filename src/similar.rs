@@ -19,6 +19,7 @@
 
 use crate::cache::{CacheFp, CacheWrite, FingerprintCache};
 use crate::cancel::CancelToken;
+use crate::cli::ImageHashAlgo;
 use crate::hashing::HashEngine;
 use crate::matching::{self, Group, GroupMember, KeepMode};
 use crate::media::{self, MediaInfo, MediaKind};
@@ -54,6 +55,9 @@ const SEEK_THRESHOLD_MS: u64 = 90_000;
 
 pub struct SimilarConfig {
     pub threshold: f64,
+    pub image_hash: ImageHashAlgo,
+    pub partial_clips: bool,
+    pub partial_similarity: f64,
 }
 
 /// One file in a similar group, with its similarity (0..=1) against the
@@ -93,6 +97,112 @@ pub fn dhash_gray(w: usize, h: usize, gray: &[u8]) -> FrameHash {
         }
     }
     hash
+}
+
+/// 256-bit average hash: each bit says whether a 16x16 pixel is brighter
+/// than the image mean. Cheap, but sensitive to uniform brightness shifts.
+pub fn ahash_gray(w: usize, h: usize, gray: &[u8]) -> FrameHash {
+    let n = (w * h).min(256);
+    if n == 0 || gray.len() < n {
+        return [0; 4];
+    }
+    let mean = gray[..n].iter().map(|&v| v as u64).sum::<u64>() / n as u64;
+    let mut hash = [0u64; 4];
+    for (i, &v) in gray[..n].iter().enumerate() {
+        if v as u64 > mean {
+            hash[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    hash
+}
+
+/// 256-bit perceptual hash: the low-frequency 16x16 block of a 32x32 2D DCT,
+/// thresholded at the median. Robust to re-encoding and mild filtering.
+pub fn phash_gray(w: usize, h: usize, gray: &[u8]) -> FrameHash {
+    if w != 32 || h != 32 || gray.len() < 32 * 32 {
+        return [0; 4];
+    }
+    let mut cos = [[0f64; 32]; 32];
+    for (u, row) in cos.iter_mut().enumerate() {
+        for (x, c) in row.iter_mut().enumerate() {
+            *c = (((2 * x + 1) as f64 * u as f64 * std::f64::consts::PI) / 64.0).cos();
+        }
+    }
+    let mut rows = vec![0f64; 32 * 32];
+    for y in 0..32 {
+        for u in 0..32 {
+            let mut sum = 0f64;
+            for x in 0..32 {
+                sum += gray[y * 32 + x] as f64 * cos[u][x];
+            }
+            rows[y * 32 + u] = sum;
+        }
+    }
+    let mut coeffs = Vec::with_capacity(255);
+    for (v, cos_v) in cos.iter().enumerate().take(16) {
+        for u in 0..16 {
+            if u == 0 && v == 0 {
+                continue;
+            }
+            let mut sum = 0f64;
+            for y in 0..32 {
+                sum += rows[y * 32 + u] * cos_v[y];
+            }
+            coeffs.push(sum);
+        }
+    }
+    let mut sorted = coeffs.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let median = sorted[sorted.len() / 2];
+    let mut hash = [0u64; 4];
+    for (i, &c) in coeffs.iter().enumerate() {
+        if c > median {
+            hash[i / 64] |= 1u64 << (i % 64);
+        }
+    }
+    hash
+}
+
+fn put_hash_bits(hash: &mut FrameHash, bit: &mut usize, value: u64, width: usize) {
+    for k in (0..width).rev() {
+        if (value >> k) & 1 == 1 {
+            hash[*bit / 64] |= 1u64 << (*bit % 64);
+        }
+        *bit += 1;
+    }
+}
+
+/// 256-bit colour hash: 4x4 cells, each RGB channel plus luma quantised to
+/// 4 bits. Detects palette/layout matches that grayscale hashes miss.
+pub fn color_hash(rgb: &[u8], w: usize, h: usize) -> FrameHash {
+    let cells = w * h;
+    if cells == 0 || rgb.len() < cells * 3 {
+        return [0; 4];
+    }
+    let mut hash = [0u64; 4];
+    let mut bit = 0usize;
+    for i in 0..cells {
+        for c in 0..3 {
+            let v = rgb[i * 3 + c] as u64;
+            put_hash_bits(&mut hash, &mut bit, (v * 15 + 127) / 255, 4);
+        }
+    }
+    for i in 0..cells {
+        let p = i * 3;
+        let luma = (2 * rgb[p] as u64 + 5 * rgb[p + 1] as u64 + rgb[p + 2] as u64) / 8;
+        put_hash_bits(&mut hash, &mut bit, (luma * 15 + 127) / 255, 4);
+    }
+    hash
+}
+
+/// Cache tag for an image hash family; `auto` shares the dHash tag.
+pub fn image_algo_code(algo: ImageHashAlgo) -> u8 {
+    match algo {
+        ImageHashAlgo::Dhash | ImageHashAlgo::Auto => 0,
+        ImageHashAlgo::Phash => 1,
+        ImageHashAlgo::Ahash => 2,
+        ImageHashAlgo::Color => 3,
+    }
 }
 
 /// Fraction of identical bits between two 256-bit hashes (0..=1).
@@ -158,20 +268,41 @@ fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
     Some((w, h))
 }
 
-fn image_fingerprint(entry: FileEntry) -> Option<ImageFp> {
+fn image_fingerprint(entry: FileEntry, algo: ImageHashAlgo) -> Option<ImageFp> {
     let img = image::open(&entry.path).ok()?;
-    let gray = img.to_luma8();
-    let (w, h) = (gray.width(), gray.height());
+    let (w, h) = (img.width(), img.height());
     if w == 0 || h == 0 {
         return None;
     }
-    let small = image::imageops::resize(
-        &gray,
-        FRAME_W as u32,
-        FRAME_H as u32,
-        image::imageops::FilterType::Triangle,
-    );
-    let hash = dhash_gray(FRAME_W, FRAME_H, small.as_raw());
+    let hash = match algo {
+        ImageHashAlgo::Dhash | ImageHashAlgo::Auto => {
+            let gray = img.to_luma8();
+            let d_small = image::imageops::resize(
+                &gray,
+                FRAME_W as u32,
+                FRAME_H as u32,
+                image::imageops::FilterType::Triangle,
+            );
+            dhash_gray(FRAME_W, FRAME_H, d_small.as_raw())
+        }
+        ImageHashAlgo::Ahash => {
+            let gray = img.to_luma8();
+            let small =
+                image::imageops::resize(&gray, 16, 16, image::imageops::FilterType::Triangle);
+            ahash_gray(16, 16, small.as_raw())
+        }
+        ImageHashAlgo::Phash => {
+            let gray = img.to_luma8();
+            let small =
+                image::imageops::resize(&gray, 32, 32, image::imageops::FilterType::Triangle);
+            phash_gray(32, 32, small.as_raw())
+        }
+        ImageHashAlgo::Color => {
+            let rgb = img.to_rgb8();
+            let small = image::imageops::resize(&rgb, 4, 4, image::imageops::FilterType::Triangle);
+            color_hash(small.as_raw(), 4, 4)
+        }
+    };
     Some(ImageFp { entry, hash, w, h })
 }
 
@@ -545,13 +676,15 @@ pub fn find_similar(
     let mut writes: Vec<CacheWrite> = Vec::new();
 
     // Images: bucket by aspect ratio using header-only reads, then decode and
-    // dHash only images that share a bucket with a possible partner. Files
+    // hash only images that share a bucket with a possible partner. Files
     // whose fingerprint is already cached skip the header read AND the decode.
+    let image_algo = image_algo_code(config.image_hash);
     let mut aspect_buckets: HashMap<i64, Vec<usize>> = HashMap::new();
     let mut cached_img: HashMap<usize, (u32, u32, FrameHash)> = HashMap::new();
     for (i, e) in images.iter().enumerate() {
-        if let Some(CacheFp::Image { w, h, hash }) =
-            cache.and_then(|c| c.get(&e.path, e.size, e.mtime_secs))
+        let cached = cache.and_then(|c| c.get(&e.path, e.size, e.mtime_secs));
+        if let Some(CacheFp::Image { w, h, hash, algo }) = cached
+            && *algo == image_algo
         {
             cached_img.insert(i, (*w, *h, *hash));
             aspect_buckets
@@ -579,7 +712,7 @@ pub fn find_similar(
                 return None;
             }
             let fp = if needs_fp.contains(&i) {
-                image_fingerprint(e.clone())
+                image_fingerprint(e.clone(), config.image_hash)
             } else {
                 None
             };
@@ -599,6 +732,7 @@ pub fn find_similar(
                 w: fp.w,
                 h: fp.h,
                 hash: fp.hash,
+                algo: image_algo,
             },
         })
     }));
@@ -664,20 +798,18 @@ pub fn find_similar(
                 None => unprobed.push(i),
             }
         }
+        let duration_of = |i: usize| -> Option<u64> {
+            cached_vid
+                .get(&i)
+                .map(|v| v.2)
+                .or_else(|| probe_map.get(&videos[i].path).and_then(|m| m.duration_ms))
+        };
         let mut cand: HashSet<usize> = HashSet::new();
         for idxs in res_buckets.values() {
             if idxs.len() < 2 {
                 continue;
             }
-            let dur: Vec<Option<u64>> = idxs
-                .iter()
-                .map(|&i| {
-                    cached_vid
-                        .get(&i)
-                        .map(|v| v.2)
-                        .or_else(|| probe_map.get(&videos[i].path).and_then(|m| m.duration_ms))
-                })
-                .collect();
+            let dur: Vec<Option<u64>> = idxs.iter().map(|&i| duration_of(i)).collect();
             for (k, &i) in idxs.iter().enumerate() {
                 let Some(di) = dur[k] else { continue };
                 if dur
@@ -686,6 +818,24 @@ pub fn find_similar(
                     .any(|(j, dj)| j != k && dj.is_some_and(|d| durations_close(di, d)))
                 {
                     cand.insert(i);
+                }
+            }
+        }
+        if config.partial_clips {
+            for i in 0..videos.len() {
+                match duration_of(i) {
+                    Some(di) => {
+                        if (0..videos.len()).any(|j| {
+                            j != i
+                                && duration_of(j)
+                                    .is_some_and(|dj| dj * 100 < di * 90 || di * 100 < dj * 90)
+                        }) {
+                            cand.insert(i);
+                        }
+                    }
+                    None => {
+                        cand.insert(i);
+                    }
                 }
             }
         }
@@ -739,16 +889,112 @@ pub fn find_similar(
             for (i, fp) in vid_fps.iter().enumerate() {
                 buckets.entry((fp.w, fp.h)).or_default().push(i);
             }
-            groups.extend(cluster_videos(
-                &vid_fps,
-                buckets,
-                config.threshold,
-                prioritize,
-            ));
+            let exact_groups = cluster_videos(&vid_fps, buckets, config.threshold, prioritize);
+            if config.partial_clips {
+                let grouped: HashSet<PathBuf> = exact_groups
+                    .iter()
+                    .flat_map(|g| g.members.iter().map(|m| m.entry.path.clone()))
+                    .collect();
+                groups.extend(partial_clip_groups(
+                    &vid_fps,
+                    &grouped,
+                    config.partial_similarity / 100.0,
+                ));
+            }
+            groups.extend(exact_groups);
         }
     }
 
     (groups, writes)
+}
+
+fn partial_clip_groups(
+    fps: &[VideoFp],
+    already_grouped: &HashSet<PathBuf>,
+    threshold: f64,
+) -> Vec<SimilarGroup> {
+    let mut idx: Vec<usize> = (0..fps.len())
+        .filter(|&i| !already_grouped.contains(&fps[i].entry.path) && fps[i].frames.len() >= 2)
+        .collect();
+    idx.sort_by_key(|&i| std::cmp::Reverse(fps[i].duration_ms));
+    let mut used = vec![false; idx.len()];
+    let mut out = Vec::new();
+    for a in 0..idx.len() {
+        if used[a] {
+            continue;
+        }
+        for b in (a + 1)..idx.len() {
+            if used[b] {
+                continue;
+            }
+            let long = &fps[idx[a]];
+            let short = &fps[idx[b]];
+            if short.frames.len() > long.frames.len() {
+                continue;
+            }
+            if long.duration_ms > 0
+                && short.duration_ms > 0
+                && short.duration_ms * 100 >= long.duration_ms * 90
+            {
+                continue;
+            }
+            let sim = partial_clip_similarity(&short.frames, &long.frames);
+            if sim >= threshold {
+                used[a] = true;
+                used[b] = true;
+                out.push(SimilarGroup {
+                    kind: MediaKind::Video,
+                    members: vec![
+                        SimilarMember {
+                            entry: long.entry.clone(),
+                            similarity: 1.0,
+                            w: long.w,
+                            h: long.h,
+                        },
+                        SimilarMember {
+                            entry: short.entry.clone(),
+                            similarity: sim,
+                            w: short.w,
+                            h: short.h,
+                        },
+                    ],
+                });
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn partial_clip_similarity(short: &[FrameHash], long: &[FrameHash]) -> f64 {
+    if short.is_empty() || long.len() < short.len() {
+        return 0.0;
+    }
+    let mut prev = vec![f64::NEG_INFINITY; long.len()];
+    for (k, hs) in short.iter().enumerate() {
+        let mut cur = vec![f64::NEG_INFINITY; long.len()];
+        let mut best_prev = f64::NEG_INFINITY;
+        for (j, hl) in long.iter().enumerate() {
+            let sim = hash_similarity(hs, hl);
+            if k == 0 {
+                cur[j] = sim;
+            } else {
+                if j > 0 {
+                    best_prev = best_prev.max(prev[j - 1]);
+                }
+                if best_prev.is_finite() {
+                    cur[j] = best_prev + sim;
+                }
+            }
+        }
+        prev = cur;
+    }
+    let best = prev.into_iter().fold(f64::NEG_INFINITY, f64::max);
+    if best.is_finite() {
+        best / short.len() as f64
+    } else {
+        0.0
+    }
 }
 
 /// Merge similar clusters into the exact groups they belong to.
@@ -1267,8 +1513,8 @@ mod tests {
         img.save_with_format(&jpg, image::ImageFormat::Jpeg)
             .unwrap();
 
-        let f1 = image_fingerprint(entry(&png, 0)).expect("png decodes");
-        let f2 = image_fingerprint(entry(&jpg, 0)).expect("jpg decodes");
+        let f1 = image_fingerprint(entry(&png, 0), ImageHashAlgo::Auto).expect("png decodes");
+        let f2 = image_fingerprint(entry(&jpg, 0), ImageHashAlgo::Auto).expect("jpg decodes");
         let sim = hash_similarity(&f1.hash, &f2.hash);
         assert!(
             sim >= DEFAULT_SIMILARITY_PCT / 100.0,
@@ -1299,7 +1545,7 @@ mod tests {
 
         let fps: Vec<ImageFp> = [&a, &b, &c]
             .iter()
-            .map(|p| image_fingerprint(entry(p, 0)).expect("decodes"))
+            .map(|p| image_fingerprint(entry(p, 0), ImageHashAlgo::Auto).expect("decodes"))
             .collect();
         let mut buckets: HashMap<i64, Vec<usize>> = HashMap::new();
         for (i, fp) in fps.iter().enumerate() {
@@ -1314,5 +1560,67 @@ mod tests {
         assert_eq!(groups.len(), 1, "a and b group, c stays alone");
         assert_eq!(groups[0].members.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ahash_ignores_uniform_brightness_offset() {
+        let mut a = vec![0u8; 16 * 16];
+        let mut b = vec![0u8; 16 * 16];
+        for y in 0..16 {
+            for x in 0..16 {
+                a[y * 16 + x] = ((x * 13 + y * 7) % 200) as u8;
+            }
+        }
+        for i in 0..a.len() {
+            b[i] = a[i].saturating_add(40);
+        }
+        let ha = ahash_gray(16, 16, &a);
+        let hb = ahash_gray(16, 16, &b);
+        assert!(hash_similarity(&ha, &hb) > 0.9);
+    }
+
+    #[test]
+    fn phash_distinguishes_different_patterns() {
+        let mut a = vec![0u8; 32 * 32];
+        let mut b = vec![0u8; 32 * 32];
+        for y in 0..32 {
+            for x in 0..32 {
+                a[y * 32 + x] = if (x / 4 + y / 4) % 2 == 0 { 255 } else { 0 };
+                b[y * 32 + x] = ((x * 8) % 256) as u8;
+            }
+        }
+        let ha = phash_gray(32, 32, &a);
+        let hb = phash_gray(32, 32, &b);
+        assert!((hash_similarity(&ha, &ha) - 1.0).abs() < 1e-9);
+        assert!(hash_similarity(&ha, &hb) < 0.95);
+    }
+
+    #[test]
+    fn color_hash_reflects_palette() {
+        let red = [255u8, 0, 0].repeat(16);
+        let blue = [0u8, 0, 255].repeat(16);
+        let hr = color_hash(&red, 4, 4);
+        let hb = color_hash(&blue, 4, 4);
+        assert!((hash_similarity(&hr, &hr) - 1.0).abs() < 1e-9);
+        assert!(hash_similarity(&hr, &hb) < 0.9);
+        assert_ne!(hr, [0; 4]);
+    }
+
+    #[test]
+    fn partial_clip_finds_contained_sequence() {
+        let long: Vec<FrameHash> = (0..8).map(|i| [i as u64, 0, 0, 0]).collect();
+        let short = long[2..6].to_vec();
+        assert!(partial_clip_similarity(&short, &long) > 0.99);
+        let other: Vec<FrameHash> = (0..4).map(|i| [100 + i as u64, u64::MAX, 0, 0]).collect();
+        assert!(partial_clip_similarity(&other, &long) < 0.9);
+    }
+
+    #[test]
+    fn image_algo_cache_tags_are_distinct() {
+        assert_eq!(image_algo_code(ImageHashAlgo::Auto), 0);
+        assert_eq!(image_algo_code(ImageHashAlgo::Dhash), 0);
+        assert_eq!(image_algo_code(ImageHashAlgo::Phash), 1);
+        assert_eq!(image_algo_code(ImageHashAlgo::Ahash), 2);
+        assert_eq!(image_algo_code(ImageHashAlgo::Color), 3);
     }
 }

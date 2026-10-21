@@ -7,12 +7,14 @@
 
 pub mod actions;
 pub mod assets;
+pub mod audio;
 pub mod cache;
 pub mod cancel;
 pub mod cli;
 pub mod hashing;
 pub mod matching;
 pub mod media;
+pub mod modes;
 pub mod pipeline;
 pub mod poster;
 pub mod prefs;

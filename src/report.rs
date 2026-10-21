@@ -225,6 +225,357 @@ pub fn print_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     println!("{}", to_json(ctx, stats, groups));
 }
 
+pub fn print_mode_human(ctx: &ReportContext, result: &crate::modes::ModeResult) {
+    let title = crate::modes::mode_title(result.mode);
+    let reclaim = result.reclaimable();
+    println!();
+    println!(
+        "{}",
+        style(format!(
+            "Scanned {} path(s) · {} files ({}) · {title} · {} finding(s)",
+            ctx.paths.len(),
+            result.files_scanned,
+            human_bytes(result.bytes_scanned),
+            result.findings.len() + result.groups.len(),
+        ))
+        .bold()
+    );
+    if reclaim > 0 {
+        println!(
+            "{}",
+            style(format!(
+                "Reclaimable with --delete: {}",
+                human_bytes(reclaim)
+            ))
+            .yellow()
+            .bold()
+        );
+    }
+    if result.cancelled {
+        println!("{}", style("Scan cancelled; partial results.").yellow());
+    }
+    if !result.errors.is_empty() {
+        println!(
+            "{} {}",
+            style("⚠").yellow(),
+            style(format!(
+                "{} path(s) could not be read (first: {})",
+                result.errors.len(),
+                result.errors.first().map(String::as_str).unwrap_or("")
+            ))
+            .yellow()
+        );
+    }
+    for note in &result.notes {
+        println!("{}", style(note).dim());
+    }
+    if result.is_empty() {
+        println!();
+        println!("{}", style("✔ Nothing found.").green().bold());
+        return;
+    }
+    if !result.findings.is_empty() {
+        println!();
+        for finding in &result.findings {
+            let size = if finding.is_dir {
+                "folder".to_string()
+            } else {
+                human_bytes(finding.size)
+            };
+            println!(
+                "  {} {}  {}  {}",
+                style("✗").yellow().bold(),
+                style(size).magenta(),
+                finding.path.display(),
+                style(format!("· {}", finding.detail)).dim(),
+            );
+        }
+    }
+    for (i, group) in result.groups.iter().enumerate() {
+        println!();
+        println!("{}", style(DIVIDER).dim());
+        println!(
+            "{} {} · {} · {} · {} reclaimable",
+            style("◆").cyan().bold(),
+            style(format!("Group #{}", i + 1)).cyan().bold(),
+            group.label,
+            style(&group.detail).dim(),
+            human_bytes(group.reclaimable),
+        );
+        for (n, member) in group.members.iter().enumerate() {
+            let (glyph, badge, color) = if n == 0 {
+                ("✓", "KEEP", console::Style::new().green())
+            } else {
+                ("✗", "DUP", console::Style::new().yellow())
+            };
+            let size = group
+                .sizes
+                .get(n)
+                .copied()
+                .map(human_bytes)
+                .or_else(|| std::fs::metadata(member).ok().map(|m| human_bytes(m.len())))
+                .unwrap_or_default();
+            println!(
+                "  {} {}  {}  {}",
+                color.apply_to(glyph),
+                color.bold().apply_to(badge),
+                member.display(),
+                style(size).magenta(),
+            );
+        }
+    }
+    if result.mode == crate::cli::FindMode::Music {
+        println!();
+        println!(
+            "{} run with {} to remove all but the largest track in each group.",
+            style("Tip:").cyan().bold(),
+            style("--delete --keep-best-quality").green(),
+        );
+    } else if !result.groups.is_empty() {
+        println!();
+        println!(
+            "{} duplicate folder trees are report-only; review them before removing anything.",
+            style("Tip:").cyan().bold(),
+        );
+    }
+}
+
+pub fn print_mode_json(ctx: &ReportContext, result: &crate::modes::ModeResult) {
+    println!("{}", to_mode_json(ctx, result));
+}
+
+pub fn to_mode_json(ctx: &ReportContext, result: &crate::modes::ModeResult) -> String {
+    let findings: Vec<serde_json::Value> = result
+        .findings
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "path": f.path.to_string_lossy(),
+                "size": f.size,
+                "kind": f.kind,
+                "detail": f.detail,
+                "is_dir": f.is_dir,
+            })
+        })
+        .collect();
+    let groups: Vec<serde_json::Value> = result
+        .groups
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "label": g.label,
+                "detail": g.detail,
+                "bytes": g.bytes,
+                "reclaimable_bytes": g.reclaimable,
+                "members": g.members.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "mode": crate::modes::mode_name(result.mode),
+        "paths": ctx.paths,
+        "files_scanned": result.files_scanned,
+        "bytes_scanned": result.bytes_scanned,
+        "dirs_scanned": result.dirs_scanned,
+        "files_skipped": result.files_skipped,
+        "dirs_skipped": result.dirs_skipped,
+        "finding_count": result.findings.len(),
+        "group_count": result.groups.len(),
+        "reclaimable_bytes": result.reclaimable(),
+        "cancelled": result.cancelled,
+        "dir_read_errors": result.errors,
+        "notes": result.notes,
+        "findings": findings,
+        "groups": groups,
+    })
+    .to_string()
+}
+
+pub fn write_csv(
+    path: &std::path::Path,
+    ctx: &ReportContext,
+    stats: &ScanStats,
+    groups: &[Group],
+    mode_result: Option<&crate::modes::ModeResult>,
+) -> std::io::Result<()> {
+    let mut out = String::from("mode,kind,group,path,size,detail\n");
+    if let Some(result) = mode_result {
+        for finding in &result.findings {
+            out.push_str(&csv_row(&[
+                crate::modes::mode_name(result.mode),
+                finding.kind,
+                "",
+                &finding.path.to_string_lossy(),
+                &finding.size.to_string(),
+                &finding.detail,
+            ]));
+        }
+        for group in &result.groups {
+            for member in &group.members {
+                let size = std::fs::metadata(member).map(|m| m.len()).unwrap_or(0);
+                out.push_str(&csv_row(&[
+                    crate::modes::mode_name(result.mode),
+                    "group",
+                    &group.label,
+                    &member.to_string_lossy(),
+                    &size.to_string(),
+                    &group.detail,
+                ]));
+            }
+        }
+    } else {
+        let _ = stats;
+        for group in groups {
+            for member in &group.members {
+                let kind = if member.keep { "keep" } else { "duplicate" };
+                let detail = group
+                    .similarity
+                    .map(|s| format!("{:.1}% similar", s * 100.0))
+                    .unwrap_or_else(|| group.hash.clone());
+                out.push_str(&csv_row(&[
+                    "duplicates",
+                    kind,
+                    &format!("#{}", group.index),
+                    &member.path.to_string_lossy(),
+                    &member.size.to_string(),
+                    &detail,
+                ]));
+            }
+        }
+        let _ = ctx;
+    }
+    std::fs::write(path, out)
+}
+
+fn csv_row(fields: &[&str]) -> String {
+    let mut row = String::new();
+    for (i, field) in fields.iter().enumerate() {
+        if i > 0 {
+            row.push(',');
+        }
+        if field.contains([',', '"', '\n', '\r']) {
+            row.push('"');
+            row.push_str(&field.replace('"', "\"\""));
+            row.push('"');
+        } else {
+            row.push_str(field);
+        }
+    }
+    row.push('\n');
+    row
+}
+
+pub fn write_html(
+    path: &std::path::Path,
+    ctx: &ReportContext,
+    stats: &ScanStats,
+    groups: &[Group],
+    mode_result: Option<&crate::modes::ModeResult>,
+) -> std::io::Result<()> {
+    let title = mode_result
+        .map(|m| crate::modes::mode_title(m.mode))
+        .unwrap_or("Duplicate files");
+    let summary = mode_result
+        .map(|m| {
+            format!(
+                "{} files scanned · {} findings · {} reclaimable",
+                m.files_scanned,
+                m.findings.len() + m.groups.len(),
+                human_bytes(m.reclaimable())
+            )
+        })
+        .unwrap_or_else(|| {
+            format!(
+                "{} files scanned · {} groups · {} duplicate files · {} reclaimable",
+                stats.files_scanned,
+                groups.len(),
+                dup_file_count(groups),
+                human_bytes(reclaimable_bytes(groups))
+            )
+        });
+    let mut body = String::new();
+    body.push_str(&format!(
+        "<header><h1>{}</h1><p>{}</p><p class=\"paths\">{}</p></header>",
+        escape_html(title),
+        escape_html(&summary),
+        escape_html(&ctx.paths.join(" · ")),
+    ));
+    if let Some(result) = mode_result {
+        if !result.findings.is_empty() {
+            body.push_str("<h2>Findings</h2><table><thead><tr><th>Kind</th><th>Path</th><th>Size</th><th>Detail</th></tr></thead><tbody>");
+            for f in &result.findings {
+                body.push_str(&format!(
+                    "<tr><td>{}</td><td class=\"path\">{}</td><td>{}</td><td>{}</td></tr>",
+                    escape_html(f.kind),
+                    escape_html(&f.path.to_string_lossy()),
+                    if f.is_dir {
+                        "folder".to_string()
+                    } else {
+                        human_bytes(f.size)
+                    },
+                    escape_html(&f.detail),
+                ));
+            }
+            body.push_str("</tbody></table>");
+        }
+        for (i, group) in result.groups.iter().enumerate() {
+            body.push_str(&format!(
+                "<h2>Group #{} · {}</h2><p>{}</p><table><thead><tr><th>Role</th><th>Path</th><th>Size</th></tr></thead><tbody>",
+                i + 1,
+                escape_html(&group.label),
+                escape_html(&group.detail),
+            ));
+            for (n, member) in group.members.iter().enumerate() {
+                let size = std::fs::metadata(member).map(|m| m.len()).unwrap_or(0);
+                body.push_str(&format!(
+                    "<tr><td class=\"{}\">{}</td><td class=\"path\">{}</td><td>{}</td></tr>",
+                    if n == 0 { "keep" } else { "dup" },
+                    if n == 0 { "KEEP" } else { "DUP" },
+                    escape_html(&member.to_string_lossy()),
+                    human_bytes(size),
+                ));
+            }
+            body.push_str("</tbody></table>");
+        }
+    } else {
+        for group in groups {
+            body.push_str(&format!(
+                "<h2>Group #{} · {}</h2>",
+                group.index,
+                group
+                    .similarity
+                    .map(|s| format!("{:.1}% similar", s * 100.0))
+                    .unwrap_or_else(|| escape_html(&group.hash[..group.hash.len().min(24)])),
+            ));
+            body.push_str(
+                "<table><thead><tr><th>Role</th><th>Path</th><th>Size</th></tr></thead><tbody>",
+            );
+            for member in &group.members {
+                body.push_str(&format!(
+                    "<tr><td class=\"{}\">{}</td><td class=\"path\">{}</td><td>{}</td></tr>",
+                    if member.keep { "keep" } else { "dup" },
+                    if member.keep { "KEEP" } else { "DUP" },
+                    escape_html(&member.path.to_string_lossy()),
+                    human_bytes(member.size),
+                ));
+            }
+            body.push_str("</tbody></table>");
+        }
+    }
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>dedupe report</title><style>body{{font:15px/1.5 system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#222}}h1{{margin-bottom:.2rem}}h2{{margin-top:2rem}}p{{color:#555}}.paths{{font-size:.85rem;color:#777}}table{{border-collapse:collapse;width:100%;margin-top:.5rem}}th,td{{text-align:left;padding:.45rem .6rem;border-bottom:1px solid #e5e5e5;vertical-align:top}}th{{background:#fafafa;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em}}.path{{font-family:ui-monospace,monospace;font-size:.85rem;word-break:break-all}}.keep{{color:#0a7d32;font-weight:600}}.dup{{color:#b26a00;font-weight:600}}footer{{margin-top:3rem;font-size:.8rem;color:#888}}</style></head><body>{body}<footer>Generated by dedupe</footer></body></html>"
+    );
+    std::fs::write(path, html)
+}
+
+fn escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Serialize the report (also used by the GUI's Save button).
 pub fn to_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) -> String {
     let report = JsonReport {
@@ -272,6 +623,136 @@ mod tests {
         assert_eq!(v["hash_algorithm"], "blake3");
         assert_eq!(v["hardlinks_skipped"], 1);
         assert_eq!(v["duplicate_groups"], 0);
+    }
+
+    #[test]
+    fn to_mode_json_has_expected_shape() {
+        use crate::cli::FindMode;
+        use crate::modes::{Finding, FindingGroup, ModeResult};
+        use std::path::PathBuf;
+
+        let paths = ["/media".to_string()];
+        let ctx = ReportContext {
+            paths: &paths,
+            hash_algo: "blake3",
+            verbose: false,
+            ffprobe_used: false,
+        };
+        let result = ModeResult {
+            mode: FindMode::EmptyFiles,
+            findings: vec![Finding {
+                path: PathBuf::from("a.txt"),
+                size: 0,
+                kind: "empty",
+                detail: "zero-byte file".to_string(),
+                is_dir: false,
+            }],
+            groups: vec![FindingGroup {
+                label: "Identical folder tree (2 copies)".to_string(),
+                detail: "1 file, 6 B".to_string(),
+                members: vec![PathBuf::from("one"), PathBuf::from("two")],
+                sizes: vec![6, 6],
+                bytes: 6,
+                reclaimable: 6,
+            }],
+            files_scanned: 2,
+            bytes_scanned: 6,
+            dirs_scanned: 1,
+            files_skipped: 0,
+            dirs_skipped: 0,
+            errors: vec!["denied".to_string()],
+            notes: vec!["note".to_string()],
+            cancelled: false,
+        };
+
+        let v: serde_json::Value =
+            serde_json::from_str(&to_mode_json(&ctx, &result)).expect("valid JSON");
+        assert_eq!(v["mode"], "empty-files");
+        assert_eq!(v["finding_count"], 1);
+        assert_eq!(v["group_count"], 1);
+        assert_eq!(v["reclaimable_bytes"], 6);
+        assert_eq!(v["findings"][0]["kind"], "empty");
+        assert_eq!(v["findings"][0]["size"], 0);
+        assert_eq!(v["findings"][0]["is_dir"], false);
+        assert_eq!(v["groups"][0]["members"].as_array().unwrap().len(), 2);
+        assert_eq!(v["groups"][0]["reclaimable_bytes"], 6);
+        assert_eq!(v["dir_read_errors"], serde_json::json!(["denied"]));
+    }
+
+    #[test]
+    fn csv_and_html_exports_cover_modes_and_duplicates() {
+        use crate::cli::FindMode;
+        use crate::modes::{Finding, ModeResult};
+        use std::path::PathBuf;
+
+        let root = std::env::temp_dir().join(format!(
+            "dedupe-report-export-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let csv_path = root.join("mode.csv");
+        let html_path = root.join("mode.html");
+        let dup_csv_path = root.join("duplicates.csv");
+        let dup_html_path = root.join("duplicates.html");
+
+        let paths = ["/media".to_string()];
+        let ctx = ReportContext {
+            paths: &paths,
+            hash_algo: "blake3",
+            verbose: false,
+            ffprobe_used: false,
+        };
+        let stats = ScanStats {
+            files_scanned: 3,
+            bytes_scanned: 76,
+            dirs_skipped: 0,
+            files_skipped: 0,
+            hardlinks_skipped: 0,
+            dir_read_errors: Vec::new(),
+        };
+        let mode_result = ModeResult {
+            mode: FindMode::BigFiles,
+            findings: vec![Finding {
+                path: PathBuf::from("a.bin"),
+                size: 12,
+                kind: "big",
+                detail: "#1 of 3 scanned files".to_string(),
+                is_dir: false,
+            }],
+            files_scanned: 3,
+            bytes_scanned: 76,
+            ..ModeResult::default()
+        };
+        write_csv(&csv_path, &ctx, &stats, &[], Some(&mode_result)).unwrap();
+        write_html(&html_path, &ctx, &stats, &[], Some(&mode_result)).unwrap();
+        let csv = std::fs::read_to_string(&csv_path).unwrap();
+        assert!(csv.starts_with("mode,kind,group,path,size,detail\n"));
+        assert!(csv.contains("big-files,big,,a.bin,12,#1 of 3 scanned files"));
+        let html = std::fs::read_to_string(&html_path).unwrap();
+        assert!(html.contains("<h1>Largest files</h1>"));
+        assert!(html.contains("<h2>Findings</h2>"));
+        assert!(html.contains("a.bin"));
+
+        let groups = vec![group(
+            1,
+            MediaKind::Other,
+            vec![member("k.txt", 100, true), member("d.txt", 100, false)],
+        )];
+        write_csv(&dup_csv_path, &ctx, &stats, &groups, None).unwrap();
+        write_html(&dup_html_path, &ctx, &stats, &groups, None).unwrap();
+        let csv = std::fs::read_to_string(&dup_csv_path).unwrap();
+        assert!(csv.contains("duplicates,keep,#1,k.txt,100,abc123"));
+        assert!(csv.contains("duplicates,duplicate,#1,d.txt,100,abc123"));
+        let html = std::fs::read_to_string(&dup_html_path).unwrap();
+        assert!(html.contains("<h1>Duplicate files</h1>"));
+        assert!(html.contains("Group #1"));
+        assert!(html.contains("k.txt"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn member(path: &str, size: u64, keep: bool) -> GroupMember {

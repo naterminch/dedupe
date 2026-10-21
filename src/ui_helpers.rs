@@ -4,6 +4,7 @@
 //! No view state lives here — only functions. `DedupeView` appears solely
 //! as the `Context` generic so slider/input sync can notify correctly.
 
+use crate::cli;
 use crate::ui::{DedupeView, SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};
 use crate::util;
 use gpui_kit::component::input::InputState;
@@ -35,6 +36,63 @@ pub(crate) fn hash_caption(index: Option<usize>) -> &'static str {
         1 => "SHA-256 — widely supported standard; pick it to match other tools.",
         2 => "MD5 — legacy and collision-prone; only to match old hashes.",
         _ => "BLAKE3 — fastest modern hash; the right default for scans.",
+    }
+}
+
+/// Map the scan-type selector onto the CLI `--find` enum.
+pub(crate) fn find_mode(index: Option<usize>) -> cli::FindMode {
+    match index.unwrap_or(0) {
+        1 => cli::FindMode::EmptyFiles,
+        2 => cli::FindMode::EmptyDirs,
+        3 => cli::FindMode::BigFiles,
+        4 => cli::FindMode::TempFiles,
+        5 => cli::FindMode::InvalidSymlinks,
+        6 => cli::FindMode::BrokenFiles,
+        7 => cli::FindMode::BadExtensions,
+        8 => cli::FindMode::BadNames,
+        9 => cli::FindMode::DuplicateFolders,
+        10 => cli::FindMode::Music,
+        _ => cli::FindMode::Duplicates,
+    }
+}
+
+/// Map the duplicate-matching selector onto the CLI `--match` enum.
+pub(crate) fn match_mode(index: Option<usize>) -> cli::MatchMode {
+    match index.unwrap_or(0) {
+        1 => cli::MatchMode::Size,
+        2 => cli::MatchMode::Name,
+        3 => cli::MatchMode::Fuzzy,
+        _ => cli::MatchMode::Content,
+    }
+}
+
+/// Map the image-fingerprint selector onto the CLI `--image-hash` enum.
+pub(crate) fn image_hash_algo(index: Option<usize>) -> cli::ImageHashAlgo {
+    match index.unwrap_or(0) {
+        1 => cli::ImageHashAlgo::Dhash,
+        2 => cli::ImageHashAlgo::Phash,
+        3 => cli::ImageHashAlgo::Ahash,
+        4 => cli::ImageHashAlgo::Color,
+        _ => cli::ImageHashAlgo::Auto,
+    }
+}
+
+/// Caption under the scan-type selector so each cleanup mode explains itself.
+pub(crate) fn find_mode_caption(index: Option<usize>) -> &'static str {
+    match find_mode(index) {
+        cli::FindMode::Duplicates => {
+            "Exact and similar duplicates. Uses the matching options below."
+        }
+        cli::FindMode::EmptyFiles => "Files with no content (0 bytes).",
+        cli::FindMode::EmptyDirs => "Folders that contain nothing.",
+        cli::FindMode::BigFiles => "The largest files in scope, biggest first.",
+        cli::FindMode::TempFiles => "Temporary, backup, and editor leftover files.",
+        cli::FindMode::InvalidSymlinks => "Symlinks whose target is missing.",
+        cli::FindMode::BrokenFiles => "Images or media that cannot be decoded.",
+        cli::FindMode::BadExtensions => "Files whose magic bytes disagree with the extension.",
+        cli::FindMode::BadNames => "Reserved names, invalid characters, trailing dots or spaces.",
+        cli::FindMode::DuplicateFolders => "Identical folder trees by content signature.",
+        cli::FindMode::Music => "Duplicate tracks by embedded tags or audio fingerprint.",
     }
 }
 
@@ -164,6 +222,36 @@ mod tests {
         assert!(hash_caption(None).contains("BLAKE3"));
         assert!(hash_caption(Some(1)).contains("SHA-256"));
         assert!(hash_caption(Some(2)).contains("MD5"));
+    }
+
+    #[test]
+    fn selector_indices_map_to_cli_enums() {
+        assert_eq!(find_mode(None), cli::FindMode::Duplicates);
+        assert_eq!(find_mode(Some(1)), cli::FindMode::EmptyFiles);
+        assert_eq!(find_mode(Some(4)), cli::FindMode::TempFiles);
+        assert_eq!(find_mode(Some(9)), cli::FindMode::DuplicateFolders);
+        assert_eq!(find_mode(Some(10)), cli::FindMode::Music);
+        assert_eq!(find_mode(Some(99)), cli::FindMode::Duplicates);
+
+        assert_eq!(match_mode(None), cli::MatchMode::Content);
+        assert_eq!(match_mode(Some(1)), cli::MatchMode::Size);
+        assert_eq!(match_mode(Some(2)), cli::MatchMode::Name);
+        assert_eq!(match_mode(Some(3)), cli::MatchMode::Fuzzy);
+        assert_eq!(match_mode(Some(99)), cli::MatchMode::Content);
+
+        assert_eq!(image_hash_algo(None), cli::ImageHashAlgo::Auto);
+        assert_eq!(image_hash_algo(Some(1)), cli::ImageHashAlgo::Dhash);
+        assert_eq!(image_hash_algo(Some(2)), cli::ImageHashAlgo::Phash);
+        assert_eq!(image_hash_algo(Some(3)), cli::ImageHashAlgo::Ahash);
+        assert_eq!(image_hash_algo(Some(4)), cli::ImageHashAlgo::Color);
+        assert_eq!(image_hash_algo(Some(99)), cli::ImageHashAlgo::Auto);
+    }
+
+    #[test]
+    fn find_mode_captions_cover_every_selector_index() {
+        for index in 0..=10 {
+            assert!(!find_mode_caption(Some(index)).is_empty());
+        }
     }
 
     #[test]

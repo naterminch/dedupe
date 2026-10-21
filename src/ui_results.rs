@@ -4,7 +4,7 @@
 //! The view state stays in `ui.rs`; this module owns the pure-ish row UI.
 //! Anything reaching into `DedupeView` goes through `pub(crate)` access.
 
-use crate::ui::{DedupeView, THUMB_EXTS};
+use crate::ui::{DedupeView, THUMB_EXTS, ThemeReadability};
 use crate::ui_helpers::fit_text;
 use crate::{media, report, util};
 use gpui_kit::base::{h_flex, v_flex};
@@ -175,7 +175,7 @@ pub(crate) fn render_member(
     }
     actions = actions.child(
         div()
-            .text_xs()
+            .text_size(px(cx.theme().text_xs_px()))
             .text_color(cx.theme().muted_foreground)
             .child(util::human_bytes(member.size)),
     );
@@ -267,10 +267,15 @@ pub(crate) fn render_member(
             v_flex()
                 .flex_1()
                 .gap_1p5()
-                .child(div().text_sm().truncate().child(fit_text(&title, 120)))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(px(cx.theme().text_sm_px()))
+                        .truncate()
+                        .child(fit_text(&title, 120)),
+                )
+                .child(
+                    div()
+                        .text_size(px(cx.theme().text_xs_px()))
                         .truncate()
                         .text_color(cx.theme().muted_foreground)
                         .child(fit_text(&parent, 160)),
@@ -357,7 +362,7 @@ pub(crate) fn render_media_card(
     }
     actions = actions.child(
         div()
-            .text_xs()
+            .text_size(px(cx.theme().text_xs_px()))
             .text_color(cx.theme().muted_foreground)
             .child(util::human_bytes(member.size)),
     );
@@ -562,7 +567,7 @@ pub(crate) fn render_media_card(
             _ if video.loading => {
                 card = card.child(
                     div()
-                        .text_xs()
+                        .text_size(px(cx.theme().text_xs_px()))
                         .text_color(cx.theme().muted_foreground)
                         .child("Loading preview…"),
                 );
@@ -570,7 +575,7 @@ pub(crate) fn render_media_card(
             _ => {
                 card = card.child(
                     div()
-                        .text_xs()
+                        .text_size(px(cx.theme().text_xs_px()))
                         .text_color(cx.theme().warning)
                         .child("Preview unavailable — install ffmpeg."),
                 );
@@ -580,14 +585,14 @@ pub(crate) fn render_media_card(
     card.child(
         div()
             .w_full()
-            .text_sm()
+            .text_size(px(cx.theme().text_sm_px()))
             .truncate()
             .child(fit_text(&title, 60)),
     )
     .child(
         div()
             .w_full()
-            .text_xs()
+            .text_size(px(cx.theme().text_xs_px()))
             .truncate()
             .text_color(cx.theme().muted_foreground)
             .child(fit_text(&parent, 80)),
@@ -630,6 +635,8 @@ impl DedupeView {
         // every color here while the view Context is available.
         let c_secondary = cx.theme().secondary;
         let c_muted = cx.theme().muted_foreground;
+        let gallery_sm = px(cx.theme().text_sm_px());
+        let gallery_xs = px(cx.theme().text_xs_px());
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, _, _| {
             let gallery_view = view.clone();
@@ -669,10 +676,14 @@ impl DedupeView {
                     .flex_none()
                     .gap_1()
                     .child(big)
-                    .child(div().text_sm().child(fit_text(&member_title(member), 100)))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(gallery_sm)
+                            .child(fit_text(&member_title(member), 100)),
+                    )
+                    .child(
+                        div()
+                            .text_size(gallery_xs)
                             .text_color(c_muted)
                             .child(fit_text(&parent, 120)),
                     );
@@ -704,7 +715,7 @@ impl DedupeView {
                         })
                         .child(
                             div()
-                                .text_xs()
+                                .text_size(gallery_xs)
                                 .text_color(c_muted)
                                 .child(util::human_bytes(member.size)),
                         )
