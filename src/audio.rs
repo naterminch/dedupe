@@ -39,8 +39,10 @@ pub fn fingerprint(path: &Path) -> Option<AudioFp> {
         return None;
     }
     let samples: Vec<f64> = data
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c) as f64 / 32768.0)
         .collect();
     let mut bits = Vec::with_capacity(samples.len() / FRAME_SAMPLES + 1);
     for chunk in samples.chunks(FRAME_SAMPLES) {
