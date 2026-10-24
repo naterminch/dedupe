@@ -5,3 +5,7 @@
 
 # Build output and logs
 /target/
+/clippy_output.txt
+
+# Local agent state
+/.omo/
