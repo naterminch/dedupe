@@ -107,6 +107,39 @@ cargo build --release  # any OS
 
 Needs Rust; optional FFmpeg for media metadata + video comparison (`dedupe.exe` = CLI+GUI, `dedupe-gui.exe` = GUI only, no console).
 
+## Build cache (kache)
+
+Builds go through [Kache](https://github.com/kunobi-ninja/kache), a content-addressed
+compiler cache that keeps `rustc` output from being rebuilt in every target dir.
+
+- Machine setup: `kache` 1.2.2 in `~/.local/bin`, `rustc-wrapper = "kache"` in
+  `~/.cargo/config.toml`, daemon running as the `kache-daemon` login task. This is
+  machine-wide, not committed — `cargo` commands in this repo need no changes.
+- Policy lives in `~/.config/kache/config.toml` (the file the daemon watches): 8 GiB
+  store cap, 30-day entry expiry, zstd level 6, skip sub-200 ms compiles, remove
+  orphaned target dirs and units unused for 30 days. A repo `.kache.toml` would only
+  change the client process and silently disagree with GC, so there is none.
+- Measured here: cold `cargo check` 2m15s → 463 entries / 653 MiB stored; the same
+  check in a second target dir 19.7 s, 276 restores, ~9 min of compile work avoided.
+
+On **NTFS** every restore is a byte copy (no block cloning, and the hardlink carrier
+is Unix-only — `kache stats` reports `0.0% without copying`), so the cache does not
+share blocks with `target/`: expect the store to *add* its 653 MiB rather than shrink
+the build tree. Space is reclaimed by the cleanup policy and the cap, not by clones.
+The `Link layout: EXDEV` line in `kache doctor` is expected for the same reason —
+moving the store onto `D:` would not make restores zero-copy.
+
+```sh
+kache stats                      # hit rate, time saved, store size
+kache clean --dry-run            # what a cleanup would free, per target dir
+kache clean --stale 30d --yes    # delete target dirs idle for 30 days
+kache clean --cache              # empty the store (keeps target/)
+KACHE_DISABLED=1 cargo build     # bypass the cache for one command
+```
+
+Remove it entirely with `kache daemon uninstall` and by deleting the
+`rustc-wrapper` line from `~/.cargo/config.toml`.
+
 ## How it works
 
 Shared pipeline (`pipeline::run_scan`): Scanning → Hashing → Comparing media → Building report.
