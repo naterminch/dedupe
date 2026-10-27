@@ -17,13 +17,13 @@ use crate::ui_helpers::NO_LIMIT_LABEL;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, mpsc};
 
-/// Serializes every test that mutates the process-global `DEDUPE_PREFS`
-/// env var: this module's override test plus the view tests in
-/// [`crate::ui_tests`], which point prefs at a temp file so runs never
-/// touch the user's real `~/.dedupe/gui-prefs.json`.
+/// Serializes every test that mutates a process-global env var: this module's
+/// override test, the view tests in [`crate::ui_tests`], and the cache tests
+/// that point `DEDUPE_CACHE` at a temp dir. Without it the test threads could
+/// race on the environment.
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -31,14 +31,14 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const PREFS_VERSION: u32 = 1;
 
 /// One scan folder with its protection flag (mirrors the sidebar Ref toggle).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderPref {
     pub path: String,
     pub reference: bool,
 }
 
 /// All sidebar selections worth restoring on next launch.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuiPrefs {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -170,17 +170,18 @@ impl Default for GuiPrefs {
 
 impl GuiPrefs {
     /// Load from the default location. Never fails: any problem yields defaults.
+    #[must_use]
     pub fn load() -> Self {
-        Self::load_from(default_prefs_path())
+        Self::load_from(&default_prefs_path())
     }
 
     /// Load from an explicit path (also used by tests).
-    pub fn load_from(path: PathBuf) -> Self {
-        let bytes = match fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => return Self::default(),
+    #[must_use]
+    pub fn load_from(path: &Path) -> Self {
+        let Ok(bytes) = fs::read(path) else {
+            return Self::default();
         };
-        match serde_json::from_slice::<GuiPrefs>(&bytes) {
+        match serde_json::from_slice::<Self>(&bytes) {
             Ok(p) if p.version == PREFS_VERSION => p,
             _ => Self::default(),
         }
@@ -188,12 +189,21 @@ impl GuiPrefs {
 
     /// Persist atomically (temp file + rename). Best-effort: callers ignore
     /// errors so a read-only home dir never breaks the GUI.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the preferences cannot be serialized or written.
     pub fn save(&self) -> io::Result<()> {
-        self.save_to(default_prefs_path())
+        self.save_to(&default_prefs_path())
     }
 
     /// Persist to an explicit path (also used by tests).
-    pub fn save_to(&self, path: PathBuf) -> io::Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the preferences cannot be serialized, the parent
+    /// directory cannot be created, or the file cannot be written or renamed.
+    pub fn save_to(&self, path: &Path) -> io::Result<()> {
         let bytes = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
         if let Some(parent) = path.parent() {
             // create_dir_all on "" errors; skip it (relative file in cwd).
@@ -203,7 +213,7 @@ impl GuiPrefs {
         }
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, &path)?;
+        fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -223,7 +233,12 @@ impl GuiPrefs {
                             prefs = next;
                             path = next_path;
                         }
-                        let _ = prefs.save_to(path);
+                        if let Err(e) = prefs.save_to(&path) {
+                            eprintln!(
+                                "dedupe: could not save preferences to {}: {e}",
+                                path.display()
+                            );
+                        }
                     }
                 })
                 .ok()
@@ -237,6 +252,7 @@ impl GuiPrefs {
 
 /// Default prefs file location: `DEDUPE_PREFS` if set (non-empty), otherwise
 /// under the user's home directory, otherwise the current directory.
+#[must_use]
 pub fn default_prefs_path() -> PathBuf {
     if let Some(p) = std::env::var_os("DEDUPE_PREFS")
         && !p.is_empty()
@@ -291,9 +307,9 @@ mod tests {
             remember_folders: false,
             ..GuiPrefs::default()
         };
-        prefs.save_to(path.clone()).unwrap();
+        prefs.save_to(&path).unwrap();
 
-        let loaded = GuiPrefs::load_from(path.clone());
+        let loaded = GuiPrefs::load_from(&path);
         assert_eq!(loaded, prefs);
         let _ = fs::remove_file(&path);
     }
@@ -308,7 +324,7 @@ mod tests {
             serde_json::json!({"version": PREFS_VERSION, "types": "mp4"}).to_string(),
         )
         .unwrap();
-        let loaded = GuiPrefs::load_from(path.clone());
+        let loaded = GuiPrefs::load_from(&path);
         assert!(loaded.remember_folders);
         assert_eq!(loaded.types, "mp4");
         assert!(loaded.folders.is_empty());
@@ -328,10 +344,10 @@ mod tests {
     fn missing_or_corrupt_file_yields_defaults() {
         let path = tmp_path("missing");
         let _ = fs::remove_file(&path);
-        assert_eq!(GuiPrefs::load_from(path.clone()), GuiPrefs::default());
+        assert_eq!(GuiPrefs::load_from(&path), GuiPrefs::default());
 
         fs::write(&path, b"not json").unwrap();
-        assert_eq!(GuiPrefs::load_from(path.clone()), GuiPrefs::default());
+        assert_eq!(GuiPrefs::load_from(&path), GuiPrefs::default());
         let _ = fs::remove_file(&path);
     }
 
@@ -347,7 +363,7 @@ mod tests {
             serde_json::to_vec(&prefs).expect("serialize test prefs"),
         )
         .unwrap();
-        assert_eq!(GuiPrefs::load_from(path.clone()), GuiPrefs::default());
+        assert_eq!(GuiPrefs::load_from(&path), GuiPrefs::default());
         let _ = fs::remove_file(&path);
     }
 
@@ -357,7 +373,7 @@ mod tests {
         // trash, and both size labels.
         let path = tmp_path("minimal");
         fs::write(&path, b"{}").unwrap();
-        let loaded = GuiPrefs::load_from(path.clone());
+        let loaded = GuiPrefs::load_from(&path);
         // `{}` has no version (defaults to 0) → version mismatch → defaults.
         assert_eq!(loaded, GuiPrefs::default());
         assert_eq!(loaded.min_size, NO_LIMIT_LABEL);
@@ -374,6 +390,8 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = tmp_path("env");
         let _ = fs::remove_file(&path);
+        // SAFETY: ENV_LOCK is held for the whole test, so no other test thread
+        // touches the process environment concurrently.
         unsafe {
             std::env::set_var("DEDUPE_PREFS", &path);
         }
@@ -384,6 +402,7 @@ mod tests {
         };
         prefs.save().unwrap();
         assert_eq!(GuiPrefs::load(), prefs);
+        // SAFETY: ENV_LOCK is still held, as for the set_var above.
         unsafe {
             std::env::remove_var("DEDUPE_PREFS");
         }

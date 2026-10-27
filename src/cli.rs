@@ -2,7 +2,7 @@ use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, ValueEnum};
 
 /// Color scheme for the help output. clap emits these only when the target
-/// stream is a terminal (ColorChoice::Auto), so piped output stays plain.
+/// stream is a terminal (`ColorChoice::Auto`), so piped output stays plain.
 fn cli_styles() -> Styles {
     Styles::styled()
         .usage(AnsiColor::Cyan.on_default().effects(Effects::BOLD))

@@ -35,6 +35,7 @@ pub const STRIP_FRAMES: usize = 4;
 /// Returns an empty vec when ffmpeg is missing or nothing decodes — callers
 /// show a status note instead. Blocking (spawns ffmpeg); call off the UI
 /// thread.
+#[must_use]
 pub fn video_strip(path: &Path, size: u64, mtime: Option<i64>, n: usize) -> Vec<PathBuf> {
     if n == 0 || !crate::media::ffmpeg_available() {
         return Vec::new();
@@ -67,8 +68,7 @@ pub fn video_strip(path: &Path, size: u64, mtime: Option<i64>, n: usize) -> Vec<
             .args(["-vframes", "1", "-vf", "scale=320:-1"])
             .arg(&dest)
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
             && dest.exists();
         if ok {
             out.push(dest);
@@ -80,6 +80,7 @@ pub fn video_strip(path: &Path, size: u64, mtime: Option<i64>, n: usize) -> Vec<
 ///
 /// Returns `None` when ffmpeg is missing or extraction fails — callers show
 /// a placeholder instead. Blocking (spawns ffmpeg); call off the UI thread.
+#[must_use]
 pub fn video_poster(path: &Path, size: u64, mtime: Option<i64>) -> Option<PathBuf> {
     if !crate::media::ffmpeg_available() {
         return None;
@@ -100,8 +101,7 @@ pub fn video_poster(path: &Path, size: u64, mtime: Option<i64>) -> Option<PathBu
         .args(["-vframes", "1", "-vf", "scale=320:-1"])
         .arg(&out)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
         && out.exists();
     if ok { Some(out) } else { None }
 }

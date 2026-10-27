@@ -222,8 +222,7 @@ fn similar_mode_finds_reencoded_video_in_different_container() {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
     if !tool("ffmpeg") || !tool("ffprobe") {
         eprintln!("skipping: ffmpeg/ffprobe not on PATH");
@@ -303,8 +302,7 @@ fn fingerprint_cache_is_persisted_and_reused_across_runs() {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+            .is_ok_and(|s| s.success())
     }
     if !tool("ffmpeg") || !tool("ffprobe") {
         eprintln!("skipping: ffmpeg/ffprobe not on PATH");
@@ -490,7 +488,7 @@ fn keep_newest_prefers_recently_modified() {
     let dir = tmpdir("keepnew");
     fs::write(dir.join("old.txt"), b"payload").unwrap();
     fs::write(dir.join("new.txt"), b"payload").unwrap();
-    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600));
+    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_hours(1));
     fs::File::options()
         .write(true)
         .open(dir.join("old.txt"))
@@ -518,7 +516,7 @@ fn keep_oldest_prefers_least_recently_modified() {
     let dir = tmpdir("keepold");
     fs::write(dir.join("old.txt"), b"payload").unwrap();
     fs::write(dir.join("new.txt"), b"payload").unwrap();
-    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(3600));
+    let ft = fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_hours(1));
     fs::File::options()
         .write(true)
         .open(dir.join("old.txt"))
@@ -557,6 +555,7 @@ fn min_and_max_size_bound_the_scan() {
         parsed["groups"][0]["members"][0]["path"]
             .as_str()
             .unwrap()
+            .to_ascii_lowercase()
             .ends_with(".bin")
     );
 
@@ -568,6 +567,7 @@ fn min_and_max_size_bound_the_scan() {
         parsed["groups"][0]["members"][0]["path"]
             .as_str()
             .unwrap()
+            .to_ascii_lowercase()
             .ends_with(".txt")
     );
 

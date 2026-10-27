@@ -30,7 +30,7 @@ use std::path::PathBuf;
 /// interactions (clicks, keeper picks) trigger `save_prefs`, which reads
 /// the env var and writes the temp file.
 fn open_view(
-    cx: &mut TestAppContext,
+    cx: &TestAppContext,
 ) -> (
     AnyWindowHandle,
     Entity<DedupeView>,
@@ -88,7 +88,7 @@ fn in_window(
 
 /// Run an assertion against the view's state.
 fn assert_view<R>(
-    cx: &mut TestAppContext,
+    cx: &TestAppContext,
     view: &Entity<DedupeView>,
     f: impl FnOnce(&mut DedupeView) -> R,
 ) -> R {
@@ -263,7 +263,7 @@ fn stop_button_resets_the_ui_immediately(cx: &mut TestAppContext) {
                 similarity: None,
                 members: vec![member("dir/a.txt", 100, true, None, None)],
             }];
-            v.selected = [PathBuf::from("dir/a.txt")].into_iter().collect();
+            v.selected = std::iter::once(PathBuf::from("dir/a.txt")).collect();
             cx.notify();
         });
         window.render_frame(cx);
@@ -286,7 +286,7 @@ fn stop_button_resets_the_ui_immediately(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn stale_scan_output_is_discarded(cx: &mut TestAppContext) {
+fn stale_scan_output_is_discarded(cx: &TestAppContext) {
     // A task that finishes after Stop (or after a new scan started) must
     // not resurrect its results.
     let (_handle, view, _guard) = open_view(cx);
@@ -348,7 +348,7 @@ fn escape_leaves_the_settings_page(cx: &mut TestAppContext) {
     // No-op on the main view: the main flow must never be switched away
     // from by escape.
     in_window(cx, handle, |window, cx| {
-        view.update(cx, |v, cx| v.leave_settings(cx));
+        view.update(cx, super::ui::DedupeView::leave_settings);
         window.render_frame(cx);
     });
     assert_view(cx, &view, |v| assert_eq!(v.view, AppView::Main));
@@ -644,7 +644,7 @@ fn merged_exact_and_similar_members_render_together(cx: &mut TestAppContext) {
                 ],
             )];
             v.has_scanned = true;
-            v.selected = [PathBuf::from("dir/small.png")].into_iter().collect();
+            v.selected = std::iter::once(PathBuf::from("dir/small.png")).collect();
             cx.notify();
         });
         window.render_frame(cx);

@@ -15,11 +15,13 @@ pub struct AudioFp {
 }
 
 impl AudioFp {
+    #[must_use]
     pub fn frames(&self) -> usize {
         self.bits.len()
     }
 }
 
+#[must_use]
 pub fn fingerprint(path: &Path) -> Option<AudioFp> {
     let mut child = crate::util::quiet_command("ffmpeg")
         .args(["-v", "error", "-i"])
@@ -42,7 +44,7 @@ pub fn fingerprint(path: &Path) -> Option<AudioFp> {
         .as_chunks::<2>()
         .0
         .iter()
-        .map(|c| i16::from_le_bytes(*c) as f64 / 32768.0)
+        .map(|c| f64::from(i16::from_le_bytes(*c)) / 32768.0)
         .collect();
     let mut bits = Vec::with_capacity(samples.len() / FRAME_SAMPLES + 1);
     for chunk in samples.chunks(FRAME_SAMPLES) {
@@ -74,7 +76,7 @@ fn frame_bits(samples: &[f64]) -> u8 {
 }
 
 fn goertzel(samples: &[f64], freq: f64) -> f64 {
-    let k = (0.5 + samples.len() as f64 * freq / SAMPLE_RATE as f64).floor();
+    let k = (0.5 + samples.len() as f64 * freq / f64::from(SAMPLE_RATE)).floor();
     let omega = 2.0 * std::f64::consts::PI * k / samples.len() as f64;
     let coeff = 2.0 * omega.cos();
     let mut s0;
@@ -90,6 +92,7 @@ fn goertzel(samples: &[f64], freq: f64) -> f64 {
 
 /// Best frame-agreement score over every alignment of the shorter fingerprint
 /// inside the longer one, so partial clips and delayed intros still match.
+#[must_use]
 pub fn similarity(a: &AudioFp, b: &AudioFp) -> f64 {
     if a.bits.is_empty() || b.bits.is_empty() {
         return 0.0;
@@ -108,7 +111,7 @@ pub fn similarity(a: &AudioFp, b: &AudioFp) -> f64 {
             .map(|(x, y)| (x ^ y).count_ones())
             .sum();
         let total = (short.len() * 8) as f64;
-        let score = 1.0 - same as f64 / total;
+        let score = 1.0 - f64::from(same) / total;
         if score > best {
             best = score;
         }
@@ -168,11 +171,10 @@ pub fn music_groups(
         let sizes: Vec<u64> = members.iter().map(|m| m.size).collect();
         let largest = sizes.first().copied().unwrap_or(0);
         let paths: Vec<_> = members.iter().map(|m| m.path.clone()).collect();
-        let label = paths
-            .first()
-            .and_then(|p| p.file_stem())
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "Audio match".into());
+        let label = paths.first().and_then(|p| p.file_stem()).map_or_else(
+            || "Audio match".into(),
+            |s| s.to_string_lossy().into_owned(),
+        );
         out.push(FindingGroup {
             label,
             detail: format!(

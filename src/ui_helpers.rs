@@ -180,16 +180,14 @@ pub(crate) fn prefs_size_to_slider(raw: &str, empty_at_min: bool) -> f32 {
             SIZE_SLIDER_MAX
         };
     }
-    match util::parse_size(raw) {
-        Ok(b) => (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-        Err(_) => {
-            if empty_at_min {
-                SIZE_SLIDER_MIN
-            } else {
-                SIZE_SLIDER_MAX
-            }
-        }
-    }
+    util::parse_size(raw).map_or(
+        if empty_at_min {
+            SIZE_SLIDER_MIN
+        } else {
+            SIZE_SLIDER_MAX
+        },
+        |b| (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
+    )
 }
 
 #[cfg(test)]

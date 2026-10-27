@@ -9,6 +9,7 @@ use std::process::Command;
 /// at below-normal priority so a big media scan stays out of the way of
 /// everything else on the machine. All our children have piped output, so
 /// this is also harmless for the CLI binary.
+#[must_use]
 pub fn quiet_command(program: &str) -> Command {
     #[cfg(windows)]
     {
@@ -27,19 +28,20 @@ pub fn quiet_command(program: &str) -> Command {
 /// Resolve a `--jobs` value to a concrete worker count: an explicit value
 /// wins, otherwise use all but one core (at least 1) so the machine stays
 /// responsive while a scan saturates the rest.
+#[must_use]
 pub fn effective_jobs(requested: usize) -> usize {
     if requested > 0 {
         return requested;
     }
-    std::thread::available_parallelism()
-        .map(|n| n.get().saturating_sub(1).max(1))
-        .unwrap_or(4)
+    std::thread::available_parallelism().map_or(4, |n| n.get().saturating_sub(1).max(1))
 }
 
-/// Size rayon's global thread pool for this run. Safe to call on every
-/// scan: only the first call takes effect, later ones are ignored (rayon
-/// forbids re-initialization, which is fine — the pool already exists).
-/// Tests use rayon's default pool; only the real pipeline calls this.
+/// Size rayon's global thread pool for this run.
+///
+/// Safe to call on every scan: only the first call takes effect, later ones
+/// are ignored (rayon forbids re-initialization, which is fine - the pool
+/// already exists). Tests use rayon's default pool; only the real pipeline
+/// calls this.
 pub fn init_thread_pool(jobs: usize) {
     let threads = effective_jobs(jobs);
     let _ = rayon::ThreadPoolBuilder::new()
@@ -49,6 +51,7 @@ pub fn init_thread_pool(jobs: usize) {
 }
 
 /// Format a byte count as a human-readable string (decimal units).
+#[must_use]
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -65,6 +68,7 @@ pub fn human_bytes(bytes: u64) -> String {
 }
 
 /// Format milliseconds as `H:MM:SS` (or `M:SS` when under an hour).
+#[must_use]
 pub fn format_duration_ms(ms: u64) -> String {
     let total_secs = ms / 1000;
     let secs = total_secs % 60;
@@ -78,8 +82,14 @@ pub fn format_duration_ms(ms: u64) -> String {
 }
 
 /// Parse a human size string like `512`, `1.5KB`, `2 MB`, `3GiB`, `4G`.
+///
 /// Decimal suffixes (KB, MB, ...) multiply by powers of 1000;
 /// binary suffixes (KiB, MiB, ...) and bare letters (K, M, ...) by powers of 1024.
+///
+/// # Errors
+///
+/// Returns an error when the string is empty, the numeric part does not parse,
+/// the suffix is unknown, or the result does not fit in a `u64`.
 pub fn parse_size(raw: &str) -> Result<u64> {
     let s = raw.trim();
     if s.is_empty() {

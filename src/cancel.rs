@@ -18,6 +18,7 @@ pub struct CancelToken(Arc<AtomicBool>);
 
 impl CancelToken {
     /// A fresh token in the un-cancelled state.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -33,6 +34,7 @@ impl CancelToken {
     }
 
     /// True once [`CancelToken::cancel`] has been called.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }

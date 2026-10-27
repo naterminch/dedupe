@@ -2,8 +2,10 @@
 name = "dedupe"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Find duplicate files (including images and videos) by content hash, with media metadata comparison"
 license = "MIT"
+publish = false
 
 [[bin]]
 name = "dedupe"
@@ -12,6 +14,17 @@ path = "src/main.rs"
 [[bin]]
 name = "dedupe-gui"
 path = "src/gui_main.rs"
+
+# Lints live here rather than as crate attributes so every target agrees.
+# CI (and prek) turns these into errors with `cargo clippy -- -D warnings`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+allow_attributes_without_reason = "warn"
 
 [dependencies]
 anyhow = "1"

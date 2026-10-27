@@ -34,11 +34,12 @@ const HASH_CACHE_VERSION: u32 = 1;
 pub const HASH_CACHE_MIN_SIZE: u64 = 256 * 1024;
 
 /// A stored perceptual fingerprint, mirroring the runtime types in `similar`.
+///
 /// v2: 256-bit dHash (17x16 grid, 4 x u64) - v1 64-bit fingerprints collide
 /// on videos sharing only a coarse layout.
 /// v3: image fingerprints record which hash algorithm produced them, so
 /// switching `--image-hash` never reuses a hash of a different family.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheFp {
     Image {
         w: u32,
@@ -90,21 +91,23 @@ pub struct FingerprintCache {
 impl FingerprintCache {
     /// Load the cache from the default location (or `DEDUPE_CACHE`).
     /// Missing or unreadable files yield an empty cache, never an error.
+    #[must_use]
     pub fn load() -> Self {
-        Self::load_from(default_cache_path())
+        Self::load_from(&default_cache_path())
     }
 
     /// Load from an explicit path (also used by tests).
-    pub fn load_from(path: PathBuf) -> Self {
-        let map = match fs::read(&path) {
-            Ok(bytes) => match bincode::deserialize::<CacheFile>(&bytes) {
+    #[must_use]
+    pub fn load_from(path: &Path) -> Self {
+        let map = fs::read(path).map_or_else(
+            |_| HashMap::new(),
+            |bytes| match bincode::deserialize::<CacheFile>(&bytes) {
                 Ok(f) if f.version == CACHE_VERSION => f.entries.into_iter().collect(),
                 _ => HashMap::new(),
             },
-            Err(_) => HashMap::new(),
-        };
+        );
         Self {
-            path: Some(path),
+            path: Some(path.to_path_buf()),
             map,
             dirty: false,
         }
@@ -113,6 +116,7 @@ impl FingerprintCache {
     /// Look up a fingerprint valid for `(size, mtime_secs)`. Files whose
     /// mtime is unknown (`None`) are never served from the cache — the key
     /// could not be validated against the current state of the file.
+    #[must_use]
     pub fn get(&self, path: &Path, size: u64, mtime_secs: Option<i64>) -> Option<&CacheFp> {
         let entry = self.map.get(path)?;
         let mtime = mtime_secs?;
@@ -139,6 +143,10 @@ impl FingerprintCache {
     /// Persist the cache atomically (temp file + rename). Best-effort by
     /// design: a failed write (read-only home dir, ...) must never fail the
     /// scan, and an untouched cache is not rewritten at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the cache file cannot be serialized or written.
     pub fn save(&self) -> io::Result<()> {
         if !self.dirty {
             return Ok(());
@@ -172,6 +180,7 @@ impl FingerprintCache {
 
 /// Default cache file location: `DEDUPE_CACHE` if set (non-empty), otherwise
 /// under the user's home directory, otherwise the current directory.
+#[must_use]
 pub fn default_cache_path() -> PathBuf {
     if let Some(p) = std::env::var_os("DEDUPE_CACHE")
         && !p.is_empty()
@@ -215,26 +224,29 @@ pub struct HashCache {
 
 impl HashCache {
     /// Load from the default location (sibling of the fingerprint cache).
+    #[must_use]
     pub fn load() -> Self {
-        Self::load_from(default_hash_cache_path())
+        Self::load_from(&default_hash_cache_path())
     }
 
-    pub fn load_from(path: PathBuf) -> Self {
-        let map = match fs::read(&path) {
-            Ok(bytes) => match bincode::deserialize::<HashCacheFile>(&bytes) {
+    #[must_use]
+    pub fn load_from(path: &Path) -> Self {
+        let map = fs::read(path).map_or_else(
+            |_| HashMap::new(),
+            |bytes| match bincode::deserialize::<HashCacheFile>(&bytes) {
                 Ok(f) if f.version == HASH_CACHE_VERSION => f.entries.into_iter().collect(),
                 _ => HashMap::new(),
             },
-            Err(_) => HashMap::new(),
-        };
+        );
         Self {
-            path: Some(path),
+            path: Some(path.to_path_buf()),
             map,
             dirty: false,
         }
     }
 
     /// Look up cached hashes valid for `(size, mtime_secs, algo)`.
+    #[must_use]
     pub fn get(
         &self,
         path: &Path,
@@ -290,6 +302,10 @@ impl HashCache {
     }
 
     /// Persist atomically (temp file + rename); best-effort, never fails scans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the cache file cannot be serialized or written.
     pub fn save(&self) -> io::Result<()> {
         if !self.dirty {
             return Ok(());
@@ -322,6 +338,7 @@ impl HashCache {
 }
 
 /// Default content-hash cache location: next to the fingerprint cache.
+#[must_use]
 pub fn default_hash_cache_path() -> PathBuf {
     if let Some(p) = std::env::var_os("DEDUPE_CACHE")
         && !p.is_empty()
@@ -340,6 +357,7 @@ pub fn default_hash_cache_path() -> PathBuf {
 
 /// Both persistent cache files (content hashes + perceptual fingerprints).
 /// Paths honor the `DEDUPE_CACHE` override via the `default_*_path` helpers.
+#[must_use]
 pub fn cache_files() -> Vec<PathBuf> {
     vec![default_hash_cache_path(), default_cache_path()]
 }
@@ -347,6 +365,7 @@ pub fn cache_files() -> Vec<PathBuf> {
 /// Total on-disk size of the persistent caches: `(files present, bytes)`.
 /// Missing files count as zero — never an error, so the GUI can call this
 /// on every render without worrying about a missing home dir.
+#[must_use]
 pub fn cache_summary() -> (usize, u64) {
     let mut files = 0usize;
     let mut bytes = 0u64;
@@ -359,10 +378,12 @@ pub fn cache_summary() -> (usize, u64) {
     (files, bytes)
 }
 
-/// Delete both persistent cache files (best-effort, never fails the caller).
+/// Delete both persistent cache files, best-effort, never failing the caller.
+///
 /// Returns `(files removed, bytes freed)` measured before removal, so callers
 /// can report what was cleared. Stale `.tmp` leftovers from an interrupted
 /// save are removed too but don't count toward the total.
+#[must_use]
 pub fn clear_caches() -> (usize, u64) {
     let mut files = 0usize;
     let mut bytes = 0u64;
@@ -396,7 +417,7 @@ mod tests {
 
         let p = PathBuf::from("C:\\media\\photo.png");
         {
-            let mut c = FingerprintCache::load_from(path.clone());
+            let mut c = FingerprintCache::load_from(&path);
             c.insert_write(CacheWrite {
                 path: p.clone(),
                 size: 100,
@@ -411,7 +432,7 @@ mod tests {
             c.save().unwrap();
         }
 
-        let c = FingerprintCache::load_from(path.clone());
+        let c = FingerprintCache::load_from(&path);
         let expected = CacheFp::Image {
             w: 17,
             h: 16,
@@ -432,7 +453,7 @@ mod tests {
         let path = tmp_path("corrupt");
 
         fs::write(&path, b"not bincode").unwrap();
-        let c = FingerprintCache::load_from(path.clone());
+        let c = FingerprintCache::load_from(&path);
         assert_eq!(c.map.len(), 0);
 
         let file = CacheFile {
@@ -440,7 +461,7 @@ mod tests {
             entries: vec![],
         };
         fs::write(&path, bincode::serialize(&file).unwrap()).unwrap();
-        let c = FingerprintCache::load_from(path.clone());
+        let c = FingerprintCache::load_from(&path);
         assert_eq!(c.map.len(), 0);
 
         let _ = fs::remove_file(&path);
@@ -451,7 +472,7 @@ mod tests {
         let path = tmp_path("dirty");
         let _ = fs::remove_file(&path);
 
-        let mut c = FingerprintCache::load_from(path.clone());
+        let mut c = FingerprintCache::load_from(&path);
         assert!(!c.dirty);
         c.save().unwrap();
         assert!(!path.exists(), "no writes, no file");
@@ -479,7 +500,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let p = PathBuf::from("C:\\media\\big.bin");
         {
-            let mut c = HashCache::load_from(path.clone());
+            let mut c = HashCache::load_from(&path);
             c.insert(
                 p.clone(),
                 HASH_CACHE_MIN_SIZE,
@@ -490,7 +511,7 @@ mod tests {
             );
             c.save().unwrap();
         }
-        let c = HashCache::load_from(path.clone());
+        let c = HashCache::load_from(&path);
         let hit = c.get(&p, HASH_CACHE_MIN_SIZE, Some(7), "blake3").unwrap();
         assert_eq!(hit.full.as_deref(), Some("full"));
         assert_eq!(hit.partial.as_deref(), Some("partial"));
@@ -508,7 +529,7 @@ mod tests {
     fn hash_cache_skips_small_and_mtimeless_files() {
         let path = tmp_path("hash-min");
         let _ = fs::remove_file(&path);
-        let mut c = HashCache::load_from(path.clone());
+        let mut c = HashCache::load_from(&path);
         c.insert(
             PathBuf::from("tiny.bin"),
             HASH_CACHE_MIN_SIZE - 1,
@@ -534,10 +555,15 @@ mod tests {
     #[test]
     fn cache_summary_counts_bytes_and_clear_removes_both_files() {
         // Point both default locations at a temp dir via DEDUPE_CACHE.
+        let _guard = crate::prefs::ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let dir = std::env::temp_dir().join(format!("dedupe-cache-clear-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let override_path = dir.join("fingerprints.bin");
+        // SAFETY: ENV_LOCK is held for the whole test, so no other test thread
+        // touches the process environment concurrently.
         unsafe {
             std::env::set_var("DEDUPE_CACHE", &override_path);
         }
@@ -580,6 +606,7 @@ mod tests {
         assert_eq!(freed, bytes);
         assert_eq!(cache_summary(), (0, 0));
 
+        // SAFETY: ENV_LOCK is still held, as for the set_var above.
         unsafe {
             std::env::remove_var("DEDUPE_CACHE");
         }

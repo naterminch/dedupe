@@ -64,11 +64,13 @@ impl serde::Serialize for Group {
 }
 
 impl Group {
+    #[must_use]
     pub fn keep_count(&self) -> usize {
         self.members.iter().filter(|m| m.keep).count()
     }
 
     /// Bytes that would be freed by deleting every non-keep member.
+    #[must_use]
     pub fn dup_bytes(&self) -> u64 {
         self.members
             .iter()
@@ -100,11 +102,13 @@ pub enum KeepMode {
 }
 
 /// True when `path` lives under one of the reference (protected) folders.
+///
 /// Both sides are canonicalized once by the caller; comparison is
 /// case-insensitive for Windows paths (drive-letter paths, or when running
 /// on Windows) and case-sensitive otherwise. Both `/` and `\` separators
 /// are honored on any host so Windows-style paths compare correctly even
 /// on Linux CI (tests use `C:\...` literals everywhere).
+#[must_use]
 pub fn is_under_ref(path: &Path, reference_dirs: &[PathBuf]) -> bool {
     if reference_dirs.is_empty() {
         return false;
@@ -143,6 +147,7 @@ fn is_windows_drive_path(s: &str) -> bool {
 
 /// Canonicalize reference dirs once per run (best-effort; unresolvable
 /// entries fall back to the raw path).
+#[must_use]
 pub fn canonicalize_refs(raw: &[String]) -> Vec<PathBuf> {
     raw.iter()
         .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r)))
@@ -159,6 +164,7 @@ pub(crate) fn canonical_member(path: &Path) -> PathBuf {
 /// - probe resolution/duration for media groups (in parallel),
 /// - choose which member to keep (see [`KeepMode`]; members under a
 ///   reference dir always win and are marked `reference`).
+#[must_use]
 pub fn assemble_groups(
     groups: Vec<DuplicateGroup>,
     keep: KeepMode,
@@ -195,8 +201,7 @@ pub fn assemble_groups(
             // Probe media metadata (parallel across members).
             let media_kind = members
                 .first()
-                .map(|m| media::classify(&m.path))
-                .unwrap_or(MediaKind::Other);
+                .map_or(MediaKind::Other, |m| media::classify(&m.path));
             let want_probe = probe && media_kind != MediaKind::Other;
             if want_probe {
                 for member in &mut members {
@@ -301,7 +306,7 @@ fn is_better_keep_res(a: &GroupMember, b: &GroupMember, keep: KeepMode) -> bool 
     let area = |m: &GroupMember| -> Option<u64> {
         m.fingerprint_res
             .filter(|(w, h)| *w > 0 && *h > 0)
-            .map(|(w, h)| w as u64 * h as u64)
+            .map(|(w, h)| u64::from(w) * u64::from(h))
     };
     match (area(a), area(b)) {
         (Some(x), Some(y)) => x > y || (x == y && (a.size, &a.path) < (b.size, &b.path)),
@@ -320,13 +325,13 @@ fn quality_key(m: &GroupMember) -> (u8, u64, u64, u64) {
         .media
         .as_ref()
         .and_then(|info| match (info.width, info.height) {
-            (Some(w), Some(h)) if w > 0 && h > 0 => Some(w as u64 * h as u64),
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some(u64::from(w) * u64::from(h)),
             _ => None,
         })
         .or_else(|| {
             m.fingerprint_res
                 .filter(|(w, h)| *w > 0 && *h > 0)
-                .map(|(w, h)| w as u64 * h as u64)
+                .map(|(w, h)| u64::from(w) * u64::from(h))
         });
     let duration = m
         .media
@@ -568,7 +573,7 @@ mod tests {
             fs::write(dir.join(name), b"x").unwrap();
         }
         // Force distinct mtimes (filesystem granularity varies).
-        let old_t = SystemTime::now() - std::time::Duration::from_secs(3600);
+        let old_t = SystemTime::now() - std::time::Duration::from_hours(1);
         filetime_set(&dir.join("old.txt"), old_t);
         let mk = || DuplicateGroup {
             hash: "abc".into(),

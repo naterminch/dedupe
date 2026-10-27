@@ -19,6 +19,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
     px,
 };
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 /// Owned per-group data for rendering. Groups are replaced wholesale on
@@ -82,14 +83,13 @@ impl DedupeView {
                     .path
                     .extension()
                     .and_then(|e| e.to_str())
-                    .map(|e| THUMB_EXTS.contains(&e.to_ascii_lowercase().as_str()))
-                    .unwrap_or(false);
+                    .is_some_and(|e| THUMB_EXTS.contains(&e.to_ascii_lowercase().as_str()));
                 if thumbable { Thumb::Image } else { Thumb::None }
             }
-            media::MediaKind::Video => match self.posters.get(&member.path) {
-                Some(p) => Thumb::Poster(p.clone()),
-                None => Thumb::PendingVideo,
-            },
+            media::MediaKind::Video => self
+                .posters
+                .get(&member.path)
+                .map_or(Thumb::PendingVideo, |p| Thumb::Poster(p.clone())),
             media::MediaKind::Other => Thumb::None,
         }
     }
@@ -100,7 +100,7 @@ impl DedupeView {
 pub(crate) fn render_thumb(
     path: &std::path::Path,
     thumb: &Thumb,
-    cx: &mut Context<DedupeView>,
+    cx: &Context<DedupeView>,
 ) -> gpui_kit::AnyElement {
     match thumb {
         Thumb::None => div().into_any_element(),
@@ -136,7 +136,7 @@ pub(crate) fn render_member(
     member: &crate::matching::GroupMember,
     checked: bool,
     thumb: &Thumb,
-    cx: &mut Context<DedupeView>,
+    cx: &Context<DedupeView>,
 ) -> impl IntoElement {
     // Three-line row: the file name gets top billing, the parent folder
     // sits dimmed underneath, and all fixed-size controls share a third
@@ -207,8 +207,7 @@ pub(crate) fn render_member(
         let reveal = member
             .path
             .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| member.path.clone());
+            .map_or_else(|| member.path.clone(), std::path::Path::to_path_buf);
         actions = actions.child(
             Button::new(SharedString::from(format!("reveal-{group_index}-{mi}")))
                 .icon(IconName::FolderOpen)
@@ -295,16 +294,15 @@ pub(crate) fn is_grid_preview(thumb: &Thumb) -> bool {
 /// media summary), so flipping the keeper only moves the KEEP/DUP badge
 /// and border, never the text.
 pub(crate) fn member_title(member: &crate::matching::GroupMember) -> String {
-    let mut title = member
-        .path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| member.path.display().to_string());
+    let mut title = member.path.file_name().map_or_else(
+        || member.path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
     if let Some(sim) = member.similarity {
-        title.push_str(&format!("  · {:.1}% similar", sim * 100.0));
+        let _ = write!(title, "  · {:.1}% similar", sim * 100.0);
     }
     if let Some(info) = &member.media {
-        title.push_str(&format!("  · {}", info.summary()));
+        let _ = write!(title, "  · {}", info.summary());
     }
     title
 }
@@ -326,8 +324,8 @@ pub(crate) fn render_media_card(
     member: &crate::matching::GroupMember,
     checked: bool,
     thumb: &Thumb,
-    video: VideoPreview,
-    cx: &mut Context<DedupeView>,
+    video: &VideoPreview,
+    cx: &Context<DedupeView>,
 ) -> impl IntoElement {
     let parent = member
         .path
@@ -383,8 +381,7 @@ pub(crate) fn render_media_card(
         let reveal = member
             .path
             .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| member.path.clone());
+            .map_or_else(|| member.path.clone(), std::path::Path::to_path_buf);
         actions = actions.child(
             Button::new(SharedString::from(format!("reveal-{group_index}-{mi}")))
                 .icon(IconName::FolderOpen)
@@ -606,7 +603,7 @@ impl DedupeView {
     /// preview. Keep buttons refresh the modal in place (close + reopen),
     /// same as the delete-confirm dialog.
     pub(crate) fn open_gallery(
-        &mut self,
+        &self,
         group_index: usize,
         window: &mut Window,
         cx: &mut Context<Self>,

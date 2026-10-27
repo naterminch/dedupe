@@ -37,7 +37,7 @@ fn main() {
     }
 }
 
-/// Colors are enabled only when stdout is a terminal and NO_COLOR is unset,
+/// Colors are enabled only when stdout is a terminal and `NO_COLOR` is unset,
 /// so redirected / piped output and CI logs stay plain and parseable.
 fn init_colors() {
     let no_color = std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
@@ -90,7 +90,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
     let cancel = cancel::CancelToken::new();
 
     if cli.strip_exif {
-        let exif = dedupe::modes::strip_exif(cli, &cancel)?;
+        let exif = dedupe::modes::strip_exif(cli, &cancel);
         if !cli.quiet && !cli.json {
             if exif.applied {
                 eprintln!(
@@ -205,7 +205,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
                     dry_run_consolidate(&out.groups, dest, cli.quiet);
                 } else {
                     let moved =
-                        dedupe::actions::consolidate_keepers(&out.groups, dest, &engine, cli.yes)?;
+                        dedupe::actions::consolidate_keepers(&out.groups, dest, &engine, cli.yes);
                     println!(
                         "{} Consolidated {} file(s) ({}) into {}; {} skipped.",
                         style("✔").green().bold(),
@@ -278,7 +278,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
                     );
                 } else {
                     let linked =
-                        dedupe::actions::hardlink_duplicates(&out.groups, &engine, cli.yes)?;
+                        dedupe::actions::hardlink_duplicates(&out.groups, &engine, cli.yes);
                     println!(
                         "{} Hard-linked {} duplicate file(s) ({} saved); {} skipped.",
                         style("✔").green().bold(),
@@ -340,7 +340,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
                         &engine,
                         cli.yes,
                         disposition,
-                    )?;
+                    );
                     let verb = if cli.trash {
                         "Moved to trash"
                     } else {
@@ -441,13 +441,13 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
     let mut bytes = 0u64;
     let mut skipped = 0u64;
     if !result.findings.is_empty() {
-        let stats = dedupe::actions::delete_findings(&result.findings, disposition, cli.yes)?;
+        let stats = dedupe::actions::delete_findings(&result.findings, disposition, cli.yes);
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;
     }
     if !result.groups.is_empty() {
-        let stats = dedupe::actions::delete_finding_groups(&result.groups, disposition, cli.yes)?;
+        let stats = dedupe::actions::delete_finding_groups(&result.groups, disposition, cli.yes);
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;

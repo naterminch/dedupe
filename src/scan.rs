@@ -3,6 +3,7 @@ use crate::cli::Cli;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
@@ -24,6 +25,7 @@ pub struct ScanResult {
 }
 
 /// Build a set of lower-cased extensions (dots stripped) from `--types`.
+#[must_use]
 pub fn extension_filter(exts: &[String]) -> HashSet<String> {
     exts.iter()
         .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
@@ -39,6 +41,7 @@ fn matches_extension(path: &Path, filter: &HashSet<String>) -> bool {
 }
 
 impl ScanResult {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -50,6 +53,7 @@ impl ScanResult {
 /// filters, are skipped. Directory read errors are collected (not fatal).
 /// Polls `cancel` per walked entry and returns the partial result early,
 /// so a Stop during a long walk costs at most one file.
+#[must_use]
 pub fn scan(cli: &Cli, size_min: u64, size_max: u64, cancel: &CancelToken) -> ScanResult {
     let ext_filter = extension_filter(&cli.types);
     let type_filtered = !ext_filter.is_empty();
@@ -83,12 +87,11 @@ pub fn scan(cli: &Cli, size_min: u64, size_max: u64, cancel: &CancelToken) -> Sc
             continue;
         }
 
-        use std::sync::atomic::{AtomicU64, Ordering};
         let dirs_skipped = AtomicU64::new(0);
         let walker = WalkDir::new(path)
             // walkdir counts the root as depth 0 and the user's --max-depth 0
             // means "direct children only", hence the +1 offset.
-            .max_depth(cli.max_depth.map(|d| d + 1).unwrap_or(usize::MAX))
+            .max_depth(cli.max_depth.map_or(usize::MAX, |d| d + 1))
             .into_iter()
             .filter_entry(|e| {
                 if e.depth() == 0 {
@@ -147,7 +150,10 @@ fn matches_excluded_path(path: &Path, cli: &Cli) -> bool {
     cli.exclude_path.iter().any(|ex| raw.contains(ex.as_str()))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "walk callback: filters and output are independent inputs, and a context struct would duplicate `Cli`"
+)]
 fn collect_file(
     path: &Path,
     cli: &Cli,
@@ -166,12 +172,9 @@ fn collect_file(
         result.files_skipped += 1;
         return;
     }
-    let meta = match fs::metadata(path) {
-        Ok(m) => m,
-        Err(_) => {
-            result.files_skipped += 1;
-            return;
-        }
+    let Ok(meta) = fs::metadata(path) else {
+        result.files_skipped += 1;
+        return;
     };
     let size = meta.len();
     if size < size_min || (size_max > 0 && size > size_max) {
@@ -370,8 +373,7 @@ mod tests {
             None,
             None,
             &CancelToken::new(),
-        )
-        .unwrap();
+        );
         assert_eq!(hardlinks, 1);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);

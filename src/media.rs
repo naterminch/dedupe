@@ -20,6 +20,7 @@ pub const VIDEO_EXTS: [&str; 16] = [
     "ogv", "rmvb", "vob",
 ];
 
+#[must_use]
 pub fn classify(path: &Path) -> MediaKind {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return MediaKind::Other;
@@ -44,6 +45,7 @@ pub struct MediaInfo {
 }
 
 impl MediaInfo {
+    #[must_use]
     pub fn resolution(&self) -> Option<String> {
         match (self.width, self.height) {
             (Some(w), Some(h)) => Some(format!("{w}x{h}")),
@@ -51,6 +53,7 @@ impl MediaInfo {
         }
     }
 
+    #[must_use]
     pub fn summary(&self) -> String {
         let res = self.resolution().unwrap_or_else(|| "?x?".to_string());
         match self.duration_ms {
@@ -85,30 +88,31 @@ struct FfprobeOutput {
 }
 
 /// True when an `ffprobe` executable is reachable on PATH.
+#[must_use]
 pub fn ffprobe_available() -> bool {
     crate::util::quiet_command("ffprobe")
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// True when an `ffmpeg` executable is reachable on PATH (needed for video
 /// frame sampling in `--similar` mode).
+#[must_use]
 pub fn ffmpeg_available() -> bool {
     crate::util::quiet_command("ffmpeg")
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Probe width/height/codec (video stream) and duration via `ffprobe`.
 /// Returns `None` on any failure (missing binary, parse error, no video stream).
+#[must_use]
 pub fn probe_media(path: &Path) -> Option<MediaInfo> {
     let output = crate::util::quiet_command("ffprobe")
         .args([

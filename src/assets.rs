@@ -18,6 +18,7 @@ use gpui_kit::{AssetSource, SharedString};
 struct Embedded;
 
 /// Combined source: ours first, gpui-kit second.
+#[derive(Debug)]
 pub struct AppAssets;
 
 impl AssetSource for AppAssets {

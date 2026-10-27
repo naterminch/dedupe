@@ -2,9 +2,9 @@ use crate::cache::HashCache;
 use crate::cancel::CancelToken;
 use crate::cli::HashAlgo;
 use crate::scan::FileEntry;
-use anyhow::Result;
 use indicatif::ProgressBar;
 use rayon::prelude::*;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom};
@@ -20,16 +20,26 @@ const PARTIAL_TAIL_BYTES: u64 = 32 * 1024;
 const PARTIAL_TOTAL_BYTES: u64 = PARTIAL_HEAD_BYTES + PARTIAL_TAIL_BYTES;
 const IO_CHUNK: usize = 256 * 1024;
 
+// Read buffer reused per worker thread: 256 KB is too large to sit on a
+// stack frame inside a rayon worker, and rebuilding it per file churns the
+// allocator on the hottest path in a scan.
+thread_local! {
+    static READ_BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; IO_CHUNK]);
+}
+
 /// Wraps a hash algorithm and knows how to hash files, partially or fully.
+#[derive(Debug)]
 pub struct HashEngine {
     algo: HashAlgo,
 }
 
 impl HashEngine {
+    #[must_use]
     pub fn new(algo: HashAlgo) -> Self {
         Self { algo }
     }
 
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self.algo {
             HashAlgo::Blake3 => "blake3",
@@ -57,12 +67,11 @@ impl HashEngine {
     }
 
     fn hash_reader<R: Read>(&self, mut reader: R) -> io::Result<String> {
-        let mut buf = [0u8; IO_CHUNK];
-        match self.algo {
+        READ_BUF.with_borrow_mut(|buf| match self.algo {
             HashAlgo::Blake3 => {
                 let mut hasher = blake3::Hasher::new();
                 loop {
-                    let n = reader.read(&mut buf)?;
+                    let n = reader.read(&mut buf[..])?;
                     if n == 0 {
                         break;
                     }
@@ -74,7 +83,7 @@ impl HashEngine {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 loop {
-                    let n = reader.read(&mut buf)?;
+                    let n = reader.read(&mut buf[..])?;
                     if n == 0 {
                         break;
                     }
@@ -86,7 +95,7 @@ impl HashEngine {
                 use md5::{Digest, Md5};
                 let mut hasher = Md5::new();
                 loop {
-                    let n = reader.read(&mut buf)?;
+                    let n = reader.read(&mut buf[..])?;
                     if n == 0 {
                         break;
                     }
@@ -94,7 +103,7 @@ impl HashEngine {
                 }
                 Ok(format!("{:x}", hasher.finalize()))
             }
-        }
+        })
     }
 
     /// Cheap pre-filter hash: the first `PARTIAL_HEAD_BYTES` plus the last
@@ -102,6 +111,10 @@ impl HashEngine {
     /// files sharing only a header still separate early). Files at or below
     /// `PARTIAL_TOTAL_BYTES` are digested whole, making this identical to
     /// [`HashEngine::full`] for them.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be opened, read, or seeked.
     pub fn partial(&self, path: &Path, size: u64) -> io::Result<String> {
         let mut file = File::open(path)?;
         if size <= PARTIAL_TOTAL_BYTES {
@@ -118,6 +131,10 @@ impl HashEngine {
     }
 
     /// Hash the entire file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be opened or read.
     pub fn full(&self, path: &Path) -> io::Result<String> {
         self.hash_reader(BufReader::new(File::open(path)?))
     }
@@ -148,12 +165,12 @@ pub struct DuplicateGroup {
 /// (czkawka does the same: two names for one inode are not two copies, and
 /// deleting one would free no space). Pairwise, so pathologically large
 /// groups skip filtering rather than going quadratic.
-fn filter_hard_links(mut group: Vec<FileEntry>, skipped: &mut u64) -> Vec<FileEntry> {
+fn filter_hard_links(group: Vec<FileEntry>, skipped: &mut u64) -> Vec<FileEntry> {
     if group.len() > 2000 {
         return group;
     }
     let mut kept: Vec<FileEntry> = Vec::with_capacity(group.len());
-    for entry in group.drain(..) {
+    for entry in group {
         let is_dup = kept
             .iter()
             .any(|k: &FileEntry| same_file::is_same_file(&k.path, &entry.path).unwrap_or(false));
@@ -181,7 +198,7 @@ pub fn find_duplicate_groups(
     hash_cache: Option<&mut HashCache>,
     progress: Option<&ProgressBar>,
     cancel: &CancelToken,
-) -> Result<(Vec<DuplicateGroup>, u64)> {
+) -> (Vec<DuplicateGroup>, u64) {
     let algo = engine.name().to_string();
     let cache = hash_cache.map(Mutex::new);
 
@@ -314,7 +331,7 @@ pub fn find_duplicate_groups(
     if let Some(bar) = progress {
         bar.finish_and_clear();
     }
-    Ok((groups, hardlinks_skipped))
+    (groups, hardlinks_skipped)
 }
 
 #[cfg(test)]
@@ -357,8 +374,7 @@ mod tests {
             entry(d.clone(), fs::metadata(&d).unwrap().len()),
         ];
         let engine = HashEngine::new(HashAlgo::Blake3);
-        let (groups, _) =
-            find_duplicate_groups(entries, &engine, None, None, &CancelToken::new()).unwrap();
+        let (groups, _) = find_duplicate_groups(entries, &engine, None, None, &CancelToken::new());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 2);
         let mut paths: Vec<&std::path::Path> =
@@ -406,8 +422,7 @@ mod tests {
             entry(a, a_content.len() as u64),
             entry(b, b_content.len() as u64),
         ];
-        let (groups, _) =
-            find_duplicate_groups(entries, &engine, None, None, &CancelToken::new()).unwrap();
+        let (groups, _) = find_duplicate_groups(entries, &engine, None, None, &CancelToken::new());
         assert!(groups.is_empty(), "same head, different tail => no group");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -428,7 +443,7 @@ mod tests {
         let engine = HashEngine::new(HashAlgo::Blake3);
         let bar = indicatif::ProgressBar::new(0);
         let (groups, _) =
-            find_duplicate_groups(entries, &engine, None, Some(&bar), &CancelToken::new()).unwrap();
+            find_duplicate_groups(entries, &engine, None, Some(&bar), &CancelToken::new());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].members.len(), 8);
         assert!(

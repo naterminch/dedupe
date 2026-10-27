@@ -22,6 +22,7 @@ pub enum ScanPhase {
 }
 
 /// Short human label for a phase, shared by the CLI and GUI status output.
+#[must_use]
 pub fn phase_label(phase: ScanPhase) -> &'static str {
     match phase {
         ScanPhase::Scanning => "Scanning folders…",
@@ -100,6 +101,12 @@ fn cancelled_output(
 /// pipeline stops at the next boundary and returns early with
 /// [`ScanOutput::cancelled`] set. Headless callers pass a fresh, never-set
 /// [`CancelToken`].
+///
+/// # Errors
+///
+/// Returns an error when `--similarity` is outside 0..=100, when
+/// `--min-size`/`--max-size` cannot be parsed, or when the similar-group build
+/// fails.
 pub fn run_scan(
     cli: &cli::Cli,
     progress: Option<&ProgressBar>,
@@ -247,7 +254,7 @@ pub fn run_scan(
         Some(cache::HashCache::load())
     };
     let (groups, hardlinks_skipped) =
-        hashing::find_duplicate_groups(entries, &engine, hash_cache.as_mut(), progress, cancel)?;
+        hashing::find_duplicate_groups(entries, &engine, hash_cache.as_mut(), progress, cancel);
     if cancel.is_cancelled() {
         // `scanned.entries` was consumed by hashing; the walk fields survive.
         let stats = report::ScanStats {
@@ -371,7 +378,9 @@ pub fn run_scan(
             ffprobe_used,
             &engine,
         );
-        let built = if !leftover.is_empty() {
+        let built = if leftover.is_empty() {
+            Vec::new()
+        } else {
             similar::build_similar_groups(
                 leftover,
                 keep,
@@ -381,9 +390,7 @@ pub fn run_scan(
                 groups.len() + 1,
                 similar_progress,
                 cancel,
-            )?
-        } else {
-            Vec::new()
+            )
         };
         if let Some(bar) = similar_progress {
             bar.finish_and_clear();
