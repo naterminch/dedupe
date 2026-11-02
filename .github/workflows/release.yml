@@ -27,6 +27,9 @@ jobs:
         with:
           ref: main
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Bump Cargo.toml and lockfile to tag version
         id: bump
         run: |
@@ -39,7 +42,16 @@ jobs:
           echo "Bumping to $VER"
           sed -i -E "/^\[package\]/,/^\[/ s/^version = \".*\"/version = \"$VER\"/" Cargo.toml
           grep -A3 '^\[package\]' Cargo.toml
-          cargo metadata --format-version=1 --no-deps >/dev/null
+          # Rewriting Cargo.toml leaves Cargo.lock recording the old package
+          # version, and every build below passes --locked, which refuses to
+          # update it. Resolution rewrites the root package entry, so
+          # re-resolve just dedupe; `cargo metadata --no-deps` does not touch
+          # the lockfile at all.
+          cargo update -p dedupe
+          if ! grep -A1 '^name = "dedupe"$' Cargo.lock | grep -q "version = \"$VER\""; then
+            echo "Cargo.lock does not record dedupe $VER" >&2
+            exit 1
+          fi
           git diff --stat -- Cargo.toml Cargo.lock
           if git diff --quiet -- Cargo.toml Cargo.lock; then
             echo "Version already at $VER, nothing to commit"
