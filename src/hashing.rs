@@ -27,6 +27,18 @@ thread_local! {
     static READ_BUF: RefCell<Vec<u8>> = RefCell::new(vec![0u8; IO_CHUNK]);
 }
 
+/// Lowercase hex encoding of a digest. `digest` 0.11 returns a plain byte
+/// array that no longer implements `LowerHex`.
+fn hex_digest(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 /// Wraps a hash algorithm and knows how to hash files, partially or fully.
 #[derive(Debug)]
 pub struct HashEngine {
@@ -55,13 +67,13 @@ impl HashEngine {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(data);
-                format!("{:x}", hasher.finalize())
+                hex_digest(&hasher.finalize())
             }
             HashAlgo::Md5 => {
                 use md5::{Digest, Md5};
                 let mut hasher = Md5::new();
                 hasher.update(data);
-                format!("{:x}", hasher.finalize())
+                hex_digest(&hasher.finalize())
             }
         }
     }
@@ -89,7 +101,7 @@ impl HashEngine {
                     }
                     hasher.update(&buf[..n]);
                 }
-                Ok(format!("{:x}", hasher.finalize()))
+                Ok(hex_digest(&hasher.finalize()))
             }
             HashAlgo::Md5 => {
                 use md5::{Digest, Md5};
@@ -101,7 +113,7 @@ impl HashEngine {
                     }
                     hasher.update(&buf[..n]);
                 }
-                Ok(format!("{:x}", hasher.finalize()))
+                Ok(hex_digest(&hasher.finalize()))
             }
         })
     }

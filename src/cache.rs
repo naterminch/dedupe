@@ -101,8 +101,11 @@ impl FingerprintCache {
     pub fn load_from(path: &Path) -> Self {
         let map = fs::read(path).map_or_else(
             |_| HashMap::new(),
-            |bytes| match bincode::deserialize::<CacheFile>(&bytes) {
-                Ok(f) if f.version == CACHE_VERSION => f.entries.into_iter().collect(),
+            |bytes| match bincode::serde::decode_from_slice::<CacheFile, _>(
+                &bytes,
+                bincode::config::standard(),
+            ) {
+                Ok((f, _)) if f.version == CACHE_VERSION => f.entries.into_iter().collect(),
                 _ => HashMap::new(),
             },
         );
@@ -167,7 +170,8 @@ impl FingerprintCache {
             version: CACHE_VERSION,
             entries,
         };
-        let bytes = bincode::serialize(&file).map_err(io::Error::other)?;
+        let bytes = bincode::serde::encode_to_vec(&file, bincode::config::standard())
+            .map_err(io::Error::other)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -233,8 +237,11 @@ impl HashCache {
     pub fn load_from(path: &Path) -> Self {
         let map = fs::read(path).map_or_else(
             |_| HashMap::new(),
-            |bytes| match bincode::deserialize::<HashCacheFile>(&bytes) {
-                Ok(f) if f.version == HASH_CACHE_VERSION => f.entries.into_iter().collect(),
+            |bytes| match bincode::serde::decode_from_slice::<HashCacheFile, _>(
+                &bytes,
+                bincode::config::standard(),
+            ) {
+                Ok((f, _)) if f.version == HASH_CACHE_VERSION => f.entries.into_iter().collect(),
                 _ => HashMap::new(),
             },
         );
@@ -326,7 +333,8 @@ impl HashCache {
             version: HASH_CACHE_VERSION,
             entries,
         };
-        let bytes = bincode::serialize(&file).map_err(io::Error::other)?;
+        let bytes = bincode::serde::encode_to_vec(&file, bincode::config::standard())
+            .map_err(io::Error::other)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -460,7 +468,11 @@ mod tests {
             version: CACHE_VERSION + 1,
             entries: vec![],
         };
-        fs::write(&path, bincode::serialize(&file).unwrap()).unwrap();
+        fs::write(
+            &path,
+            bincode::serde::encode_to_vec(&file, bincode::config::standard()).unwrap(),
+        )
+        .unwrap();
         let c = FingerprintCache::load_from(&path);
         assert_eq!(c.map.len(), 0);
 
