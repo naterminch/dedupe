@@ -22,6 +22,8 @@ mod root;
 mod settings;
 mod shell;
 mod state;
+#[cfg(test)]
+mod tests;
 mod widgets;
 
 pub use app::run;
