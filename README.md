@@ -76,9 +76,9 @@ dedupe --gui   # same, explicit
 - Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete N** (trash by default; the tooltip carries the total bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
 - Settings → Preferences picks the scan type (duplicates or a cleanup mode), duplicate matching (`content`/`size`/`name`/`fuzzy`), image fingerprint, partial-clip detection, and music matching. Cleanup-mode findings are read-only in the GUI; use the CLI with `--delete` or `--trash` to act on them.
 - **Consolidate** gathers every group's keeper into one folder (two clicks: pick folder, confirm).
-- Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
+- Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), JSON export, light/dark + prefs persisted.
 
-> GUI builds need VS 2022 C++ workload on Windows ([details](https://gpui-kit.com/docs/installation)).
+> The GUI is a [Native Shell](https://github.com/longbridge/nsh) app; on Windows it renders through the system Direct2D backend, so the MSVC toolchain Rust already needs is the only requirement.
 
 ## CLI
 

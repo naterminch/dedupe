@@ -11,7 +11,7 @@
 //!   yields [`GuiPrefs::default()`], never an error at startup.
 //! - Writes are atomic (temp file + rename) so a crash mid-save cannot
 //!   leave a half-written file.
-//! - Only plain option values are stored, never GPUI entity state.
+//! - Only plain option values are stored, never widget or window state.
 
 use crate::ui_helpers::NO_LIMIT_LABEL;
 use serde::{Deserialize, Serialize};
