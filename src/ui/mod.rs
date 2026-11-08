@@ -7,7 +7,7 @@
 //! Layout: a side nav (folders + per-run scope + Scan), a main results
 //! pane with one collapsible section per duplicate group, a Settings page
 //! for global defaults (matching + system), and a status bar. Pure helpers
-//! live in [`crate::ui_helpers`]; every state transition lives in [`actions`].
+//! live in `crate::ui_helpers`; every state transition lives in `actions`.
 //!
 //! Native-feel boundaries (do not reimplement inside the view layer):
 //! folder picking and report saving go through native `rfd` dialogs off the
