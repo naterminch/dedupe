@@ -35,14 +35,15 @@ bincode = { version = "2.0.1", features = ["serde"] }
 blake3 = "1.8.7"
 clap = { version = "4.6.7", features = ["derive"] }
 console = "0.16.6"
-gpui-kit = "0.8.1"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "tiff", "ico"] }
 indicatif = "0.18.6"
 md-5 = "0.11.0"
-open = "5.4.5"
+# Native Shell: the GUI is an nsh app written in Rust. `nsh-base` holds the
+# unstyled behavior components; the styled layer lives in `src/ui`.
+nsh-base = { version = "0.4.0", default-features = false }
+nsh-core = "0.4.0"
 rayon = "1.12.0"
 rfd = "0.17.2"
-rust-embed = "8.13.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
@@ -50,12 +51,21 @@ same-file = "1.0.6"
 trash = "5.2.9"
 walkdir = "2.5.0"
 
+# nsh runs on the OS's own backend, so the platform crate is picked per
+# target. `default-features = false` drops the embedded JS runtime (`js`):
+# this app is Rust-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "0.4.0", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "0.4.0", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { version = "0.4.0", default-features = false }
+
 [dev-dependencies]
 serde_json = "1.0.154"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
-# test-support unlocks gpui-kit's headless window harness (TestAppContext,
-# TestWindowExt) for the UI tests in src/ui_tests.rs.
-gpui-kit = { version = "0.8.1", features = ["test-support"] }
 
 [build-dependencies]
 winres = "0.1.12"
@@ -65,16 +75,9 @@ lto = true
 codegen-units = 1
 strip = true
 
-# GPUI renders much more smoothly in debug builds when the framework itself
-# is optimized (per the gpui-kit installation guide). This only affects the
-# listed dependencies; our own code stays debuggable.
+# The text-shaping and layout stack is slow in debug builds; optimizing only
+# those dependencies keeps the GUI responsive while our own code stays
+# debuggable.
 [profile.dev.package]
-gpui-pre = { opt-level = 3 }
-gpui-component = { opt-level = 3 }
-gpui-kit = { opt-level = 3 }
-gpui-kit-assets = { opt-level = 3 }
-gpui-pre-macros = { opt-level = 3 }
-gpui-pre-platform = { opt-level = 3 }
-rustybuzz = { opt-level = 3 }
 taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }

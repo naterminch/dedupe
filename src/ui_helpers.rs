@@ -1,15 +1,11 @@
-//! Pure UI helpers extracted from `ui.rs`: text capping, hash captions,
-//! progress-bar reads, and size slider/text syncing.
+//! Pure UI helpers: text capping, hash captions, selector-to-CLI mapping,
+//! and size-limit parsing.
 //!
-//! No view state lives here — only functions. `DedupeView` appears solely
-//! as the `Context` generic so slider/input sync can notify correctly.
+//! No view state lives here, only functions.
 
 use crate::cli;
-use crate::ui::{DedupeView, SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};
+use crate::ui::{SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};
 use crate::util;
-use gpui_kit::component::input::InputState;
-use gpui_kit::component::slider::SliderState;
-use gpui_kit::{Context, Entity, SharedString, Window};
 
 /// Read (position, length) off a headless progress bar.
 pub(crate) fn bar_pos(bar: &indicatif::ProgressBar) -> (u64, u64) {
@@ -114,59 +110,6 @@ pub(crate) fn parse_size_limit(raw: &str) -> anyhow::Result<Option<u64>> {
         return Ok(None);
     }
     util::parse_size(raw.trim()).map(Some)
-}
-
-/// Mirror a size slider position into its text box. `empty_at_min`: the
-/// min-size slider clears the box at the left end (no limit); the max-size
-/// slider clears it at the right end. The empty end writes `unlimited`
-/// so the box never looks broken.
-pub(crate) fn size_slider_to_text(
-    value: f32,
-    empty_at_min: bool,
-    input: &Entity<InputState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let at_empty_end = if empty_at_min {
-        value <= SIZE_SLIDER_MIN * 1.001
-    } else {
-        value >= SIZE_SLIDER_MAX / 1.001
-    };
-    let text = if at_empty_end {
-        NO_LIMIT_LABEL.to_string()
-    } else {
-        util::human_bytes(value.max(1.0) as u64)
-    };
-    input.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text), window, cx);
-    });
-}
-
-/// Mirror a typed size into its slider. Blank or `unlimited` means "no
-/// limit" (slider to the empty end); unparsable text leaves the slider alone.
-pub(crate) fn size_text_to_slider(
-    raw: &str,
-    empty_at_min: bool,
-    slider: &Entity<SliderState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let raw = raw.trim();
-    let target: f32 = if is_no_limit(raw) {
-        if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        }
-    } else {
-        match util::parse_size(raw) {
-            Ok(b) => (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-            Err(_) => return,
-        }
-    };
-    slider.update(cx, |state, cx| {
-        state.set_value(target, window, cx);
-    });
 }
 
 /// Initial slider position for a restored prefs size string. Blank,

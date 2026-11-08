@@ -1,0 +1,511 @@
+//! Settings page: General (behavior + cache) and Preferences (scan defaults).
+//!
+//! Every control writes straight into [`AppState`] and persists through
+//! `actions::save_prefs`.
+
+use nsh_core::prelude::*;
+
+use crate::cache;
+use crate::cli::{FindMode, MatchMode};
+use crate::ui::actions;
+use crate::ui::palette::{colors, radius, text};
+use crate::ui::state::{SettingsTab, app};
+use crate::ui::widgets::{caption, card, divider, field, heading, panel_title, secondary_button};
+use crate::ui_helpers::{find_mode_caption, hash_caption};
+use crate::util;
+
+const FIND_LABELS: [&str; 11] = [
+    "Duplicates",
+    "Empty files",
+    "Empty folders",
+    "Big files",
+    "Temp files",
+    "Broken symlinks",
+    "Corrupt media",
+    "Wrong extension",
+    "Bad names",
+    "Duplicate folders",
+    "Music",
+];
+
+const MATCH_LABELS: [&str; 4] = ["Content", "Size", "Name", "Fuzzy name"];
+const HASH_LABELS: [&str; 3] = ["blake3", "sha256", "md5"];
+const IMAGE_HASH_LABELS: [&str; 5] = ["Auto (dHash)", "dHash", "pHash", "aHash", "Color grid"];
+const KEEP_LABELS: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best quality"];
+const MUSIC_LABELS: [&str; 2] = ["Embedded tags", "Audio fingerprint"];
+
+pub(crate) fn settings_page() -> View {
+    view()
+        .flex_row()
+        .flex_1()
+        .h_full()
+        .min_w(px(0.0))
+        .overflow_hidden()
+        .child(nav())
+        .child(
+            view().flex_1().h_full().min_w(px(0.0)).child(
+                scroll().h_full().child(view().w_full().child(dynamic(|| {
+                    match app().with(|s| s.settings_tab) {
+                        SettingsTab::General => general_page(),
+                        SettingsTab::Preferences => preferences_page(),
+                    }
+                }))),
+            ),
+        )
+}
+
+fn nav() -> View {
+    view()
+        .flex_col()
+        .w(px(200.0))
+        .h_full()
+        .flex_shrink_0()
+        .gap(px(2.0))
+        .p(px(12.0))
+        .bg(colors::CARD)
+        .border_r_1()
+        .border_color(colors::BORDER)
+        .child(caption("Settings"))
+        .child(view().child(dynamic(|| {
+            let tab = app().with(|s| s.settings_tab);
+            view()
+                .flex_col()
+                .gap(px(2.0))
+                .child(nav_item("General", SettingsTab::General, tab))
+                .child(nav_item("Preferences", SettingsTab::Preferences, tab))
+        })))
+}
+
+fn nav_item(label: &'static str, tab: SettingsTab, current: SettingsTab) -> View {
+    let active = tab == current;
+    view()
+        .w_full()
+        .px(px(10.0))
+        .py(px(7.0))
+        .rounded(px(radius::CONTROL))
+        .bg(if active {
+            colors::ACCENT_WASH_STRONG
+        } else {
+            colors::CARD
+        })
+        .cursor_pointer()
+        .on_press(move || actions::set_settings_tab(tab))
+        .child(
+            text(label)
+                .text_size(px(text::BODY))
+                .font_weight(if active {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if active { colors::ACCENT } else { colors::TEXT }),
+        )
+}
+
+fn page_column(children: Vec<View>) -> View {
+    let mut column = view()
+        .flex_col()
+        .w_full()
+        .max_w(px(880.0))
+        .gap(px(20.0))
+        .p(px(32.0));
+    for child in children {
+        column = column.child(child);
+    }
+    column
+}
+
+fn header(title: &'static str, description: &'static str) -> View {
+    view()
+        .flex_col()
+        .gap(px(6.0))
+        .child(caption("Settings"))
+        .child(heading(title))
+        .child(caption(description))
+        .child(
+            view()
+                .h(px(2.0))
+                .w(px(56.0))
+                .rounded_full()
+                .bg(colors::ACCENT),
+        )
+}
+
+fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
+    view()
+        .flex_row()
+        .w_full()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(2.0))
+                .child(panel_title(label))
+                .child(caption(hint)),
+        )
+        .child(view().flex_shrink_0().child(control))
+}
+
+fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> View {
+    let mut body = view().flex_col().w_full().gap(px(8.0));
+    for (index, content) in rows.into_iter().enumerate() {
+        if index > 0 {
+            body = body.child(divider());
+        }
+        body = body.child(content);
+    }
+    card()
+        .w_full()
+        .gap(px(10.0))
+        .p(px(16.0))
+        .child(panel_title(title))
+        .child(caption(description))
+        .child(body)
+}
+
+fn choice_chip(label: &'static str, active: bool, on_press: impl Fn() + 'static) -> View {
+    view()
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(radius::CONTROL))
+        .bg(if active {
+            colors::ACCENT_WASH_STRONG
+        } else {
+            colors::INSET
+        })
+        .border_1()
+        .border_color(if active {
+            colors::ACCENT
+        } else {
+            colors::BORDER
+        })
+        .cursor_pointer()
+        .on_press(on_press)
+        .child(
+            text(label)
+                .text_size(px(text::CAPTION))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if active {
+                    colors::ACCENT
+                } else {
+                    colors::MUTED
+                }),
+        )
+}
+
+fn choices<const N: usize>(
+    options: [&'static str; N],
+    selected: usize,
+    on_pick: impl Fn(usize) + Clone + 'static,
+) -> View {
+    let mut row = view().flex_row().flex_wrap().gap(px(4.0));
+    for (index, label) in options.iter().enumerate() {
+        let pick = on_pick.clone();
+        row = row.child(choice_chip(label, index == selected, move || pick(index)));
+    }
+    row
+}
+
+fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(caption(label))
+        .child(
+            view()
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(radius::CONTROL))
+                .bg(if value {
+                    colors::ACCENT_WASH_STRONG
+                } else {
+                    colors::INSET
+                })
+                .border_1()
+                .border_color(if value {
+                    colors::ACCENT
+                } else {
+                    colors::BORDER
+                })
+                .cursor_pointer()
+                .on_press(on_press)
+                .child(
+                    text(if value { "On" } else { "Off" })
+                        .text_size(px(text::CAPTION))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if value { colors::ACCENT } else { colors::MUTED }),
+                ),
+        )
+}
+
+fn number(placeholder: &'static str, get: fn() -> String, set: fn(String)) -> View {
+    view()
+        .w(px(120.0))
+        .child(field(placeholder, get, move |value| {
+            set(value);
+            actions::save_prefs();
+        }))
+}
+
+fn general_page() -> View {
+    let (files, bytes) = cache::cache_summary();
+    let cache_msg = app().with(|s| s.cache_msg.clone());
+    let trash = app().with(|s| s.trash);
+    let remember = app().with(|s| s.remember_folders);
+    page_column(vec![
+        header("General", "Everyday behavior and the local scan cache."),
+        section(
+            "Behavior",
+            "App-wide behavior for scans and deletions.",
+            vec![
+                row(
+                    "Move deleted files to trash",
+                    "Deleted duplicates go to the system trash so they can be restored.",
+                    toggle("Trash", trash, || {
+                        app().update(|s| s.trash = !s.trash);
+                        actions::save_prefs();
+                    }),
+                ),
+                row(
+                    "Remember scan folders",
+                    "Restore the last folder list the next time the app opens.",
+                    toggle("Remember", remember, || {
+                        app().update(|s| s.remember_folders = !s.remember_folders);
+                        actions::save_prefs();
+                    }),
+                ),
+                row(
+                    "Appearance",
+                    "Follows the OS theme until you switch it manually.",
+                    secondary_button("Switch theme", actions::toggle_theme),
+                ),
+            ],
+        ),
+        section(
+            "Cache",
+            "Hashes and fingerprints cached between runs in ~/.dedupe/.",
+            vec![row(
+                "Cache on disk",
+                format!("{} file(s) - {}", files, util::human_bytes(bytes)),
+                secondary_button("Clear caches", actions::clear_cache),
+            )],
+        ),
+        view().child(caption(cache_msg)),
+    ])
+}
+
+fn preferences_page() -> View {
+    let find_index = app().with(|s| s.find_index.unwrap_or(0));
+    let mode = crate::ui_helpers::find_mode(Some(find_index));
+    let duplicates = mode == FindMode::Duplicates;
+    let music = mode == FindMode::Music;
+    let exact = app().with(|s| s.exact);
+
+    let mut scan_rows = vec![row(
+        "What to find",
+        find_mode_caption(Some(find_index)),
+        choices(FIND_LABELS, find_index, |index| {
+            app().update(|s| s.find_index = Some(index));
+            actions::save_prefs();
+        }),
+    )];
+    if mode == FindMode::BigFiles {
+        scan_rows.push(row(
+            "Largest files to report",
+            "How many entries the big-files scan lists, biggest first.",
+            number(
+                "50",
+                || app().with(|s| s.top_input.clone()),
+                |value| {
+                    app().update(|s| s.top_input = value);
+                },
+            ),
+        ));
+    }
+
+    let mut page = page_column(vec![
+        header("Preferences", "Defaults for the next scan."),
+        section(
+            "Scan type",
+            "Choose what the next scan looks for.",
+            scan_rows,
+        ),
+    ]);
+
+    if duplicates {
+        page = page.child(duplicates_section());
+        if !exact {
+            page = page.child(media_section());
+        }
+    }
+    if music {
+        page = page.child(music_section());
+    }
+    page.child(system_section())
+        .child(caption("Changes save automatically to gui-prefs.json."))
+}
+
+fn duplicates_section() -> View {
+    let match_index = app().with(|s| s.match_index.unwrap_or(0));
+    let hash_index = app().with(|s| s.hash_index.unwrap_or(0));
+    let exact = app().with(|s| s.exact);
+    let no_cache = app().with(|s| s.no_cache);
+    let mut rows = vec![row(
+        "Match duplicates by",
+        "Content hashes bytes. Size groups same-size files. Name matches base names. Fuzzy tolerates small typos.",
+        choices(MATCH_LABELS, match_index, |index| {
+            app().update(|s| s.match_index = Some(index));
+            actions::save_prefs();
+        }),
+    )];
+    if crate::ui_helpers::match_mode(Some(match_index)) == MatchMode::Fuzzy {
+        rows.push(row(
+            "Fuzzy threshold %",
+            "Minimum base-name similarity. 85% is a good default.",
+            number(
+                "85",
+                || app().with(|s| s.fuzzy_threshold_input.clone()),
+                |value| {
+                    app().update(|s| s.fuzzy_threshold_input = value);
+                },
+            ),
+        ));
+    }
+    rows.push(row(
+        "Hash algorithm",
+        hash_caption(Some(hash_index)),
+        choices(HASH_LABELS, hash_index, |index| {
+            app().update(|s| s.hash_index = Some(index));
+            actions::save_prefs();
+        }),
+    ));
+    rows.push(row(
+        "Exact duplicates only",
+        "Skip the similar-media pass; only byte-identical files are grouped.",
+        toggle("Exact", exact, || {
+            app().update(|s| s.exact = !s.exact);
+            actions::save_prefs();
+        }),
+    ));
+    rows.push(row(
+        "Ignore cache and re-hash everything",
+        "Ignore cached hashes and fingerprints for this run.",
+        toggle("No cache", no_cache, || {
+            app().update(|s| s.no_cache = !s.no_cache);
+            actions::save_prefs();
+        }),
+    ));
+    section(
+        "Duplicates",
+        "Only used when scanning for duplicates.",
+        rows,
+    )
+}
+
+fn media_section() -> View {
+    let image_hash = app().with(|s| s.image_hash_index.unwrap_or(0));
+    let partial_clips = app().with(|s| s.partial_clips);
+    let mut rows = vec![
+        row(
+            "Similarity %",
+            "How close two images or videos must be to group. 97% catches re-encodes.",
+            number(
+                "97",
+                || app().with(|s| s.similarity_input.clone()),
+                |value| {
+                    app().update(|s| s.similarity_input = value);
+                },
+            ),
+        ),
+        row(
+            "Image fingerprint",
+            "dHash is fast and default. pHash tolerates crops and colour shifts. aHash ignores colour. Color grid compares average colours.",
+            choices(IMAGE_HASH_LABELS, image_hash, |index| {
+                app().update(|s| s.image_hash_index = Some(index));
+                actions::save_prefs();
+            }),
+        ),
+        row(
+            "Find shorter clips inside longer videos",
+            "Also look for a shorter video contained in a longer one.",
+            toggle("Partial clips", partial_clips, || {
+                app().update(|s| s.partial_clips = !s.partial_clips);
+                actions::save_prefs();
+            }),
+        ),
+    ];
+    if partial_clips {
+        rows.push(row(
+            "Partial-clip similarity %",
+            "How much of the shorter clip must match inside the longer one.",
+            number(
+                "85",
+                || app().with(|s| s.partial_similarity_input.clone()),
+                |value| {
+                    app().update(|s| s.partial_similarity_input = value);
+                },
+            ),
+        ));
+    }
+    section(
+        "Images & video",
+        "Similar-media detection runs alongside exact duplicate matching.",
+        rows,
+    )
+}
+
+fn music_section() -> View {
+    let by_content = app().with(|s| s.music_by_content);
+    section(
+        "Music",
+        "How duplicate tracks are matched when scanning for music.",
+        vec![row(
+            "Match tracks by",
+            "Embedded tags compare artist, title and album. Audio fingerprint compares the audio itself.",
+            choices(MUSIC_LABELS, usize::from(by_content), |index| {
+                app().update(|s| s.music_by_content = index == 1);
+                actions::save_prefs();
+            }),
+        )],
+    )
+}
+
+fn system_section() -> View {
+    let keep_index = app().with(|s| s.keep_index.unwrap_or(0));
+    let sort_biggest = app().with(|s| s.sort_biggest);
+    section(
+        "System",
+        "Performance and the defaults applied to new scans.",
+        vec![
+            row(
+                "Worker threads",
+                "Parallel hash workers. 0 uses every core but one.",
+                number(
+                    "0",
+                    || app().with(|s| s.jobs_input.clone()),
+                    |value| {
+                        app().update(|s| s.jobs_input = value);
+                    },
+                ),
+            ),
+            row(
+                "Default keep",
+                "Which copy a new scan keeps when duplicates are found.",
+                choices(KEEP_LABELS, keep_index, actions::apply_keep_mode),
+            ),
+            row(
+                "Sort by most reclaimable space",
+                "List groups with the most reclaimable bytes first.",
+                toggle("Biggest first", sort_biggest, || {
+                    app().update(|s| s.sort_biggest = !s.sort_biggest);
+                    actions::save_prefs();
+                }),
+            ),
+        ],
+    )
+}

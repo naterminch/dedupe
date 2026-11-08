@@ -1,0 +1,304 @@
+//! Application state for the GUI, shared by every component.
+//!
+//! Native Shell components are plain functions that re-run on demand, so the
+//! view state lives in one [`AppState`] signal instead of a graph of entities:
+//! components read it with [`app`] and write it with
+//! `app().with(|s| ...)`. Every write re-renders the components that read it.
+//!
+//! Text fields are plain `String`s here; the widgets keep their own caret and
+//! selection state, so the value is all the view model has to own.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+
+use nsh_core::prelude::*;
+
+use crate::cancel::CancelToken;
+use crate::cli::HashAlgo;
+use crate::matching::Group;
+use crate::modes::ModeResult;
+use crate::prefs::GuiPrefs;
+use crate::report::ScanStats;
+use crate::ui_helpers::NO_LIMIT_LABEL;
+
+/// Slider bounds for the size filters (log scale): 1 KB … 1 TB.
+pub(crate) const SIZE_SLIDER_MIN: f32 = 1024.0;
+pub(crate) const SIZE_SLIDER_MAX: f32 = 1_000_000_000_000.0;
+
+/// Groups rendered before a "Show more" button takes over; keeps huge
+/// result sets fast and navigable.
+pub(crate) const GROUP_PAGE: usize = 100;
+
+/// One folder to scan, with an optional protection flag (Krokiet's Ref
+/// checkbox pattern: protected folders are never deleted from).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FolderEntry {
+    pub(crate) path: String,
+    pub(crate) reference: bool,
+}
+
+/// Top-level view: main scan/results flow vs the full Settings page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AppView {
+    #[default]
+    Main,
+    Settings,
+}
+
+/// Active tab inside the Settings page side nav.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SettingsTab {
+    #[default]
+    General,
+    Preferences,
+}
+
+/// Owned report data carried into the async save task.
+pub(crate) struct ReportSnapshot {
+    pub(crate) paths: Vec<String>,
+    pub(crate) hash_algo: String,
+    pub(crate) ffprobe_used: bool,
+    pub(crate) stats: ScanStats,
+    pub(crate) groups: Vec<Group>,
+}
+
+/// Everything a scan or render pass reads and writes.
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub(crate) view: AppView,
+    pub(crate) settings_tab: SettingsTab,
+    pub(crate) folder_input: String,
+    pub(crate) folders: Vec<FolderEntry>,
+    pub(crate) types_input: String,
+    pub(crate) min_size_input: String,
+    pub(crate) max_size_input: String,
+    pub(crate) max_depth_input: String,
+    pub(crate) exclude_dir_input: String,
+    pub(crate) exclude_path_input: String,
+    pub(crate) similarity_input: String,
+    pub(crate) partial_similarity_input: String,
+    pub(crate) fuzzy_threshold_input: String,
+    pub(crate) top_input: String,
+    pub(crate) ignore_input: String,
+    pub(crate) jobs_input: String,
+    pub(crate) min_sim_input: String,
+    pub(crate) hash_index: Option<usize>,
+    pub(crate) keep_index: Option<usize>,
+    pub(crate) find_index: Option<usize>,
+    pub(crate) match_index: Option<usize>,
+    pub(crate) image_hash_index: Option<usize>,
+    pub(crate) partial_clips: bool,
+    pub(crate) music_by_content: bool,
+    pub(crate) exact: bool,
+    pub(crate) no_cache: bool,
+    pub(crate) cache_msg: String,
+    pub(crate) trash: bool,
+    pub(crate) sort_biggest: bool,
+    pub(crate) remember_folders: bool,
+    pub(crate) last_stats: Option<ScanStats>,
+    pub(crate) last_paths: Vec<String>,
+    pub(crate) last_hash_algo: String,
+    pub(crate) last_ffprobe: bool,
+    pub(crate) last_ref_dirs: Vec<PathBuf>,
+    /// Size-filter slider positions (log scale), mirrored into the text boxes.
+    pub(crate) min_size_slider: f32,
+    pub(crate) max_size_slider: f32,
+    pub(crate) ffmpeg_ok: bool,
+    pub(crate) ffprobe_ok: bool,
+    pub(crate) media_checked: bool,
+    pub(crate) posters: HashMap<PathBuf, PathBuf>,
+    /// Inline video preview strips (frame PNGs) by source path. Filled
+    /// lazily when a video card first renders; cached on disk too.
+    pub(crate) strips: HashMap<PathBuf, Vec<PathBuf>>,
+    /// Videos with a strip extraction currently in flight (dedupes spawns).
+    pub(crate) preview_loading: HashSet<PathBuf>,
+    pub(crate) dup_files: u64,
+    pub(crate) reclaim_bytes: u64,
+    pub(crate) scanning: bool,
+    pub(crate) scan_done: u64,
+    pub(crate) scan_total: u64,
+    pub(crate) scan_determinate: bool,
+    pub(crate) status: String,
+    /// Toast text queued by a worker or dialog; delivered on the next frame
+    /// because those callbacks cannot push it to the view directly.
+    pub(crate) pending_toast: Option<(String, bool)>,
+    pub(crate) files_scanned: usize,
+    pub(crate) bytes_scanned: u64,
+    pub(crate) has_scanned: bool,
+    pub(crate) ffprobe_note: bool,
+    pub(crate) groups: Vec<Group>,
+    /// Non-duplicate cleanup scan output (`--find` modes). Mutually
+    /// exclusive with `groups`: a mode scan never fills the duplicate list.
+    pub(crate) mode_result: Option<ModeResult>,
+    /// Pristine scan results: `groups` is a live view over this,
+    /// re-derived whenever the similarity floor changes. Keep decisions
+    /// are mirrored back here so tightening never loses keeper choices.
+    pub(crate) base_groups: Vec<Group>,
+    /// Similarity floor the scan ran with (fraction 0..=1).
+    pub(crate) scan_similarity: f64,
+    /// Live similarity floor (fraction); always >= `scan_similarity`.
+    /// Lowering below the scan floor needs discarded pairs — rescan.
+    pub(crate) min_sim: f64,
+    /// How many groups render at once; the rest sit behind a "Show more"
+    /// button so huge result sets stay navigable (and fast).
+    pub(crate) group_limit: usize,
+    pub(crate) last_hash: HashAlgo,
+    pub(crate) expanded: HashSet<usize>,
+    pub(crate) selected: HashSet<PathBuf>,
+    /// Original paths from the last trash run: enables one-step undo.
+    /// Cleared on permanent deletes and after a successful restore.
+    pub(crate) last_trashed: Vec<PathBuf>,
+    /// Armed consolidate destination (two-click flow): the first click
+    /// picks the folder and previews the moves in the status line, the
+    /// second click moves. Disarmed by any keeper/group change, since the
+    /// previewed paths would be stale.
+    pub(crate) consolidate_dest: Option<PathBuf>,
+    /// Cooperative cancellation for the running scan; Stop sets it and the
+    /// pipeline polls it at phase boundaries.
+    pub(crate) scan_cancel: CancelToken,
+    /// Scan generation: bumped by every start and by Stop, so a scan task
+    /// finishing late (after a Stop or a newer scan) discards its output.
+    pub(crate) scan_gen: u64,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        let similarity = crate::similar::DEFAULT_SIMILARITY_PCT / 100.0;
+        Self {
+            view: AppView::Main,
+            settings_tab: SettingsTab::General,
+            folder_input: String::new(),
+            folders: Vec::new(),
+            types_input: String::new(),
+            min_size_input: NO_LIMIT_LABEL.to_string(),
+            max_size_input: NO_LIMIT_LABEL.to_string(),
+            max_depth_input: String::new(),
+            exclude_dir_input: String::new(),
+            exclude_path_input: String::new(),
+            similarity_input: "97".to_string(),
+            partial_similarity_input: "85".to_string(),
+            fuzzy_threshold_input: "85".to_string(),
+            top_input: "50".to_string(),
+            ignore_input: String::new(),
+            jobs_input: String::new(),
+            min_sim_input: String::new(),
+            hash_index: Some(0),
+            keep_index: Some(0),
+            find_index: Some(0),
+            match_index: Some(0),
+            image_hash_index: Some(0),
+            partial_clips: false,
+            music_by_content: false,
+            exact: false,
+            no_cache: false,
+            cache_msg: String::new(),
+            trash: true,
+            sort_biggest: false,
+            remember_folders: true,
+            last_stats: None,
+            last_paths: Vec::new(),
+            last_hash_algo: "blake3".to_string(),
+            last_ffprobe: false,
+            last_ref_dirs: Vec::new(),
+            min_size_slider: SIZE_SLIDER_MIN,
+            max_size_slider: SIZE_SLIDER_MAX,
+            ffmpeg_ok: false,
+            ffprobe_ok: false,
+            media_checked: false,
+            posters: HashMap::new(),
+            strips: HashMap::new(),
+            preview_loading: HashSet::new(),
+            dup_files: 0,
+            reclaim_bytes: 0,
+            scanning: false,
+            scan_done: 0,
+            scan_total: 0,
+            scan_determinate: false,
+            status: "Choose a folder and press Scan.".to_string(),
+            pending_toast: None,
+            files_scanned: 0,
+            bytes_scanned: 0,
+            has_scanned: false,
+            ffprobe_note: false,
+            groups: Vec::new(),
+            mode_result: None,
+            base_groups: Vec::new(),
+            scan_similarity: similarity,
+            min_sim: similarity,
+            group_limit: GROUP_PAGE,
+            last_hash: HashAlgo::Blake3,
+            expanded: HashSet::new(),
+            selected: HashSet::new(),
+            last_trashed: Vec::new(),
+            consolidate_dest: None,
+            scan_cancel: CancelToken::new(),
+            scan_gen: 0,
+        }
+    }
+}
+
+impl AppState {
+    /// Restore the sidebar selections from persisted preferences.
+    ///
+    /// The remember toggle gates restore: off starts every launch with an
+    /// empty folder list (the session list itself is untouched).
+    pub(crate) fn from_prefs(saved: &GuiPrefs) -> Self {
+        let mut state = Self {
+            folders: if saved.remember_folders {
+                saved
+                    .folders
+                    .iter()
+                    .map(|f| FolderEntry {
+                        path: f.path.clone(),
+                        reference: f.reference,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            ..Self::default()
+        };
+        state.types_input = saved.types.clone();
+        // Legacy prefs stored a blank box for "no limit"; display the
+        // explicit `unlimited` label instead so the box never looks broken.
+        state.min_size_input = if saved.min_size.trim().is_empty() {
+            NO_LIMIT_LABEL.to_string()
+        } else {
+            saved.min_size.clone()
+        };
+        state.max_size_input = if saved.max_size.trim().is_empty() {
+            NO_LIMIT_LABEL.to_string()
+        } else {
+            saved.max_size.clone()
+        };
+        state.max_depth_input = saved.max_depth.clone();
+        state.exclude_dir_input = saved.exclude_dir.clone();
+        state.exclude_path_input = saved.exclude_path.clone();
+        state.similarity_input = saved.similarity.clone();
+        state.partial_similarity_input = saved.partial_similarity.clone();
+        state.fuzzy_threshold_input = saved.fuzzy_threshold.clone();
+        state.top_input = saved.top.clone();
+        state.ignore_input = saved.ignore.clone();
+        state.jobs_input = saved.jobs.clone();
+        state.hash_index = Some(saved.hash_index.min(2));
+        state.keep_index = Some(saved.keep_index.min(4));
+        state.find_index = Some(saved.find_index.min(10));
+        state.match_index = Some(saved.match_index.min(3));
+        state.image_hash_index = Some(saved.image_hash_index.min(4));
+        state.partial_clips = saved.partial_clips;
+        state.music_by_content = saved.music_by_content;
+        state.exact = saved.exact;
+        state.no_cache = saved.no_cache;
+        state.trash = saved.trash;
+        state.sort_biggest = saved.sort_biggest;
+        state.remember_folders = saved.remember_folders;
+        state.min_size_slider = crate::ui_helpers::prefs_size_to_slider(&saved.min_size, true);
+        state.max_size_slider = crate::ui_helpers::prefs_size_to_slider(&saved.max_size, false);
+        state
+    }
+}
+
+/// The one shared state signal. Created on first use from [`AppState::default`].
+pub(crate) fn app() -> Signal<AppState> {
+    global::<AppState>()
+}

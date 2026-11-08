@@ -1,0 +1,109 @@
+//! Root component: header, body and status bar.
+//!
+//! The body swaps between the scan workspace (sidebar + results) and the
+//! Settings page. Preferences are restored once, on the first frame, through
+//! `actions::bootstrap`.
+
+use nsh_core::prelude::*;
+
+use crate::ui::palette::colors;
+use crate::ui::state::{AppView, app};
+use crate::ui::widgets::{caption, ghost_button, heading, secondary_button};
+use crate::ui::{actions, results, settings, shell};
+use crate::util;
+
+#[component]
+pub fn DedupeApp() -> impl IntoElement {
+    effect(|| untracked(actions::bootstrap));
+    view()
+        .flex_col()
+        .flex_1()
+        .h_full()
+        .bg(colors::BACKGROUND)
+        .child(header())
+        .child(body())
+        .child(status_bar())
+}
+
+fn header() -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .px(px(24.0))
+        .py(px(14.0))
+        .bg(colors::CARD)
+        .border_b_1()
+        .border_color(colors::BORDER)
+        .child(
+            view()
+                .flex_col()
+                .min_w(px(0.0))
+                .gap(px(2.0))
+                .child(heading("dedupe"))
+                .child(caption(format!(
+                    "v{} - exact and similar duplicates, kept local",
+                    env!("CARGO_PKG_VERSION")
+                ))),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(ghost_button("Theme", actions::toggle_theme))
+                .child(dynamic(|| {
+                    if app().with(|s| s.view) == AppView::Settings {
+                        secondary_button("Back", actions::leave_settings)
+                    } else {
+                        secondary_button("Settings", actions::open_settings)
+                    }
+                })),
+        )
+}
+
+fn body() -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_1()
+        .min_h(px(0.0))
+        .overflow_hidden()
+        .child(dynamic(|| {
+            if app().with(|s| s.view) == AppView::Settings {
+                view()
+                    .flex_1()
+                    .h_full()
+                    .min_w(px(0.0))
+                    .child(settings::settings_page())
+            } else {
+                view()
+                    .flex_row()
+                    .flex_1()
+                    .h_full()
+                    .min_w(px(0.0))
+                    .child(shell::sidebar())
+                    .child(results::results())
+            }
+        }))
+}
+
+fn status_bar() -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(16.0))
+        .px(px(24.0))
+        .py(px(8.0))
+        .bg(colors::CARD)
+        .border_t_1()
+        .border_color(colors::BORDER)
+        .child(caption(|| app().with(|s| s.status.clone())))
+        .child(caption(|| {
+            let state = app();
+            let files = state.with(|s| s.files_scanned);
+            let bytes = state.with(|s| s.bytes_scanned);
+            format!("{files} file(s) scanned - {}", util::human_bytes(bytes))
+        }))
+}
