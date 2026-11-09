@@ -210,12 +210,43 @@ fn choices<const N: usize>(
     selected: usize,
     on_pick: impl Fn(usize) + Clone + 'static,
 ) -> View {
-    let mut row = view().flex_row().flex_wrap().gap(px(4.0));
+    // The wrap row needs a definite width or flex-wrap hugs everything
+    // onto one line; every wrapper below therefore carries `w_full`.
+    let mut row = view()
+        .flex_row()
+        .flex_wrap()
+        .w_full()
+        .min_w(px(0.0))
+        .gap(px(4.0));
     for (index, label) in options.iter().enumerate() {
         let pick = on_pick.clone();
         row = row.child(choice_chip(label, index == selected, move || pick(index)));
     }
-    view().child(radio_group().child(row))
+    view()
+        .w_full()
+        .min_w(px(0.0))
+        .flex_col()
+        .child(radio_group().w_full().child(row))
+}
+
+/// Like [`row`], but for choice chips: the label and hint stack on top and
+/// the chips take the card's full width, so large sets (the 11 scan types)
+/// wrap onto several lines instead of overflowing the card edge.
+fn choice_row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
+    view()
+        .flex_col()
+        .w_full()
+        .min_w(px(0.0))
+        .gap(px(6.0))
+        .child(
+            view()
+                .flex_col()
+                .min_w(px(0.0))
+                .gap(px(2.0))
+                .child(panel_title(label))
+                .child(caption(hint)),
+        )
+        .child(control)
 }
 
 fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> View {
@@ -319,7 +350,7 @@ fn preferences_page() -> View {
     let music = mode == FindMode::Music;
     let exact = app().with(|s| s.exact);
 
-    let mut scan_rows = vec![row(
+    let mut scan_rows = vec![choice_row(
         "What to find",
         find_mode_caption(Some(find_index)),
         choices(FIND_LABELS, find_index, |index| {
@@ -370,7 +401,7 @@ fn duplicates_section() -> View {
     let hash_index = app().with(|s| s.hash_index.unwrap_or(0));
     let exact = app().with(|s| s.exact);
     let no_cache = app().with(|s| s.no_cache);
-    let mut rows = vec![row(
+    let mut rows = vec![choice_row(
         "Match duplicates by",
         "Content hashes bytes. Size groups same-size files. Name matches base names. Fuzzy tolerates small typos.",
         choices(MATCH_LABELS, match_index, |index| {
@@ -393,7 +424,7 @@ fn duplicates_section() -> View {
             ),
         ));
     }
-    rows.push(row(
+    rows.push(choice_row(
         "Hash algorithm",
         hash_caption(Some(hash_index)),
         choices(HASH_LABELS, hash_index, |index| {
@@ -441,7 +472,7 @@ fn media_section() -> View {
                 100.0,
             ),
         ),
-        row(
+        choice_row(
             "Image fingerprint",
             "dHash is fast and default. pHash tolerates crops and colour shifts. aHash ignores colour. Color grid compares average colours.",
             choices(IMAGE_HASH_LABELS, image_hash, |index| {
@@ -485,7 +516,7 @@ fn music_section() -> View {
     section(
         "Music",
         "How duplicate tracks are matched when scanning for music.",
-        vec![row(
+        vec![choice_row(
             "Match tracks by",
             "Embedded tags compare artist, title and album. Audio fingerprint compares the audio itself.",
             choices(MUSIC_LABELS, usize::from(by_content), |index| {
@@ -516,7 +547,7 @@ fn system_section() -> View {
                     64.0,
                 ),
             ),
-            row(
+            choice_row(
                 "Default keep",
                 "Which copy a new scan keeps when duplicates are found.",
                 choices(KEEP_LABELS, keep_index, actions::apply_keep_mode),
