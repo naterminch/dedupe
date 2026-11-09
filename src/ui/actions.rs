@@ -573,7 +573,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
                     util::human_bytes(reclaim)
                 )
             };
-            s.pending_toast = Some((s.status.clone(), false));
+            crate::ui::toast::notify(s.status.clone(), false);
             s.posters.clear();
             s.strips.clear();
             s.preview_loading.clear();
@@ -619,7 +619,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         for e in &out.cache_save_errors {
             s.status.push_str(&format!(" (cache write failed: {e})"));
         }
-        s.pending_toast = Some((s.status.clone(), false));
+        crate::ui::toast::notify(s.status.clone(), false);
         // Preview strips are per-scan too: paths are gone, so drop frames
         // and in-flight flags.
         s.posters.clear();
@@ -977,7 +977,7 @@ pub(crate) fn perform_delete() {
                 util::human_bytes(outcome.bytes_freed),
                 outcome.skipped.len()
             );
-            s.pending_toast = Some((s.status.clone(), false));
+            crate::ui::toast::notify(s.status.clone(), false);
         });
     });
 }
@@ -1206,11 +1206,11 @@ pub(crate) fn save_report() {
         app().update(|s| match outcome {
             Ok(()) => {
                 s.status = format!("Saved report to {}.", path.display());
-                s.pending_toast = Some((s.status.clone(), false));
+                crate::ui::toast::notify(s.status.clone(), false);
             }
             Err(e) => {
                 s.status = format!("Could not save report: {e}");
-                s.pending_toast = Some((s.status.clone(), true));
+                crate::ui::toast::notify(s.status.clone(), true);
             }
         });
     });
@@ -1225,6 +1225,6 @@ pub(crate) fn clear_cache() {
     app().update(|s| {
         s.cache_msg = msg.clone();
         s.status = format!("Cache cleared: {msg}");
-        s.pending_toast = Some((s.status.clone(), false));
+        crate::ui::toast::notify(s.status.clone(), false);
     });
 }

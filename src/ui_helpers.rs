@@ -4,7 +4,6 @@
 //! No view state lives here, only functions.
 
 use crate::cli;
-use crate::ui::{SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};
 use crate::util;
 
 /// Read (position, length) off a headless progress bar.
@@ -112,27 +111,6 @@ pub(crate) fn parse_size_limit(raw: &str) -> anyhow::Result<Option<u64>> {
     util::parse_size(raw.trim()).map(Some)
 }
 
-/// Initial slider position for a restored prefs size string. Blank,
-/// `unlimited`, or unparsable means "no limit" (slider to the empty end).
-pub(crate) fn prefs_size_to_slider(raw: &str, empty_at_min: bool) -> f32 {
-    let raw = raw.trim();
-    if is_no_limit(raw) {
-        return if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        };
-    }
-    util::parse_size(raw).map_or(
-        if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        },
-        |b| (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,18 +171,5 @@ mod tests {
         for index in 0..=10 {
             assert!(!find_mode_caption(Some(index)).is_empty());
         }
-    }
-
-    #[test]
-    fn prefs_slider_positions_clamp_to_slider_bounds() {
-        assert_eq!(prefs_size_to_slider("", true), SIZE_SLIDER_MIN);
-        assert_eq!(prefs_size_to_slider("", false), SIZE_SLIDER_MAX);
-        assert_eq!(prefs_size_to_slider("unlimited", true), SIZE_SLIDER_MIN);
-        // Below the floor clamps up; astronomically large clamps down.
-        assert_eq!(prefs_size_to_slider("1", true), SIZE_SLIDER_MIN);
-        assert_eq!(prefs_size_to_slider("99999TB", false), SIZE_SLIDER_MAX);
-        // A sane middle value lands strictly inside the range.
-        let mid = prefs_size_to_slider("500MB", true);
-        assert!(mid > SIZE_SLIDER_MIN && mid < SIZE_SLIDER_MAX);
     }
 }

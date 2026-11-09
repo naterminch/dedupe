@@ -9,7 +9,7 @@ use nsh_core::prelude::*;
 use crate::ui::palette::colors;
 use crate::ui::state::{AppView, app};
 use crate::ui::widgets::{caption, ghost_button, heading, secondary_button};
-use crate::ui::{actions, results, settings, shell};
+use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
 #[component]
@@ -23,6 +23,7 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(header())
         .child(body())
         .child(status_bar())
+        .child(toast::toast_layer())
 }
 
 fn header() -> impl IntoElement {

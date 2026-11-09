@@ -21,10 +21,6 @@ use crate::prefs::GuiPrefs;
 use crate::report::ScanStats;
 use crate::ui_helpers::NO_LIMIT_LABEL;
 
-/// Slider bounds for the size filters (log scale): 1 KB … 1 TB.
-pub(crate) const SIZE_SLIDER_MIN: f32 = 1024.0;
-pub(crate) const SIZE_SLIDER_MAX: f32 = 1_000_000_000_000.0;
-
 /// Groups rendered before a "Show more" button takes over; keeps huge
 /// result sets fast and navigable.
 pub(crate) const GROUP_PAGE: usize = 100;
@@ -100,9 +96,6 @@ pub(crate) struct AppState {
     pub(crate) last_hash_algo: String,
     pub(crate) last_ffprobe: bool,
     pub(crate) last_ref_dirs: Vec<PathBuf>,
-    /// Size-filter slider positions (log scale), mirrored into the text boxes.
-    pub(crate) min_size_slider: f32,
-    pub(crate) max_size_slider: f32,
     pub(crate) ffmpeg_ok: bool,
     pub(crate) ffprobe_ok: bool,
     pub(crate) media_checked: bool,
@@ -119,9 +112,6 @@ pub(crate) struct AppState {
     pub(crate) scan_total: u64,
     pub(crate) scan_determinate: bool,
     pub(crate) status: String,
-    /// Toast text queued by a worker or dialog; delivered on the next frame
-    /// because those callbacks cannot push it to the view directly.
-    pub(crate) pending_toast: Option<(String, bool)>,
     pub(crate) files_scanned: usize,
     pub(crate) bytes_scanned: u64,
     pub(crate) has_scanned: bool,
@@ -200,8 +190,6 @@ impl Default for AppState {
             last_hash_algo: "blake3".to_string(),
             last_ffprobe: false,
             last_ref_dirs: Vec::new(),
-            min_size_slider: SIZE_SLIDER_MIN,
-            max_size_slider: SIZE_SLIDER_MAX,
             ffmpeg_ok: false,
             ffprobe_ok: false,
             media_checked: false,
@@ -215,7 +203,6 @@ impl Default for AppState {
             scan_total: 0,
             scan_determinate: false,
             status: "Choose a folder and press Scan.".to_string(),
-            pending_toast: None,
             files_scanned: 0,
             bytes_scanned: 0,
             has_scanned: false,
@@ -292,8 +279,6 @@ impl AppState {
         state.trash = saved.trash;
         state.sort_biggest = saved.sort_biggest;
         state.remember_folders = saved.remember_folders;
-        state.min_size_slider = crate::ui_helpers::prefs_size_to_slider(&saved.min_size, true);
-        state.max_size_slider = crate::ui_helpers::prefs_size_to_slider(&saved.max_size, false);
         state
     }
 }

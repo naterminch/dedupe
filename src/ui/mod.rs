@@ -24,7 +24,7 @@ mod shell;
 mod state;
 #[cfg(test)]
 mod tests;
+mod toast;
 mod widgets;
 
 pub use app::run;
-pub(crate) use state::{SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};

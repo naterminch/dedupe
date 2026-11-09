@@ -4,7 +4,7 @@
 //! Group rows are built inside one `dynamic` region: every read of [`app`]
 //! subscribes, so a scan, a keeper swap or a tick re-renders the list.
 
-use nsh_core::element::input;
+use nsh_base::{checkbox, number_input, progress, radio, radio_group, toggle};
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
@@ -150,25 +150,35 @@ fn action_row() -> View {
         .child(ghost_button("Export JSON", actions::save_report))
 }
 
-fn sim_filter() -> View {
+fn sim_filter() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
         .gap(px(6.0))
         .child(field_label("Similarity"))
         .child(
-            input()
-                .value(|| app().with(|s| s.min_sim_input.clone()))
-                .on_change(|v: &str| app().update(|s| s.min_sim_input = v.to_owned()))
+            number_input()
+                .value(|| app().with(|s| s.min_sim_input.trim().parse::<f64>().ok()))
+                .min(0.0)
+                .max(100.0)
+                .step(1.0)
                 .placeholder("97")
-                .placeholder_color(|| color(colors::MUTED))
-                .caret_color(|| color(colors::ACCENT))
-                .selection_color(|| color(colors::ACCENT))
-                .w(px(64.0))
-                .px(px(8.0))
-                .py(px(6.0))
-                .text_size(px(text::BODY))
-                .text_color(colors::TEXT)
+                .on_change(|next: &Option<f64>| {
+                    let text = match next {
+                        Some(value) if value.fract() == 0.0 => format!("{}", *value as i64),
+                        Some(value) => format!("{value}"),
+                        None => String::new(),
+                    };
+                    app().update(|s| s.min_sim_input = text);
+                })
+                .input_style(|s| s.flex_1().text_center().text_color(colors::TEXT))
+                .decrement_button(text("−").text_color(colors::MUTED))
+                .increment_button(text("+").text_color(colors::MUTED))
+                .decrement_button_style(|s| s.w(px(20.0)).items_center().justify_center())
+                .increment_button_style(|s| s.w(px(20.0)).items_center().justify_center())
+                .flex_row()
+                .w(px(120.0))
+                .h(px(32.0))
                 .bg(colors::INSET)
                 .border_1()
                 .border_color(colors::BORDER)
@@ -181,18 +191,21 @@ fn sim_filter() -> View {
 }
 
 fn keep_modes() -> View {
-    view().flex_row().gap(px(2.0)).child(dynamic(|| {
+    view().child(dynamic(|| {
         let current = app().with(|s| s.keep_index.unwrap_or(0));
         let mut row = view().flex_row().gap(px(2.0));
         for (index, label) in KEEP_MODES.iter().enumerate() {
             row = row.child(keep_chip(label, index, current == index));
         }
-        row
+        radio_group().child(row)
     }))
 }
 
-fn keep_chip(label: &'static str, index: usize, active: bool) -> View {
-    view()
+fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElement {
+    radio()
+        .checked(active)
+        .on_change(move |_: &bool| actions::apply_keep_mode(index))
+        .accessibility_label(label)
         .px(px(8.0))
         .py(px(4.0))
         .rounded(px(radius::CONTROL))
@@ -207,8 +220,6 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> View {
         } else {
             colors::BORDER
         })
-        .cursor_pointer()
-        .on_press(move || actions::apply_keep_mode(index))
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -221,18 +232,35 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> View {
         )
 }
 
-fn sort_toggle() -> View {
-    view().child(dynamic(|| {
+fn sort_toggle() -> impl IntoElement {
+    dynamic(|| {
         let biggest = app().with(|s| s.sort_biggest);
-        ghost_button(
-            if biggest {
-                "Sort: biggest"
-            } else {
-                "Sort: path"
-            },
-            actions::toggle_sort_biggest,
-        )
-    }))
+        toggle()
+            .pressed(biggest)
+            .on_change(move |_: &bool| actions::toggle_sort_biggest())
+            .accessibility_label("Sort groups by most reclaimable space first")
+            .px(px(10.0))
+            .py(px(6.0))
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .rounded(px(radius::CONTROL))
+            .hover(|s| s.bg(colors::INSET))
+            .pressed_style(|s| {
+                s.bg(colors::ACCENT_WASH_STRONG)
+                    .border_color(colors::ACCENT)
+            })
+            .child(
+                text(if biggest {
+                    "Sort: biggest"
+                } else {
+                    "Sort: path"
+                })
+                .text_size(px(text::BODY))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors::ACCENT),
+            )
+    })
 }
 
 fn delete_bar() -> View {
@@ -328,18 +356,23 @@ fn progress_card() -> View {
                 .child(caption(label)),
         )
         .child(
-            view()
-                .h(px(6.0))
-                .w(px(320.0))
-                .rounded(px(3.0))
-                .bg(colors::INSET)
-                .child(
-                    view()
-                        .h(px(6.0))
-                        .w(px(320.0 * fraction))
+            progress()
+                .value(fraction * 100.0)
+                .indeterminate(!determinate)
+                .accessibility_label("Scan progress")
+                .track_style(|s| {
+                    s.h(px(6.0))
+                        .w(px(320.0))
                         .rounded(px(3.0))
-                        .bg(colors::ACCENT),
-                ),
+                        .bg(colors::INSET)
+                        .overflow_hidden()
+                })
+                .indicator_class(if determinate {
+                    ""
+                } else {
+                    "w-full animate-pulse"
+                })
+                .indicator_style(|s| s.h(px(6.0)).rounded(px(3.0)).bg(colors::ACCENT)),
         )
 }
 
@@ -585,15 +618,16 @@ fn group_card(position: usize) -> View {
 }
 
 fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
-    let (background, foreground, label) = if member.keep {
-        (colors::ACCENT_WASH_STRONG, colors::ACCENT, "KEEP")
-    } else if checked {
-        (colors::ACCENT_WASH, colors::ACCENT, "Selected")
-    } else {
-        (colors::INSET, colors::MUTED, "Select")
-    };
     let toggle_path = member.path.clone();
     let keep_path = member.path.clone();
+    let label = if member.keep {
+        "KEEP"
+    } else if checked {
+        "Selected"
+    } else {
+        "Select"
+    };
+    let active = member.keep || checked;
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}%", s * 100.0))
@@ -611,18 +645,59 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
             colors::BACKGROUND
         })
         .child(
-            view()
+            checkbox()
+                .checked(active)
+                .disabled(member.keep)
+                .on_change(move |_: &bool| actions::toggle_selected(&toggle_path))
                 .px(px(8.0))
                 .py(px(2.0))
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
                 .rounded(px(radius::CONTROL))
-                .bg(background)
-                .cursor_pointer()
-                .on_press(move || actions::toggle_selected(&toggle_path))
+                .bg(if member.keep {
+                    colors::ACCENT_WASH_STRONG
+                } else if checked {
+                    colors::ACCENT_WASH
+                } else {
+                    colors::INSET
+                })
+                .border_1()
+                .border_color(if active {
+                    colors::ACCENT
+                } else {
+                    colors::BORDER
+                })
+                .indicator_style(|s| {
+                    s.w(px(12.0))
+                        .h(px(12.0))
+                        .rounded(px(3.0))
+                        .flex_row()
+                        .items_center()
+                        .justify_center()
+                        .border_1()
+                        .border_color(if active {
+                            colors::ACCENT
+                        } else {
+                            colors::MUTED
+                        })
+                        .checked(|s| s.bg(colors::ACCENT).border_color(colors::ACCENT))
+                })
+                .indicator(
+                    text(if active { "✓" } else { "" })
+                        .text_size(px(9.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(colors::ON_ACCENT),
+                )
                 .child(
                     text(label)
                         .text_size(px(text::CAPTION))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(foreground),
+                        .text_color(if active {
+                            colors::ACCENT
+                        } else {
+                            colors::MUTED
+                        }),
                 ),
         )
         .child(
