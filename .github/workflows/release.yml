@@ -2,8 +2,8 @@ name: Release binaries
 
 # When a GitHub Release is published (tag it, e.g. v0.1.0, then
 # "Publish release"): bump Cargo.toml/Cargo.lock to the tag version, then
-# build optimized binaries for every OS and attach them as downloadable
-# assets (dedupe CLI + dedupe-gui per platform).
+# build one optimized binary per OS and attach it as a downloadable
+# asset.
 on:
   release:
     types: [published]
@@ -105,8 +105,7 @@ jobs:
           $name = "dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path dist | Out-Null
           Compress-Archive -LiteralPath `
-            "target/${{ matrix.target }}/release/dedupe.exe", `
-            "target/${{ matrix.target }}/release/dedupe-gui.exe" `
+            "target/${{ matrix.target }}/release/dedupe.exe" `
             -DestinationPath "dist/$name.zip"
 
       - name: Package (Unix)
@@ -114,7 +113,7 @@ jobs:
         run: |
           name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
           mkdir -p dist
-          tar -czf "dist/$name.tar.gz" -C "target/${{ matrix.target }}/release" dedupe dedupe-gui
+          tar -czf "dist/$name.tar.gz" -C "target/${{ matrix.target }}/release" dedupe
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

@@ -3,12 +3,13 @@ use std::process::Command;
 
 /// Spawn a helper process without ever flashing a console window.
 ///
-/// On Windows, child processes of a GUI-subsystem app (dedupe-gui) get
-/// their own console window by default — every ffmpeg/ffprobe probe would
-/// blink a terminal. `CREATE_NO_WINDOW` suppresses that. Children also run
+/// On Windows, ffmpeg/ffprobe are console programs: when a search runs
+/// from the GUI, each spawn would otherwise blink its own terminal.
+/// `CREATE_NO_WINDOW` suppresses that. Children also run
 /// at below-normal priority so a big media scan stays out of the way of
 /// everything else on the machine. All our children have piped output, so
-/// this is also harmless for the CLI binary.
+/// this is also harmless for CLI scans, whose children attach to the
+/// existing console.
 #[must_use]
 pub fn quiet_command(program: &str) -> Command {
     #[cfg(windows)]

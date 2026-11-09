@@ -24,12 +24,23 @@ fn main() {
             return;
         }
     }
-    // GUI mode: explicit --gui, or no scan path given. clap still handles
-    // `dedupe --help` / `dedupe --version` (exit 0) before we get here.
-    if cli.gui || cli.paths.is_empty() {
+    // GUI mode: explicit --gui, or the app launched with no arguments at
+    // all. Any argument or flag (paths, options, a scan request) means the
+    // user came for the CLI. clap still handles `dedupe --help` /
+    // `dedupe --version` (exit 0) before we get here.
+    if cli.gui || std::env::args().count() == 1 {
         eprintln!("[startup] args parsed in {:?}", t0.elapsed());
         dedupe::ui::run();
         return;
+    }
+    if cli.paths.is_empty() {
+        eprintln!(
+            "{} CLI scan needs at least one path (none given)",
+            style("error:").red().bold()
+        );
+        eprintln!("usage: dedupe [OPTIONS] <PATH>...");
+        eprintln!("run `dedupe` with no arguments to open the desktop app");
+        std::process::exit(2);
     }
     if let Err(e) = run(&cli) {
         eprintln!("{} {e:#}", style("error:").red().bold());

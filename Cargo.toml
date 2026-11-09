@@ -11,10 +11,6 @@ publish = false
 name = "dedupe"
 path = "src/main.rs"
 
-[[bin]]
-name = "dedupe-gui"
-path = "src/gui_main.rs"
-
 # Lints live here rather than as crate attributes so every target agrees.
 # CI (and prek) turns these into errors with `cargo clippy -- -D warnings`.
 [lints.rust]

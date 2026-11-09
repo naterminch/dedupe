@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
-# Builds dedupe and copies the resulting binaries to the project root
+# Builds dedupe and copies the resulting binary to the project root
 # (the folder that contains this script), next to Cargo.toml:
 #
-#   .\build.ps1           release build -> .\dedupe.exe + .\dedupe-gui.exe
+#   .\build.ps1           release build -> .\dedupe.exe
 #   .\build.ps1 -Debug    debug build   -> same, from the debug profile
 #
-# dedupe.exe     = console binary (CLI; opens the GUI when run without a path)
-# dedupe-gui.exe = GUI-only binary (no console window ever)
+# dedupe.exe = one binary for everything: running it with no argument
+# opens the desktop app; any argument or flag runs a CLI scan.
 param(
     [switch]$Debug
 )
@@ -61,7 +61,7 @@ try {
 
     # Copy the built binaries to the project root (never the user profile root).
     $rootFull = [System.IO.Path]::GetFullPath($root)
-    foreach ($name in @("dedupe", "dedupe-gui")) {
+    foreach ($name in @("dedupe")) {
         $source = Join-Path $root "target/$profile/$name.exe"
         $dest = Join-Path $root "$name.exe"
         Copy-Item -LiteralPath $source -Destination $dest -Force
