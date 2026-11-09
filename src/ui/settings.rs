@@ -3,6 +3,7 @@
 //! Every control writes straight into [`AppState`] and persists through
 //! `actions::save_prefs`.
 
+use nsh_base::{button, number_input, radio, radio_group};
 use nsh_core::prelude::*;
 
 use crate::cache;
@@ -10,7 +11,9 @@ use crate::cli::{FindMode, MatchMode};
 use crate::ui::actions;
 use crate::ui::palette::{colors, radius, text};
 use crate::ui::state::{SettingsTab, app};
-use crate::ui::widgets::{caption, card, divider, field, heading, panel_title, secondary_button};
+use crate::ui::widgets::{
+    caption, card, divider, heading, panel_title, secondary_button, toggle_switch,
+};
 use crate::ui_helpers::{find_mode_caption, hash_caption};
 use crate::util;
 
@@ -76,9 +79,11 @@ fn nav() -> View {
         })))
 }
 
-fn nav_item(label: &'static str, tab: SettingsTab, current: SettingsTab) -> View {
+fn nav_item(label: &'static str, tab: SettingsTab, current: SettingsTab) -> impl IntoElement {
     let active = tab == current;
-    view()
+    button()
+        .selected(active)
+        .on_press(move || actions::set_settings_tab(tab))
         .w_full()
         .px(px(10.0))
         .py(px(7.0))
@@ -88,8 +93,6 @@ fn nav_item(label: &'static str, tab: SettingsTab, current: SettingsTab) -> View
         } else {
             colors::CARD
         })
-        .cursor_pointer()
-        .on_press(move || actions::set_settings_tab(tab))
         .child(
             text(label)
                 .text_size(px(text::BODY))
@@ -167,8 +170,15 @@ fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> V
         .child(body)
 }
 
-fn choice_chip(label: &'static str, active: bool, on_press: impl Fn() + 'static) -> View {
-    view()
+fn choice_chip(
+    label: &'static str,
+    active: bool,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    radio()
+        .checked(active)
+        .on_change(move |_: &bool| on_press())
+        .accessibility_label(label)
         .px(px(10.0))
         .py(px(5.0))
         .rounded(px(radius::CONTROL))
@@ -183,8 +193,6 @@ fn choice_chip(label: &'static str, active: bool, on_press: impl Fn() + 'static)
         } else {
             colors::BORDER
         })
-        .cursor_pointer()
-        .on_press(on_press)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -207,49 +215,54 @@ fn choices<const N: usize>(
         let pick = on_pick.clone();
         row = row.child(choice_chip(label, index == selected, move || pick(index)));
     }
-    row
+    view().child(radio_group().child(row))
 }
 
 fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> View {
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(8.0))
-        .child(caption(label))
-        .child(
-            view()
-                .px(px(10.0))
-                .py(px(4.0))
-                .rounded(px(radius::CONTROL))
-                .bg(if value {
-                    colors::ACCENT_WASH_STRONG
-                } else {
-                    colors::INSET
-                })
-                .border_1()
-                .border_color(if value {
-                    colors::ACCENT
-                } else {
-                    colors::BORDER
-                })
-                .cursor_pointer()
-                .on_press(on_press)
-                .child(
-                    text(if value { "On" } else { "Off" })
-                        .text_size(px(text::CAPTION))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if value { colors::ACCENT } else { colors::MUTED }),
-                ),
-        )
+    view().child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(caption(label))
+            .child(toggle_switch(value, label, on_press)),
+    )
 }
 
-fn number(placeholder: &'static str, get: fn() -> String, set: fn(String)) -> View {
-    view()
-        .w(px(120.0))
-        .child(field(placeholder, get, move |value| {
-            set(value);
-            actions::save_prefs();
-        }))
+fn number(
+    placeholder: &'static str,
+    get: fn() -> String,
+    set: fn(String),
+    min: f64,
+    max: f64,
+) -> View {
+    view().w(px(150.0)).child(
+        number_input()
+            .value(move || get().trim().parse::<f64>().ok())
+            .min(min)
+            .max(max)
+            .step(1.0)
+            .placeholder(placeholder)
+            .on_change(move |next: &Option<f64>| {
+                set(match next {
+                    Some(value) if value.fract() == 0.0 => format!("{}", *value as i64),
+                    Some(value) => format!("{value}"),
+                    None => String::new(),
+                });
+                actions::save_prefs();
+            })
+            .input_style(|s| s.flex_1().text_center().text_color(colors::TEXT))
+            .decrement_button(text("−").text_color(colors::MUTED))
+            .increment_button(text("+").text_color(colors::MUTED))
+            .decrement_button_style(|s| s.w(px(22.0)).items_center().justify_center())
+            .increment_button_style(|s| s.w(px(22.0)).items_center().justify_center())
+            .flex_row()
+            .h(px(34.0))
+            .bg(colors::INSET)
+            .border_1()
+            .border_color(colors::BORDER)
+            .rounded(px(radius::CONTROL)),
+    )
 }
 
 fn general_page() -> View {
@@ -324,6 +337,8 @@ fn preferences_page() -> View {
                 |value| {
                     app().update(|s| s.top_input = value);
                 },
+                1.0,
+                10_000.0,
             ),
         ));
     }
@@ -373,6 +388,8 @@ fn duplicates_section() -> View {
                 |value| {
                     app().update(|s| s.fuzzy_threshold_input = value);
                 },
+                0.0,
+                100.0,
             ),
         ));
     }
@@ -420,6 +437,8 @@ fn media_section() -> View {
                 |value| {
                     app().update(|s| s.similarity_input = value);
                 },
+                0.0,
+                100.0,
             ),
         ),
         row(
@@ -449,6 +468,8 @@ fn media_section() -> View {
                 |value| {
                     app().update(|s| s.partial_similarity_input = value);
                 },
+                0.0,
+                100.0,
             ),
         ));
     }
@@ -491,6 +512,8 @@ fn system_section() -> View {
                     |value| {
                         app().update(|s| s.jobs_input = value);
                     },
+                    0.0,
+                    64.0,
                 ),
             ),
             row(
