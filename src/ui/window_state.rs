@@ -8,7 +8,7 @@
 //!   stacking a second one.
 //! - [`start_watching`]: a timer samples the real window frame every so
 //!   often; [`current`] hands the last snapshot to `actions::save_prefs`,
-//!   which persists it in `gui-prefs.json`.
+//!   which persists it in `dedupe.json`.
 //! - [`restore`]: replays a saved frame (and maximized state) right after
 //!   the first launch layout.
 //!

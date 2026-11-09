@@ -393,7 +393,7 @@ fn preferences_page() -> View {
         page = page.child(music_section());
     }
     page.child(system_section())
-        .child(caption("Changes save automatically to gui-prefs.json."))
+        .child(caption("Changes save automatically to dedupe.json."))
 }
 
 fn duplicates_section() -> View {

@@ -5,7 +5,7 @@
 //! steps a user takes (press, type, submit) and assert on what the screen
 //! shows. Prefs are pointed at a temp file under [`ENV_LOCK`] (the env var
 //! is process-global), so nothing here touches the real
-//! `~/.dedupe/gui-prefs.json`.
+//! `~/.dedupe/dedupe.json`.
 
 use std::path::PathBuf;
 use std::sync::{MutexGuard, PoisonError};

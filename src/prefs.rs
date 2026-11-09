@@ -3,7 +3,7 @@
 //! The GUI starts with hardcoded defaults; without persistence the user
 //! re-enters folders and options on every launch. This module stores those
 //! selections as human-readable JSON so they survive restarts:
-//! `~/.dedupe/gui-prefs.json` (`%USERPROFILE%\.dedupe\...` on Windows),
+//! `~/.dedupe/dedupe.json` (`%USERPROFILE%\.dedupe\...` on Windows),
 //! overridable with the `DEDUPE_PREFS` env var.
 //!
 //! Design notes (mirrors [`crate::cache`]):
@@ -288,9 +288,9 @@ pub fn default_prefs_path() -> PathBuf {
         return PathBuf::from(p);
     }
     if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
-        return PathBuf::from(home).join(".dedupe").join("gui-prefs.json");
+        return PathBuf::from(home).join(".dedupe").join("dedupe.json");
     }
-    PathBuf::from("gui-prefs.json")
+    PathBuf::from("dedupe.json")
 }
 
 #[cfg(test)]

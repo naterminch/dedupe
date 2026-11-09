@@ -181,7 +181,7 @@ pub(crate) fn browse_folder() {
 
 // --- Preferences ------------------------------------------------------------
 
-/// Snapshot the current sidebar into `gui-prefs.json`. Best-effort: failures
+/// Snapshot the current sidebar into `dedupe.json`. Best-effort: failures
 /// are ignored so a read-only home dir never breaks the GUI.
 pub(crate) fn save_prefs() {
     let state = app();

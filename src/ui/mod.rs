@@ -12,7 +12,7 @@
 //! Native-feel boundaries (do not reimplement inside the view layer):
 //! folder picking and report saving go through native `rfd` dialogs off the
 //! UI thread, deletions honor the OS trash, and theme mode persists to
-//! `gui-prefs.json` and is restored before first paint.
+//! `dedupe.json` and is restored before first paint.
 
 mod actions;
 mod app;
