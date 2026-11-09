@@ -62,6 +62,18 @@ nsh-platform-macos = { version = "0.4.0", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 nsh-platform-windows = { version = "0.4.0", default-features = false }
+# The direct Win32 calls in `src/ui/window_state.rs` (window placement
+# save/restore and the single-instance mutex). nsh-platform-windows
+# already enables a superset of these windows-rs features, so this adds
+# no extra compiled code; it just makes the listed APIs visible to this
+# crate, which resolves its own dependency graph.
+windows = { version = "0.62", features = [
+    "std",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 serde_json = "1.0.154"

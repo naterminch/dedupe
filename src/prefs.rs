@@ -11,7 +11,9 @@
 //!   yields [`GuiPrefs::default()`], never an error at startup.
 //! - Writes are atomic (temp file + rename) so a crash mid-save cannot
 //!   leave a half-written file.
-//! - Only plain option values are stored, never widget or window state.
+//! - Only plain option values are stored, plus the one audited exception:
+//!   the window frame (Windows only), as plain points with [`WindowGeometry::usable`]
+//!   screening out junk.
 
 use crate::ui_helpers::NO_LIMIT_LABEL;
 use serde::{Deserialize, Serialize};
@@ -37,8 +39,30 @@ pub struct FolderPref {
     pub reference: bool,
 }
 
+/// A saved window frame, in points (DIPs at 96 dpi). Windows only:
+/// other targets never sample a frame, so nothing is stored or matched
+/// here.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+impl WindowGeometry {
+    /// True when the frame is plausible enough to restore; screens the
+    /// roundtrip against a hand-edited or corrupt prefs file.
+    #[must_use]
+    pub fn usable(&self) -> bool {
+        self.width >= 100.0 && self.height >= 100.0
+    }
+}
+
 /// All sidebar selections worth restoring on next launch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiPrefs {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -104,6 +128,9 @@ pub struct GuiPrefs {
     /// True = dark mode. Defaults to light (kit default).
     #[serde(default)]
     pub dark: bool,
+    /// Last window frame (Windows; `None` until the sampler recorded one).
+    #[serde(default)]
+    pub window: Option<WindowGeometry>,
 }
 
 fn default_version() -> u32 {
@@ -164,6 +191,7 @@ impl Default for GuiPrefs {
             sort_biggest: false,
             remember_folders: true,
             dark: false,
+            window: None,
         }
     }
 }
@@ -274,6 +302,33 @@ mod tests {
     }
 
     #[test]
+    fn window_geometry_screening_rejects_junk() {
+        let good = WindowGeometry {
+            x: 0.0,
+            y: 0.0,
+            width: 900.0,
+            height: 600.0,
+            maximized: false,
+        };
+        assert!(good.usable());
+        assert!(
+            !WindowGeometry {
+                width: 20.0,
+                ..good
+            }
+            .usable()
+        );
+        assert!(
+            !WindowGeometry {
+                height: 5.0,
+                ..good
+            }
+            .usable()
+        );
+        assert!(GuiPrefs::default().window.is_none());
+    }
+
+    #[test]
     fn roundtrip_preserves_all_fields() {
         let path = tmp_path("rt");
         let _ = fs::remove_file(&path);
@@ -305,6 +360,13 @@ mod tests {
             trash: false,
             sort_biggest: true,
             remember_folders: false,
+            window: Some(WindowGeometry {
+                x: 88.0,
+                y: 44.0,
+                width: 1120.0,
+                height: 640.0,
+                maximized: true,
+            }),
             ..GuiPrefs::default()
         };
         prefs.save_to(&path).unwrap();

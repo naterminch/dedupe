@@ -14,6 +14,7 @@ use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
 use crate::ui::state::{AppState, AppView, FolderEntry, ReportSnapshot, SettingsTab, app};
+use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, find_mode, image_hash_algo, is_no_limit, match_mode};
 use crate::{cli, hashing, media, pipeline, poster, prefs, similar, util};
 
@@ -35,6 +36,10 @@ pub(crate) fn bootstrap() {
         Appearance::Light
     });
     app().update(|s| *s = AppState::from_prefs(&saved));
+    // Window frame: replay the saved geometry, then start the live
+    // sampler so `save_prefs` always stores the real frame.
+    window_state::restore(saved.window);
+    window_state::start_watching();
     // Two process spawns can cost hundreds of milliseconds: keep them off
     // the first paint.
     app_spawn(async move {
@@ -78,23 +83,57 @@ pub(crate) fn toggle_theme() {
 
 // --- Folders ----------------------------------------------------------------
 
-/// Add folders to the scan list (deduplicated, in order).
+/// Add folders from a raw string (semicolon/newline separated), as typed
+/// into the sidebar box. A file path holding a `;` stays intact because
+/// splitting only happens at the input boundary.
 pub(crate) fn add_folders(raw: &str) {
+    add_folder_paths(raw.split([';', '\n']).map(ToOwned::to_owned).collect());
+}
+
+/// Add folder paths (deduplicated, in order). The one funnel for typed
+/// input, native dialog picks and OS drops, so all three behave alike.
+pub(crate) fn add_folder_paths(paths: Vec<String>) {
     app().update(|s| {
-        for p in raw
-            .split([';', '\n'])
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-        {
-            if !s.folders.iter().any(|f| f.path == p) {
-                s.folders.push(FolderEntry {
-                    path: p.to_string(),
-                    reference: false,
-                });
+        for raw in paths {
+            let p = raw.trim();
+            if p.is_empty() || s.folders.iter().any(|f| f.path == p) {
+                continue;
             }
+            s.folders.push(FolderEntry {
+                path: p.to_string(),
+                reference: false,
+            });
         }
     });
     save_prefs();
+}
+
+/// Folder drop from the OS (Explorer, the desktop, ...). Only folders are
+/// scan roots — the pipeline walks directories — so a drop of plain files
+/// explains itself in a toast instead of doing nothing.
+pub(crate) fn drop_folders(uris: &[String]) {
+    let folders: Vec<String> = uris
+        .iter()
+        .filter_map(|uri| crate::ui_helpers::file_url_path(uri))
+        .filter(|p| Path::new(p).is_dir())
+        .collect();
+    if folders.is_empty() {
+        crate::ui::toast::notify(
+            "Only folders can be scanned — drop a folder onto the window.".to_owned(),
+            false,
+        );
+        return;
+    }
+    add_folder_paths(folders);
+}
+
+/// Escape outside a text input: leave the Settings page when it is open.
+pub(crate) fn escape_leaves_settings() {
+    app().update(|s| {
+        if s.view == AppView::Settings {
+            s.view = AppView::Main;
+        }
+    });
 }
 
 pub(crate) fn add_from_input() {
@@ -186,6 +225,7 @@ pub(crate) fn save_prefs() {
         sort_biggest: s.sort_biggest,
         remember_folders: s.remember_folders,
         dark: dark(),
+        window: window_state::current(),
     });
     out.save_async();
 }

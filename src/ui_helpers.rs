@@ -111,6 +111,52 @@ pub(crate) fn parse_size_limit(raw: &str) -> anyhow::Result<Option<u64>> {
     util::parse_size(raw.trim()).map(Some)
 }
 
+/// Absolute path from an OS file-drop URI (`file:///C:/a%20b.png`), or
+/// `None` for anything that is not a local `file:` URL. Drops carry
+/// `file:` URLs, not paths; `actions::drop_folders` needs the plain path.
+pub(crate) fn file_url_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    // A local drop's host is `localhost`; anything else is a network
+    // share, not a scan root here.
+    let rest = rest.strip_prefix("localhost/").unwrap_or(rest);
+    // Fragments and queries are URL parts, never part of the path.
+    let rest = rest.split(['#', '?']).next()?;
+    let decoded = percent_decode(rest)?;
+    let path = decoded.strip_suffix('/').unwrap_or(&decoded);
+    // Windows drive drops arrive as `file:///C:/...`: lose the extra
+    // leading slash so the path is in native `Path` form.
+    if cfg!(target_os = "windows")
+        && path.len() >= 3
+        && path.as_bytes()[0] == b'/'
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+    {
+        Some(path[1..].to_string())
+    } else {
+        Some(path.to_string())
+    }
+}
+
+/// Percent-decode (`%C3%BC` → `ü`). `None` when an escape is malformed or
+/// the bytes are not UTF-8: junk URLs must never become junk paths.
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let byte = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+            out.push(byte);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,6 +179,47 @@ mod tests {
         assert_eq!(parse_size_limit("  UNLIMITED  ").unwrap(), None);
         assert_eq!(parse_size_limit("100KB").unwrap(), Some(100_000));
         assert!(parse_size_limit("abc").is_err());
+    }
+
+    #[test]
+    fn percent_decode_only_accepts_well_formed_utf8() {
+        assert_eq!(percent_decode("a%20b"), Some("a b".to_string()));
+        assert_eq!(percent_decode("m%C3%BCller"), Some("müller".to_string()));
+        assert_eq!(percent_decode("plain"), Some("plain".to_string()));
+        assert_eq!(percent_decode("bad%zz"), None);
+        assert_eq!(percent_decode("short%C3"), None);
+        assert_eq!(percent_decode("%FF%FE"), None);
+    }
+
+    #[test]
+    fn file_urls_decode_to_paths() {
+        // Windows drive drop straight from Explorer.
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                file_url_path("file:///C:/media/albums"),
+                Some("C:/media/albums".to_string())
+            );
+            assert_eq!(
+                file_url_path("file:///C:/m%C3%BCller/"),
+                Some("C:/müller".to_string())
+            );
+        }
+        // Trailing separators, fragments and queries are not the path.
+        assert_eq!(
+            file_url_path("file:///home/al/dups/#frag"),
+            Some("/home/al/dups".to_string())
+        );
+        assert_eq!(
+            file_url_path("file:///home/al/a?b"),
+            Some("/home/al/a".to_string())
+        );
+        // Loose strings and other schemes are something else entirely.
+        assert_eq!(file_url_path("C:\\media"), None);
+        assert_eq!(file_url_path("https://example.com/x"), None);
+        // Malformed percent escapes are junk, never paths.
+        assert_eq!(file_url_path("file:///a%zz"), None);
+        assert_eq!(file_url_path("file:///a%C3"), None);
+        assert_eq!(file_url_path("file:///a%FF"), None);
     }
 
     #[test]

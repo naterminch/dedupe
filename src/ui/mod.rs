@@ -26,5 +26,6 @@ mod state;
 mod tests;
 mod toast;
 mod widgets;
+mod window_state;
 
 pub use app::run;

@@ -4,6 +4,7 @@
 //! Settings page. Preferences are restored once, on the first frame, through
 //! `actions::bootstrap`.
 
+use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
 use crate::ui::palette::colors;
@@ -15,11 +16,32 @@ use crate::util;
 #[component]
 pub fn DedupeApp() -> impl IntoElement {
     effect(|| untracked(actions::bootstrap));
+    // Escape first closes the keyboard (fires even inside inputs);
+    // outside an input it is navigation: leave the Settings page. The
+    // bindings live under the root component's owner: the whole app.
+    on_key_with(
+        "escape",
+        KeyOptions {
+            when: When::Always,
+            repeat: false,
+        },
+        |_| dismiss_keyboard(),
+    );
+    on_key_with(
+        "escape",
+        KeyOptions {
+            when: When::NotEditing,
+            repeat: false,
+        },
+        |_| actions::escape_leaves_settings(),
+    );
     view()
         .flex_col()
         .flex_1()
         .h_full()
         .bg(colors::BACKGROUND)
+        // Folders dropped from Explorer land in the scan list.
+        .on_file_drop(|event: &FileDropEvent| actions::drop_folders(&event.uris))
         .child(header())
         .child(body())
         .child(status_bar())
