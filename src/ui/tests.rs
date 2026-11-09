@@ -246,3 +246,39 @@ fn scanning_without_folders_is_refused_with_a_helpful_message() {
     let err = actions::collect_options(&s).expect_err("no folders to scan");
     assert!(err.contains("Add a folder"), "unexpected message: {err}");
 }
+
+#[test]
+fn scan_reports_the_duplicate_groups_it_found() {
+    let (mut app, _guard) = start();
+    // A real folder with one duplicate pair and one unrelated file: the
+    // pipeline runs for keeps (walk, hash, group), so this exercises the
+    // async scan path end to end, not just state.
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-scan-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
+    }
+    std::fs::write(dir.join("unique.txt"), b"different bytes entirely").expect("unique file");
+    // Paste is one edit (same reason as the folder-add test above).
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        // The scan pumps on the wall clock (200 ms timer loop), so poll the
+        // rendered summary for up to a minute of real time.
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("scan produces the duplicate summary");
+}

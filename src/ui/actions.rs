@@ -37,7 +37,7 @@ pub(crate) fn bootstrap() {
     app().update(|s| *s = AppState::from_prefs(&saved));
     // Two process spawns can cost hundreds of milliseconds: keep them off
     // the first paint.
-    spawn(async move {
+    app_spawn(async move {
         let probed = blocking(|| (media::ffmpeg_available(), media::ffprobe_available())).await;
         let (ffmpeg_ok, ffprobe_ok) = probed.unwrap_or((false, false));
         app().update(|s| {
@@ -124,7 +124,7 @@ pub(crate) fn toggle_reference(index: usize) {
 pub(crate) fn browse_folder() {
     let start =
         app().with_untracked(|s| s.folders.last().map(|f| f.path.clone()).unwrap_or_default());
-    spawn(async move {
+    app_spawn(async move {
         // A blocking native dialog must never run on the UI thread.
         let picked = blocking(move || {
             let mut dlg = rfd::FileDialog::new().set_title("Choose a folder to scan");
@@ -356,6 +356,18 @@ fn is_current_scan(generation: u64) -> bool {
     app().with_untracked(|s| s.scan_gen == generation)
 }
 
+/// Spawn a task under a detached owner.
+///
+/// `spawn` ends its task with the owner it was made under, and a press
+/// handler's owner is the view branch the handler's own state change
+/// collapses (press Scan → `scanning = true` collapses the Scan branch).
+/// Tasks born there must therefore outlive that branch: a detached owner
+/// keeps them running for the app's life; the generation guards and
+/// cancellation tokens bound each one to its run.
+pub(crate) fn app_spawn<T: 'static>(future: impl Future<Output = T> + 'static) {
+    Owner::detached().run(|| spawn(future));
+}
+
 pub(crate) fn start_scan() {
     save_prefs();
     let state = app();
@@ -398,7 +410,7 @@ pub(crate) fn start_scan() {
     let sim_bar = indicatif::ProgressBar::hidden();
     let hash_bar_poll = hash_bar.clone();
     let sim_bar_poll = sim_bar.clone();
-    spawn(async move {
+    app_spawn(async move {
         let out = blocking(move || {
             pipeline::run_scan(
                 &opts,
@@ -431,7 +443,7 @@ pub(crate) fn start_scan() {
             }
         }
     });
-    spawn(async move {
+    app_spawn(async move {
         loop {
             timer(Duration::from_millis(200)).await;
             if !app().with_untracked(|s| s.scanning) {
@@ -628,7 +640,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
     if jobs.is_empty() {
         return;
     }
-    spawn(async move {
+    app_spawn(async move {
         for (path, size, mtime) in jobs {
             let done =
                 blocking(move || poster::video_poster(&path, size, mtime).map(|p| (path, p)))
@@ -918,7 +930,7 @@ pub(crate) fn perform_delete() {
     let trash = state.with_untracked(|s| s.trash);
     let hash = state.with_untracked(|s| s.last_hash);
     state.update(|s| s.status = "Deleting…".to_string());
-    spawn(async move {
+    app_spawn(async move {
         let outcome = blocking(move || {
             let engine = hashing::HashEngine::new(hash);
             let disposition = if trash {
@@ -995,7 +1007,7 @@ pub(crate) fn undo_delete() {
         )
     ))]
     {
-        spawn(async move {
+        app_spawn(async move {
             let wanted: HashSet<PathBuf> = receipt.into_iter().collect();
             let restored = blocking(move || {
                 let items = trash::os_limited::list().map_err(|e| e.to_string())?;
@@ -1057,7 +1069,7 @@ pub(crate) fn undo_delete() {
 pub(crate) fn pick_consolidate_dir() {
     let start =
         app().with_untracked(|s| s.folders.last().map(|f| f.path.clone()).unwrap_or_default());
-    spawn(async move {
+    app_spawn(async move {
         let picked = blocking(move || {
             let mut dlg = rfd::FileDialog::new().set_title("Choose the consolidate folder");
             if !start.is_empty() && Path::new(&start).exists() {
@@ -1118,7 +1130,7 @@ pub(crate) fn perform_consolidate() {
     }
     let hash = state.with_untracked(|s| s.last_hash);
     state.update(|s| s.status = "Moving keepers…".to_string());
-    spawn(async move {
+    app_spawn(async move {
         let outcome = blocking(move || {
             let engine = hashing::HashEngine::new(hash);
             file_actions::consolidate_targets(&targets, &engine)
@@ -1172,7 +1184,7 @@ pub(crate) fn save_report() {
         stats,
         groups: s.groups.clone(),
     });
-    spawn(async move {
+    app_spawn(async move {
         let file = blocking(move || {
             rfd::FileDialog::new()
                 .set_title("Save duplicate report")
