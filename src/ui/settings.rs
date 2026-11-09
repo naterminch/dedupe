@@ -3,7 +3,7 @@
 //! Every control writes straight into [`AppState`] and persists through
 //! `actions::save_prefs`.
 
-use nsh_base::{button, number_input, radio, radio_group};
+use nsh_base::{number_input, radio, radio_group, tab, tabs};
 use nsh_core::prelude::*;
 
 use crate::cache;
@@ -71,28 +71,28 @@ fn nav() -> View {
         .child(caption("Settings"))
         .child(view().child(dynamic(|| {
             let tab = app().with(|s| s.settings_tab);
-            view()
-                .flex_col()
+            tabs()
+                .w_full()
                 .gap(px(2.0))
+                .indicator_class("inset-x-0")
+                .indicator_style(|s| {
+                    s.rounded(px(radius::CONTROL))
+                        .bg(colors::ACCENT_WASH_STRONG)
+                })
                 .child(nav_item("General", SettingsTab::General, tab))
                 .child(nav_item("Preferences", SettingsTab::Preferences, tab))
         })))
 }
 
-fn nav_item(label: &'static str, tab: SettingsTab, current: SettingsTab) -> impl IntoElement {
-    let active = tab == current;
-    button()
+fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> impl IntoElement {
+    let active = which == current;
+    tab()
         .selected(active)
-        .on_press(move || actions::set_settings_tab(tab))
+        .on_press(move |_: &()| actions::set_settings_tab(which))
+        .accessibility_label(label)
         .w_full()
         .px(px(10.0))
         .py(px(7.0))
-        .rounded(px(radius::CONTROL))
-        .bg(if active {
-            colors::ACCENT_WASH_STRONG
-        } else {
-            colors::CARD
-        })
         .child(
             text(label)
                 .text_size(px(text::BODY))

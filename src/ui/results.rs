@@ -13,7 +13,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, text};
 use crate::ui::state::app;
 use crate::ui::widgets::{
-    caption, card, chip, danger_button, field_label, ghost_button, primary_button, secondary_button,
+    caption, card, chip, danger_button, field_label, ghost_button, hint, primary_button,
+    secondary_button,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -265,18 +266,31 @@ fn sort_toggle() -> impl IntoElement {
 
 fn delete_bar() -> View {
     view().child(dynamic(|| {
-        let (count, bytes, can_undo) = app().with(|s| {
+        let (count, bytes, can_undo, trash) = app().with(|s| {
             let targets = actions::pending_targets(s);
             (
                 targets.len(),
                 targets.iter().map(|t| t.size).sum::<u64>(),
                 !s.last_trashed.is_empty(),
+                s.trash,
             )
         });
         let mut row = view().flex_row().gap(px(4.0)).items_center();
         if count > 0 {
             let label = format!("Delete {count} ({})", util::human_bytes(bytes));
-            row = row.child(danger_button(label, actions::perform_delete));
+            let unit = if count == 1 { "file" } else { "files" };
+            let tip = if trash {
+                format!(
+                    "Move {count} {unit} ({}) to the recycle bin",
+                    util::human_bytes(bytes)
+                )
+            } else {
+                format!(
+                    "Permanently delete {count} {unit} ({})",
+                    util::human_bytes(bytes)
+                )
+            };
+            row = row.child(danger_button(label, actions::perform_delete).tooltip(hint(tip)));
         }
         if can_undo {
             row = row.child(secondary_button("Undo delete", actions::undo_delete));
@@ -700,16 +714,24 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
                         }),
                 ),
         )
-        .child(
-            text(fit_text(&member.path.to_string_lossy(), 100))
+        .child({
+            let full_path = member.path.to_string_lossy().to_string();
+            let shown = fit_text(&full_path, 100);
+            let truncated = shown != full_path;
+            let cell = text(shown)
                 .flex_1()
                 .truncate()
                 .text_size(px(text::CAPTION))
-                .text_color(colors::TEXT),
-        )
+                .text_color(colors::TEXT);
+            if truncated {
+                cell.tooltip(hint(full_path))
+            } else {
+                cell
+            }
+        })
         .child(caption(util::human_bytes(member.size)))
         .child(when(!similarity.is_empty(), move || {
-            hint(similarity.clone())
+            caption(similarity.clone())
         }))
         .child(when(member.reference, || {
             chip("REF", colors::ACCENT_WASH, colors::ACCENT)
@@ -720,14 +742,6 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
                 actions::set_keeper(group_index, &path);
             })
         }))
-}
-
-fn hint(label: String) -> View {
-    view().child(
-        text(label)
-            .text_size(px(text::CAPTION))
-            .text_color(colors::MUTED),
-    )
 }
 
 fn mode_workspace() -> View {
@@ -817,13 +831,21 @@ fn mode_finding_row(finding: &crate::modes::Finding) -> View {
                 .items_center()
                 .gap(px(8.0))
                 .child(chip(finding.kind, colors::INSET, colors::MUTED))
-                .child(
-                    text(fit_text(&finding.path.to_string_lossy(), 110))
+                .child({
+                    let full_path = finding.path.to_string_lossy().to_string();
+                    let shown = fit_text(&full_path, 110);
+                    let truncated = shown != full_path;
+                    let cell = text(shown)
                         .flex_1()
                         .truncate()
                         .text_size(px(text::BODY))
-                        .text_color(colors::TEXT),
-                )
+                        .text_color(colors::TEXT);
+                    if truncated {
+                        cell.tooltip(hint(full_path))
+                    } else {
+                        cell
+                    }
+                })
                 .child(caption(util::human_bytes(finding.size))),
         )
         .child(caption(finding.detail.clone()))
@@ -853,12 +875,15 @@ fn mode_group_card(group: &crate::modes::FindingGroup) -> View {
                 )),
         )
         .child(caption(group.detail.clone()))
-        .children(
-            group
-                .members
-                .iter()
-                .map(|member| caption(fit_text(&member.to_string_lossy(), 110))),
-        )
+        .children(group.members.iter().map(|member| {
+            let full_path = member.to_string_lossy().to_string();
+            let shown = fit_text(&full_path, 110);
+            if shown == full_path {
+                caption(shown)
+            } else {
+                caption(shown).tooltip(hint(full_path))
+            }
+        }))
 }
 
 fn note_card_error(message: &str) -> View {

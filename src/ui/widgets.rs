@@ -4,7 +4,7 @@
 //! so panes compose widgets instead of repeating colours, radii and paddings.
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
-use nsh_base::{button, switch};
+use nsh_base::{button, switch, tooltip};
 use nsh_core::element::input;
 use nsh_core::prelude::*;
 
@@ -243,4 +243,20 @@ pub(crate) fn field(
         .border_1()
         .border_color(colors::BORDER)
         .rounded(px(radius::CONTROL))
+}
+
+/// An info bubble for `.tooltip(..)`: dark in light theme, light in dark
+/// theme, so it reads over any surface. The trigger's own label speaks for
+/// screen readers; this hint is for the pointer.
+pub(crate) fn hint(label: impl IntoReactive<SharedString>) -> impl IntoTooltip {
+    tooltip()
+        .rounded(px(radius::CONTROL))
+        .px(px(10.0))
+        .py(px(5.0))
+        .bg(colors::TEXT)
+        .child(
+            text(label)
+                .text_size(px(text::CAPTION))
+                .text_color(colors::BACKGROUND),
+        )
 }
