@@ -4,6 +4,7 @@
 //! so panes compose widgets instead of repeating colours, radii and paddings.
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
+use nsh_base::{button, switch};
 use nsh_core::element::input;
 use nsh_core::prelude::*;
 
@@ -55,7 +56,24 @@ pub(crate) fn primary_button(
     label: impl IntoReactive<SharedString>,
     on_press: impl Fn() + 'static,
 ) -> View {
-    button_shell(label, colors::ACCENT, colors::ON_ACCENT, on_press)
+    view().flex_col().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(14.0))
+            .py(px(8.0))
+            .bg(colors::ACCENT)
+            .rounded(px(radius::CONTROL))
+            .hover(|s| s.opacity(0.9))
+            .child(
+                text(label)
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::ON_ACCENT),
+            ),
+    )
 }
 
 /// A quieter action next to a primary one.
@@ -63,25 +81,26 @@ pub(crate) fn secondary_button(
     label: impl IntoReactive<SharedString>,
     on_press: impl Fn() + 'static,
 ) -> View {
-    view()
-        .px(px(14.0))
-        .py(px(8.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .bg(colors::INSET)
-        .border_1()
-        .border_color(colors::BORDER)
-        .rounded(px(radius::CONTROL))
-        .cursor_pointer()
-        .hover(|s| s.bg(colors::BORDER))
-        .on_press(on_press)
-        .child(
-            text(label)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(colors::TEXT),
-        )
+    view().flex_col().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(14.0))
+            .py(px(8.0))
+            .bg(colors::INSET)
+            .border_1()
+            .border_color(colors::BORDER)
+            .rounded(px(radius::CONTROL))
+            .hover(|s| s.bg(colors::BORDER))
+            .child(
+                text(label)
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::TEXT),
+            ),
+    )
 }
 
 /// A borderless action for dense rows (Show more, Expand all…).
@@ -89,22 +108,23 @@ pub(crate) fn ghost_button(
     label: impl IntoReactive<SharedString>,
     on_press: impl Fn() + 'static,
 ) -> View {
-    view()
-        .px(px(10.0))
-        .py(px(6.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .rounded(px(radius::CONTROL))
-        .cursor_pointer()
-        .hover(|s| s.bg(colors::INSET))
-        .on_press(on_press)
-        .child(
-            text(label)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(colors::ACCENT),
-        )
+    view().flex_col().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(radius::CONTROL))
+            .hover(|s| s.bg(colors::INSET))
+            .child(
+                text(label)
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::ACCENT),
+            ),
+    )
 }
 
 /// A destructive action (Delete N, Undo delete).
@@ -112,49 +132,63 @@ pub(crate) fn danger_button(
     label: impl IntoReactive<SharedString>,
     on_press: impl Fn() + 'static,
 ) -> View {
-    view()
-        .px(px(14.0))
-        .py(px(8.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .bg(colors::DANGER)
-        .rounded(px(radius::CONTROL))
-        .cursor_pointer()
-        .hover(|s| s.opacity(0.9))
-        .on_press(on_press)
-        .child(
-            text(label)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(colors::ON_ACCENT),
-        )
+    view().flex_col().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(14.0))
+            .py(px(8.0))
+            .bg(colors::DANGER)
+            .rounded(px(radius::CONTROL))
+            .hover(|s| s.opacity(0.9))
+            .child(
+                text(label)
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::ON_ACCENT),
+            ),
+    )
 }
 
-/// Shared body for the filled button variants.
-fn button_shell(
-    label: impl IntoReactive<SharedString>,
-    background: AdaptiveColor,
-    foreground: AdaptiveColor,
+/// An on/off control on the platform switch semantics (Space and Return,
+/// screen readers hear "checked"), drawn as a small track with a thumb.
+pub(crate) fn toggle_switch(
+    checked: bool,
+    label: &'static str,
     on_press: impl Fn() + 'static,
-) -> View {
-    view()
-        .px(px(14.0))
-        .py(px(8.0))
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .bg(background)
-        .rounded(px(radius::CONTROL))
-        .cursor_pointer()
-        .hover(|s| s.opacity(0.9))
-        .on_press(on_press)
-        .child(
-            text(label)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(foreground),
-        )
+) -> impl IntoElement {
+    switch()
+        .checked(checked)
+        .on_change(move |_: &bool| on_press())
+        .accessibility_label(label)
+        .track_style(|s| {
+            s.w(px(32.0))
+                .h(px(20.0))
+                .flex_row()
+                .items_center()
+                .p(px(2.0))
+                .rounded_full()
+                .bg(if checked {
+                    colors::ACCENT
+                } else {
+                    colors::INSET
+                })
+                .border_1()
+                .border_color(if checked {
+                    colors::ACCENT
+                } else {
+                    colors::BORDER
+                })
+        })
+        .thumb_style(|s| {
+            s.w(px(16.0))
+                .h(px(16.0))
+                .rounded_full()
+                .bg(colors::BACKGROUND)
+        })
+        .thumb_class("transition-transform checked:translate-x-3")
 }
 
 /// A small rounded tag (KEEP, REF, DUP, a file extension…).

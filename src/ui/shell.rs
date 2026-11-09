@@ -11,7 +11,7 @@ use crate::ui::palette::{colors, radius, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
     caption, card, chip, danger_button, field, field_label, ghost_button, panel_title,
-    primary_button, secondary_button,
+    primary_button, secondary_button, toggle_switch,
 };
 use crate::ui_helpers::{self, fit_text};
 
@@ -147,8 +147,11 @@ fn folder_row(folder: ReadSignal<FolderEntry>, index: ReadSignal<usize>) -> impl
     })
 }
 
-fn protect_chip(checked: bool, index: ReadSignal<usize>) -> View {
+fn protect_chip(checked: bool, index: ReadSignal<usize>) -> impl IntoElement {
     view()
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
         .px(px(8.0))
         .py(px(3.0))
         .rounded(px(radius::CONTROL))
@@ -163,8 +166,6 @@ fn protect_chip(checked: bool, index: ReadSignal<usize>) -> View {
         } else {
             colors::BORDER
         })
-        .cursor_pointer()
-        .on_press(move || actions::toggle_reference(index.get()))
         .child(
             text(if checked { "Protected" } else { "Protect" })
                 .text_size(px(text::CAPTION))
@@ -175,6 +176,11 @@ fn protect_chip(checked: bool, index: ReadSignal<usize>) -> View {
                     colors::MUTED
                 }),
         )
+        .child(toggle_switch(
+            checked,
+            "Protect this folder from deletion",
+            move || actions::toggle_reference(index.get()),
+        ))
 }
 
 fn add_row() -> impl IntoElement {
