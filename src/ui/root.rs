@@ -52,7 +52,10 @@ fn header() -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
-                .child(ghost_button("Theme", actions::toggle_theme))
+                .child(dynamic(|| {
+                    let label = if dark() { "Light" } else { "Dark" };
+                    ghost_button(label, actions::toggle_theme)
+                }))
                 .child(dynamic(|| {
                     if app().with(|s| s.view) == AppView::Settings {
                         secondary_button("Back", actions::leave_settings)
