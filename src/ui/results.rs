@@ -834,13 +834,22 @@ fn group_card(position: usize, group: &Group, expanded: bool) -> View {
         for (row_index, pair) in members.chunks(2).enumerate() {
             let mut row = view().flex_row().items_stretch().gap(px(8.0));
             for (column, member) in pair.iter().enumerate() {
-                row = row.child(member_slot(
-                    position,
-                    index,
-                    row_index * 2 + column,
-                    member.clone(),
-                    true,
-                ));
+                row = row.child(
+                    // The row's own child, not the card, is what flex lays
+                    // out: give the slot the equal share so every card in
+                    // every group is the same width (and so is its preview).
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .overflow_hidden()
+                        .child(member_slot(
+                            position,
+                            index,
+                            row_index * 2 + column,
+                            member.clone(),
+                            true,
+                        )),
+                );
             }
             if pair.len() == 1 {
                 // Odd tail: leave the lone card at half width.
@@ -1084,6 +1093,7 @@ fn media_card(
         .flex_col()
         .flex_1()
         .min_w(px(0.0))
+        .w_full()
         .p(px(space::SM))
         .gap(px(space::SM))
         .bg(colors::PANE)
@@ -1104,7 +1114,10 @@ fn media_card(
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors::TEXT),
                 )
-                .child(caption(member_parent(member))),
+                // Truncated, never allowed to widen the card: a deep folder
+                // would otherwise stretch this card (and its preview) past
+                // its neighbours.
+                .child(caption(member_parent(member)).truncate()),
         )
         .child(member_actions(
             group_index,
