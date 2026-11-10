@@ -1057,6 +1057,26 @@ fn is_grid_preview(thumb: &Thumb) -> bool {
 /// ffmpeg extracts) share one box so cards in a row line up; a video whose
 /// poster has not landed yet keeps the box with a play glyph.
 ///
+/// The inline, muted player both layouts use for a playing clip.
+///
+/// It ships without nsh's own control bar. That bar is the only thing the
+/// Windows backend reads the media engine for while painting, and pausing a
+/// clip happens from inside the engine's own mutable borrow: Media Foundation
+/// then fires `MF_MEDIA_ENGINE_EVENT_PAUSE`, which invalidates the surface
+/// (`nsh-platform-windows` video.rs:345) and repaints straight into
+/// `draw_bar`'s `playing()` read (video.rs:507) with the borrow still held —
+/// a hard panic ("RefCell already mutably borrowed") on every stop, replace
+/// or layout switch. Play and Stop live in the row actions and on the card's
+/// Stop pill, so the bar was redundant as well as unsafe.
+fn inline_player(path: &Path) -> impl IntoElement {
+    video(path.to_string_lossy().into_owned())
+        .w_full()
+        .h(px(PLAYER_H))
+        .rounded(px(radius::CONTROL))
+        .muted(true)
+        .controls(false)
+}
+
 /// Clicking a video's preview plays the clip in that same box, muted, and the
 /// `Stop` pill puts the poster frame back — the card never changes size, and
 /// one video plays at a time (see [`actions::toggle_play`]). Photos never get
@@ -1073,24 +1093,15 @@ fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
     let playable = matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo);
     if playing && playable {
         let stop_path = path.to_path_buf();
-        return frame
-            .child(
-                video(path.to_string_lossy().into_owned())
-                    .w_full()
-                    .h(px(PLAYER_H))
-                    .rounded(px(radius::CONTROL))
-                    .muted(true)
-                    .controls(true),
-            )
-            .child(
-                view()
-                    .absolute()
-                    .top(px(space::SM))
-                    .right(px(space::SM))
-                    .child(icon_button(icons::STOP, "Stop video", move || {
-                        actions::toggle_play(&stop_path);
-                    })),
-            );
+        return frame.child(inline_player(path)).child(
+            view()
+                .absolute()
+                .top(px(space::SM))
+                .right(px(space::SM))
+                .child(icon_button(icons::STOP, "Stop video", move || {
+                    actions::toggle_play(&stop_path);
+                })),
+        );
     }
     let source = match thumb {
         Thumb::Image => Some(path.to_string_lossy().into_owned()),
@@ -1289,14 +1300,7 @@ fn member_row(
         return surface
             .flex_col()
             .gap(px(space::SM))
-            .child(
-                video(member.path.to_string_lossy().into_owned())
-                    .w_full()
-                    .h(px(PLAYER_H))
-                    .rounded(px(radius::CONTROL))
-                    .muted(true)
-                    .controls(true),
-            )
+            .child(inline_player(&member.path))
             .child(info);
     }
     surface
