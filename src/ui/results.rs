@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
 use nsh_core::AccessibilityState;
-use nsh_core::element::{BorderCurve, video};
+use nsh_core::element::video;
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
@@ -818,55 +818,14 @@ fn group_card(position: usize, group: &Group, expanded: bool) -> View {
     let index = group.index;
     let header = group_header(group);
     let members = group.members.clone();
-    // Media groups always render as cards, two to a row. The layout follows
-    // the group's kind, not each member's decodable frame, so every item in
-    // every group gets the same fixed preview box: a copy whose own frame
-    // cannot be decoded keeps that box instead of shrinking the whole group
-    // into the compact row list. Plain files, archives and mixed groups stay
-    // rows, which read better for paths than a wall of empty previews.
-    let grid = members.len() >= 2
-        && matches!(
-            group.media_kind,
-            media::MediaKind::Image | media::MediaKind::Video
-        );
+    // One layout for every group, media or not: each item carries the same
+    // small preview box (`THUMB_W` x `THUMB_H`), whether it is a photo, a
+    // video's poster frame or a plain file. Growing the other way — cards in
+    // every group — would put large preview tiles on archives and documents,
+    // which reads worse than the paths they carry.
     let mut body = view().flex_col().gap(px(8.0)).px(px(12.0)).pb(px(12.0));
-    if grid {
-        for (row_index, pair) in members.chunks(2).enumerate() {
-            let mut row = view().flex_row().items_stretch().gap(px(8.0));
-            for (column, member) in pair.iter().enumerate() {
-                row = row.child(
-                    // The row's own child, not the card, is what flex lays
-                    // out: give the slot the equal share so every card in
-                    // every group is the same width (and so is its preview).
-                    view()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .child(member_slot(
-                            position,
-                            index,
-                            row_index * 2 + column,
-                            member.clone(),
-                            true,
-                        )),
-                );
-            }
-            if pair.len() == 1 {
-                // Odd tail: leave the lone card at half width.
-                row = row.child(view().flex_1().min_w(px(0.0)));
-            }
-            body = body.child(row);
-        }
-    } else {
-        for (member_pos, member) in members.iter().enumerate() {
-            body = body.child(member_slot(
-                position,
-                index,
-                member_pos,
-                member.clone(),
-                false,
-            ));
-        }
+    for (member_pos, member) in members.iter().enumerate() {
+        body = body.child(member_slot(position, index, member_pos, member.clone()));
     }
     // The header counts move with the keeper; they update on their own
     // instead of taking the group's cards with them.
@@ -950,86 +909,9 @@ fn member_parent(member: &GroupMember) -> String {
         .unwrap_or_default()
 }
 
-/// Height of a media card's preview, in points.
-const CARD_PREVIEW_H: f32 = 180.0;
-
-/// The large preview on top of a media card. Photos and videos (whose poster
-/// ffmpeg extracts) share one box so cards in a row line up; a video whose
-/// poster has not landed yet keeps the box with a play glyph.
-///
-/// Clicking a video's preview plays the clip in that same box, muted, and the
-/// `Stop` pill puts the poster frame back — the card never changes size, and
-/// one video plays at a time (see [`actions::toggle_play`]).
-fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
-    let frame = view()
-        .w_full()
-        .h(px(CARD_PREVIEW_H))
-        .flex_shrink_0()
-        .items_center()
-        .justify_center()
-        .rounded(px(radius::CONTROL))
-        .bg(colors::INSET);
-    let playable = matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo);
-    if playing && playable {
-        let stop_path = path.to_path_buf();
-        return frame
-            .child(
-                video(path.to_string_lossy().into_owned())
-                    .w_full()
-                    .h(px(CARD_PREVIEW_H))
-                    .rounded(px(radius::CONTROL))
-                    .muted(true)
-                    .controls(true),
-            )
-            .child(
-                view()
-                    .absolute()
-                    .top(px(space::SM))
-                    .right(px(space::SM))
-                    .child(secondary_button("Stop", move || {
-                        actions::toggle_play(&stop_path);
-                    })),
-            );
-    }
-    let source = match thumb {
-        Thumb::Image => Some(path.to_string_lossy().into_owned()),
-        Thumb::Poster(poster) => Some(poster.to_string_lossy().into_owned()),
-        Thumb::None | Thumb::PendingVideo => None,
-    };
-    let frame = match source {
-        Some(source) => frame.child(
-            image(source)
-                .w_full()
-                .h(px(CARD_PREVIEW_H))
-                .object_fit(ResizeMode::Cover)
-                .rounded(px(radius::CONTROL)),
-        ),
-        None => {
-            let empty = frame.border_1().border_color(colors::BORDER);
-            match thumb {
-                // Only a video waiting on its poster frame gets the glyph: a
-                // photo the image element cannot decode is a plain box, not
-                // something with a player behind it.
-                Thumb::PendingVideo => empty.child(
-                    text("▶")
-                        .text_size(px(text::HEADING))
-                        .text_color(colors::MUTED),
-                ),
-                _ => empty,
-            }
-        }
-    };
-    if playable {
-        // The preview is the play button: a click loads the clip, muted.
-        let play_path = path.to_path_buf();
-        frame
-            .transition_colors()
-            .duration(motion(180.0))
-            .on_press(move || actions::toggle_play(&play_path))
-    } else {
-        frame
-    }
-}
+/// Height of the inline player a playing row expands to, in points. Rows
+/// themselves always carry the same small preview box.
+const PLAYER_H: f32 = 180.0;
 
 /// One member's slot, with its own rebuild signature: its keeper flag, its
 /// tick and its poster frame. Pressing Keep on another member therefore
@@ -1040,7 +922,6 @@ fn member_slot(
     group_index: usize,
     member_pos: usize,
     member: GroupMember,
-    grid: bool,
 ) -> View {
     let path = member.path.clone();
     let signature = computed(move || {
@@ -1059,86 +940,15 @@ fn member_slot(
     });
     view().child(dynamic(move || {
         let (keep, checked, poster, playing) = signature.get();
-        if grid {
-            media_card(
-                group_index,
-                &member,
-                keep,
-                checked,
-                poster.as_deref(),
-                playing,
-            )
-        } else {
-            member_row(
-                group_index,
-                &member,
-                keep,
-                checked,
-                poster.as_deref(),
-                playing,
-            )
-        }
-    }))
-}
-
-/// One card of a media group: large preview, then the name, its folder and
-/// the same controls a row carries. Only the border and the badge move when
-/// the keeper changes, so the group never reflows during a decision.
-fn media_card(
-    group_index: usize,
-    member: &GroupMember,
-    keep: bool,
-    checked: bool,
-    poster: Option<&Path>,
-    playing: bool,
-) -> View {
-    let thumb = thumb_for(member, poster);
-    let similarity = member
-        .similarity
-        .map(|s| format!("{:.0}% similar", s * 100.0));
-    // A row surface, not a card: it sits inside the group card, and a card in
-    // a card draws a second border and shadow on the same edge.
-    view()
-        .flex_col()
-        .flex_1()
-        .min_w(px(0.0))
-        .w_full()
-        .p(px(space::SM))
-        .gap(px(space::SM))
-        .bg(colors::PANE)
-        .rounded(px(radius::CARD))
-        .border_curve(BorderCurve::Continuous)
-        .border_1()
-        .border_color(if keep { colors::ACCENT } else { colors::BORDER })
-        .child(card_preview(&thumb, &member.path, playing))
-        .child(
-            view()
-                .flex_col()
-                .min_w(px(0.0))
-                .gap(px(2.0))
-                .child(
-                    text(member_name(member))
-                        .truncate()
-                        .text_size(px(text::BODY))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(colors::TEXT),
-                )
-                // Truncated, never allowed to widen the card: a deep folder
-                // would otherwise stretch this card (and its preview) past
-                // its neighbours.
-                .child(caption(member_parent(member)).truncate()),
-        )
-        .child(member_actions(
+        member_row(
             group_index,
-            member,
+            &member,
             keep,
             checked,
-            similarity,
-            // Videos only: `thumb_for` maps a video to a poster frame (or a
-            // pending one), so this is the player's own switch. A photo has
-            // nothing to play and gets no control for it.
-            matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo).then_some(playing),
-        ))
+            poster.as_deref(),
+            playing,
+        )
+    }))
 }
 
 fn member_row(
@@ -1153,6 +963,10 @@ fn member_row(
     // group becomes visible (see `actions::request_group_posters`), never
     // while the tree is being built.
     let thumb = thumb_for(member, poster);
+    // `thumb_for` only maps videos to a poster frame or a pending one, so this
+    // is the row's own "there is a player behind this" flag: photos never get
+    // a play affordance.
+    let video_member = matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo);
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
@@ -1169,10 +983,33 @@ fn member_row(
     } else {
         cell
     };
-    view()
-        .flex_row()
-        .items_start()
-        .gap(px(space::SM))
+    let thumb_box = member_thumb(&thumb, &member.path);
+    let thumb_box = if video_member {
+        // The thumbnail is the play button too: a click loads the clip muted.
+        let play_path = member.path.clone();
+        thumb_box
+            .transition_colors()
+            .duration(motion(180.0))
+            .on_press(move || actions::toggle_play(&play_path))
+    } else {
+        thumb_box
+    };
+    let info = view()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
+        .gap(px(4.0))
+        .child(cell)
+        .child(caption(member_parent(member)))
+        .child(member_actions(
+            group_index,
+            member,
+            keep,
+            checked,
+            similarity,
+            video_member.then_some(playing),
+        ));
+    let surface = view()
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
@@ -1182,25 +1019,30 @@ fn member_row(
             colors::PANE
         })
         .transition_colors()
-        .duration(motion(180.0))
-        .child(member_thumb(&thumb, &member.path))
-        .child(
-            view()
-                .flex_col()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap(px(4.0))
-                .child(cell)
-                .child(caption(member_parent(member)))
-                .child(member_actions(
-                    group_index,
-                    member,
-                    keep,
-                    checked,
-                    similarity,
-                    (media::classify(&member.path) == media::MediaKind::Video).then_some(playing),
-                )),
-        )
+        .duration(motion(180.0));
+    if playing && video_member {
+        // Playing is the one deliberate expansion: a 72 pt thumbnail is not a
+        // usable player, so the row grows to hold one (muted, with the
+        // platform's controls) while every other row keeps the small box.
+        return surface
+            .flex_col()
+            .gap(px(space::SM))
+            .child(
+                video(member.path.to_string_lossy().into_owned())
+                    .w_full()
+                    .h(px(PLAYER_H))
+                    .rounded(px(radius::CONTROL))
+                    .muted(true)
+                    .controls(true),
+            )
+            .child(info);
+    }
+    surface
+        .flex_row()
+        .items_start()
+        .gap(px(space::SM))
+        .child(thumb_box)
+        .child(info)
 }
 
 /// The controls line both layouts use: keeper / selection state, size,
