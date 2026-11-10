@@ -103,14 +103,20 @@ pub(crate) struct AppState {
     /// Inline video preview strips (frame PNGs) by source path. Filled
     /// lazily when a video card first renders; cached on disk too.
     pub(crate) strips: HashMap<PathBuf, Vec<PathBuf>>,
-    /// Videos with a strip extraction currently in flight (dedupes spawns).
-    pub(crate) preview_loading: HashSet<PathBuf>,
+    /// Videos whose poster extraction was requested this scan: in flight or
+    /// already attempted, so a failure is not retried on every re-render.
+    pub(crate) poster_jobs: HashSet<PathBuf>,
     pub(crate) dup_files: u64,
     pub(crate) reclaim_bytes: u64,
     pub(crate) scanning: bool,
     pub(crate) scan_done: u64,
     pub(crate) scan_total: u64,
     pub(crate) scan_determinate: bool,
+    /// Current pipeline phase ("Hashing files…", "Comparing media…"), shown
+    /// as the progress card's heading: a scan is two counting passes, so the
+    /// bar legitimately restarts with a different total when the phase
+    /// changes, and the heading is what makes that legible.
+    pub(crate) scan_phase: String,
     pub(crate) status: String,
     pub(crate) files_scanned: usize,
     pub(crate) bytes_scanned: u64,
@@ -195,13 +201,15 @@ impl Default for AppState {
             media_checked: false,
             posters: HashMap::new(),
             strips: HashMap::new(),
-            preview_loading: HashSet::new(),
+            poster_jobs: HashSet::new(),
             dup_files: 0,
             reclaim_bytes: 0,
             scanning: false,
             scan_done: 0,
             scan_total: 0,
             scan_determinate: false,
+            scan_phase: crate::pipeline::phase_label(crate::pipeline::ScanPhase::Scanning)
+                .to_string(),
             status: "Choose a folder and press Scan.".to_string(),
             files_scanned: 0,
             bytes_scanned: 0,

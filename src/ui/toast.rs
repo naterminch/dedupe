@@ -110,10 +110,13 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                                     });
                                 }
                             })
-                            .rounded(px(radius::CONTROL))
-                            .px(px(12.0))
-                            .py(px(10.0))
-                            .bg(colors::CARD)
+                            .rounded(px(radius::CARD))
+                            .px(px(16.0))
+                            .py(px(12.0))
+                            .bg(colors::GLASS)
+                            .backdrop_blur(20.0_f32)
+                            .shadow_lg()
+                            .shadow_color(colors::SHADOW)
                             .border_1()
                             .border_color(if error {
                                 colors::DANGER

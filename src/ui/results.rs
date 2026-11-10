@@ -4,22 +4,111 @@
 //! Group rows are built inside one `dynamic` region: every read of [`app`]
 //! subscribes, so a scan, a keeper swap or a tick re-renders the list.
 
-use nsh_base::{checkbox, number_input, progress, radio, radio_group, toggle};
+use std::path::{Path, PathBuf};
+
+use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
+use nsh_core::AccessibilityState;
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
+use crate::media;
 use crate::modes::{ModeResult, mode_title};
 use crate::ui::actions;
 use crate::ui::palette::{colors, radius, text};
 use crate::ui::state::app;
 use crate::ui::widgets::{
-    caption, card, chip, danger_button, field_label, ghost_button, hint, primary_button,
+    caption, card, chevron, chip, danger_button, field_label, ghost_button, hint, primary_button,
     secondary_button,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
 
 const KEEP_MODES: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best"];
+
+/// Photo extensions the image element decodes. Formats it cannot (HEIC, SVG,
+/// ICO, TIFF) keep the text-only row rather than a broken box.
+const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
+
+/// Row thumbnail box, in points. Fixed so an image finishing its async load
+/// never changes the row's geometry (rows would overlap mid-layout).
+const THUMB_W: f32 = 72.0;
+const THUMB_H: f32 = 56.0;
+
+/// What preview a member row shows: the photo itself, a video's extracted
+/// poster frame, a placeholder while that poster extracts, or nothing for
+/// plain files.
+enum Thumb {
+    None,
+    Image,
+    Poster(PathBuf),
+    PendingVideo,
+}
+
+/// Decide the preview for one member.
+///
+/// Videos cannot be decoded by the UI toolkit, so they show a poster frame
+/// ffmpeg extracts into the shared state; until it lands the row shows a
+/// placeholder. Photos render straight from the file path.
+fn thumb_for(member: &GroupMember) -> Thumb {
+    match media::classify(&member.path) {
+        media::MediaKind::Image => {
+            // Only files that are still on disk become image sources: a
+            // member whose file vanished (deleted in another app, an
+            // unmounted drive) keeps the text row instead of asking the
+            // backend to load a path that is not there.
+            let thumbable = member
+                .path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| THUMB_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+                && member.path.is_file();
+            if thumbable { Thumb::Image } else { Thumb::None }
+        }
+        media::MediaKind::Video => app().with(|s| {
+            s.posters
+                .get(&member.path)
+                .map_or(Thumb::PendingVideo, |poster| Thumb::Poster(poster.clone()))
+        }),
+        media::MediaKind::Other => Thumb::None,
+    }
+}
+
+/// The thumbnail for a member row: the photo itself, a video's poster, or a
+/// plain box (with a play glyph) for files that have no preview.
+fn member_thumb(thumb: &Thumb, path: &Path) -> View {
+    let frame = view()
+        .w(px(THUMB_W))
+        .h(px(THUMB_H))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::CONTROL))
+        .bg(colors::INSET);
+    match thumb {
+        Thumb::Image => frame.child(preview_image(path)),
+        Thumb::Poster(poster) => frame.child(preview_image(poster)),
+        Thumb::None => frame.border_1().border_color(colors::BORDER),
+        Thumb::PendingVideo => frame.border_1().border_color(colors::BORDER).child(
+            text("▶")
+                .text_size(px(text::BODY))
+                .text_color(colors::MUTED),
+        ),
+    }
+}
+
+/// A thumbnail image: NSH reads and downsamples the file off the UI thread
+/// (WIC on Windows, the system decoders elsewhere) and caches it, and a plain
+/// filesystem path is a valid image source. Sized and object-fitted on the
+/// image itself, with no clipping wrapper around it.
+fn preview_image(path: &Path) -> impl IntoElement {
+    image(path.to_string_lossy().into_owned())
+        .w(px(THUMB_W))
+        .h(px(THUMB_H))
+        .flex_shrink_0()
+        .bg(colors::INSET)
+        .rounded(px(radius::CONTROL))
+        .object_fit(ResizeMode::Cover)
+}
 
 pub(crate) fn results() -> View {
     view()
@@ -73,22 +162,11 @@ fn header_row() -> View {
                 .flex_col()
                 .min_w(px(0.0))
                 .gap(px(4.0))
-                .child(kicker("Duplicate workspace"))
                 .child(title(|| {
                     if app().with(|s| s.has_scanned) {
                         "Review duplicates"
                     } else {
                         "Find duplicate files"
-                    }
-                }))
-                .child(caption(|| {
-                    let state = app();
-                    if state.with(|s| s.scanning) {
-                        "Scanning. Results will appear here.".to_string()
-                    } else if state.with(|s| s.has_scanned) {
-                        "Keep one copy. Select the rest.".to_string()
-                    } else {
-                        "Add folders and scan. Nothing is uploaded.".to_string()
                     }
                 })),
         )
@@ -119,10 +197,8 @@ fn selection_row() -> View {
             view()
                 .flex_row()
                 .gap(px(4.0))
-                .child(ghost_button("Expand all", || {
-                    actions::set_all_expanded(true)
-                }))
-                .child(ghost_button("Collapse all", || {
+                .child(ghost_button("Expand", || actions::set_all_expanded(true)))
+                .child(ghost_button("Collapse", || {
                     actions::set_all_expanded(false)
                 })),
         )
@@ -130,10 +206,10 @@ fn selection_row() -> View {
             view()
                 .flex_row()
                 .gap(px(4.0))
-                .child(ghost_button("Select duplicates", || {
+                .child(ghost_button("Select all", || {
                     app().update(actions::reselect_all_dups);
                 }))
-                .child(ghost_button("Select none", actions::select_none)),
+                .child(ghost_button("Clear", actions::select_none)),
         )
 }
 
@@ -207,9 +283,9 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .checked(active)
         .on_change(move |_: &bool| actions::apply_keep_mode(index))
         .accessibility_label(label)
-        .px(px(8.0))
+        .px(px(10.0))
         .py(px(4.0))
-        .rounded(px(radius::CONTROL))
+        .rounded_full()
         .bg(if active {
             colors::ACCENT_WASH_STRONG
         } else {
@@ -240,26 +316,24 @@ fn sort_toggle() -> impl IntoElement {
             .pressed(biggest)
             .on_change(move |_: &bool| actions::toggle_sort_biggest())
             .accessibility_label("Sort groups by most reclaimable space first")
-            .px(px(10.0))
+            .px(px(12.0))
             .py(px(6.0))
             .flex_row()
             .items_center()
             .justify_center()
-            .rounded(px(radius::CONTROL))
+            .rounded_full()
+            .transition_colors()
+            .duration(150.0)
             .hover(|s| s.bg(colors::INSET))
             .pressed_style(|s| {
                 s.bg(colors::ACCENT_WASH_STRONG)
                     .border_color(colors::ACCENT)
             })
             .child(
-                text(if biggest {
-                    "Sort: biggest"
-                } else {
-                    "Sort: path"
-                })
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(colors::ACCENT),
+                text(if biggest { "Biggest" } else { "Path" })
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::ACCENT),
             )
     })
 }
@@ -312,7 +386,7 @@ fn consolidate_button() -> View {
 fn list_body() -> View {
     let (scanning, has_scanned, total, ffprobe_note) =
         app().with(|s| (s.scanning, s.has_scanned, s.groups.len(), s.ffprobe_note));
-    let mut list = view().flex_col().gap(px(8.0));
+    let mut list = view().flex_col().gap(px(12.0));
     if scanning {
         list = list.child(progress_card());
     }
@@ -352,8 +426,12 @@ fn progress_card() -> View {
     } else {
         0.0
     };
+    // A scan counts twice — files to hash, then media to compare — so the
+    // bar legitimately restarts with a fresh total when the phase changes.
+    // The phase is the heading and the counts are the caption, so that
+    // restart reads as a new stage instead of the same bar going backwards.
     let label = if determinate && total > 0 {
-        format!("{done} / {total} files")
+        format!("{done} of {total}")
     } else {
         app().with(|s| s.status.clone())
     };
@@ -366,7 +444,7 @@ fn progress_card() -> View {
                 .items_center()
                 .justify_between()
                 .gap(px(12.0))
-                .child(kicker("Scanning"))
+                .child(kicker(|| app().with(|s| s.scan_phase.clone())))
                 .child(caption(label)),
         )
         .child(
@@ -421,11 +499,6 @@ fn empty_state() -> View {
                             "Find every copy. Keep the one you want."
                         } else {
                             "Put every stray file back in its place."
-                        }))
-                        .child(caption(if duplicates {
-                            "One copy is always kept. Review each group and remove the rest."
-                        } else {
-                            "Scan for empty files, broken media, bad names, and duplicate folders."
                         })),
                 )
                 .child(
@@ -472,29 +545,9 @@ fn empty_state() -> View {
                 .flex_wrap()
                 .items_stretch()
                 .gap(px(12.0))
-                .child(step_card(
-                    "01",
-                    "Add folders",
-                    "Choose the folders you want to scan.",
-                ))
-                .child(step_card(
-                    "02",
-                    "Run a scan",
-                    if duplicates {
-                        "Files, photos, and videos are compared on this PC."
-                    } else {
-                        "Cleanup rules check for specific problems."
-                    },
-                ))
-                .child(step_card(
-                    "03",
-                    "Review results",
-                    if duplicates {
-                        "Keep the right copy and remove the rest."
-                    } else {
-                        "Inspect every finding before using the CLI."
-                    },
-                )),
+                .child(step_card("01", "Add folders"))
+                .child(step_card("02", "Run a scan"))
+                .child(step_card("03", "Review results")),
         )
 }
 
@@ -507,7 +560,7 @@ fn preview_row(label: &'static str, value: String) -> View {
     )
 }
 
-fn step_card(step: &'static str, heading: &'static str, body: &'static str) -> View {
+fn step_card(step: &'static str, heading: &'static str) -> View {
     card()
         .flex_1()
         .min_w(px(220.0))
@@ -527,7 +580,6 @@ fn step_card(step: &'static str, heading: &'static str, body: &'static str) -> V
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors::TEXT),
         )
-        .child(caption(body))
 }
 
 fn note_card(message: &'static str) -> View {
@@ -590,50 +642,239 @@ fn group_card(position: usize) -> View {
         )
     });
     let members = app().with(|s| s.groups[position].members.clone());
-    let selected = app().with(|s| s.selected.clone());
+    // Per-member flags rather than a copy of the selection set: a scan
+    // pre-selects every duplicate, so the set holds thousands of paths and
+    // this runs once per visible group.
+    let checked: Vec<bool> = app().with(|s| {
+        members
+            .iter()
+            .map(|member| s.selected.contains(&member.path))
+            .collect()
+    });
+    // Media groups keep the layout the app shipped with: every member is a
+    // photo or a video, so each is shown once as a large card, two to a row.
+    // Anything else (plain files, archives, mixed groups) stays a compact
+    // row list, which reads better for paths than a wall of empty previews.
+    let grid = members.len() >= 2 && members.iter().all(|m| is_grid_preview(&thumb_for(m)));
+    let mut body = view().flex_col().gap(px(8.0)).px(px(12.0)).pb(px(12.0));
+    if grid {
+        for (row_index, pair) in members.chunks(2).enumerate() {
+            let mut row = view().flex_row().items_stretch().gap(px(8.0));
+            for (column, member) in pair.iter().enumerate() {
+                row = row.child(media_card(
+                    index,
+                    member.clone(),
+                    checked[row_index * 2 + column],
+                ));
+            }
+            if pair.len() == 1 {
+                // Odd tail: leave the lone card at half width.
+                row = row.child(view().flex_1().min_w(px(0.0)));
+            }
+            body = body.child(row);
+        }
+    } else {
+        for (member, is_checked) in members.iter().zip(&checked) {
+            body = body.child(member_row(index, member.clone(), *is_checked));
+        }
+    }
+    // `nsh`'s Collapsible owns the disclosure: the whole header is the
+    // trigger (one big hit target instead of a 16 pt chevron to aim at), it
+    // reports the expanded state to screen readers, and `reveal` springs the
+    // body open and shut instead of snapping.
+    card().child(
+        collapsible()
+            .open(expanded)
+            .reveal(true)
+            .child(
+                view()
+                    .role(AccessibilityRole::Button)
+                    .accessibility_state(move || AccessibilityState {
+                        expanded: Some(expanded),
+                        ..AccessibilityState::default()
+                    })
+                    .on_press(move || actions::toggle_expanded(index))
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.0))
+                    .p(px(12.0))
+                    .rounded(px(radius::CONTROL))
+                    .transition_colors()
+                    .duration(150.0)
+                    .hover(|s| s.bg(colors::INSET))
+                    .child(chevron(expanded))
+                    .child(
+                        text(header)
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(text::BODY))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors::TEXT),
+                    )
+                    .child(caption(format!(
+                        "{keep} keep - {} dup",
+                        members.len() - keep
+                    )))
+                    .child(chip(
+                        util::human_bytes(dup),
+                        colors::ACCENT_WASH,
+                        colors::ACCENT,
+                    )),
+            )
+            .content(body),
+    )
+}
+
+/// Groups where every member has a large preview render as a card grid.
+fn is_grid_preview(thumb: &Thumb) -> bool {
+    matches!(thumb, Thumb::Image | Thumb::Poster(_) | Thumb::PendingVideo)
+}
+
+/// File name for a member, or the whole path when the file has none.
+fn member_name(member: &GroupMember) -> String {
+    member.path.file_name().map_or_else(
+        || member.path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// Folder the member lives in: the dimmed second line of either layout.
+fn member_parent(member: &GroupMember) -> String {
+    member
+        .path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default()
+}
+
+/// Height of a media card's preview, in points.
+const CARD_PREVIEW_H: f32 = 180.0;
+
+/// The large preview on top of a media card. Photos and videos (whose poster
+/// ffmpeg extracts) share one box so cards in a row line up; a video whose
+/// poster has not landed yet keeps the box with a play glyph.
+fn card_preview(thumb: &Thumb, path: &Path) -> View {
+    let frame = view()
+        .w_full()
+        .h(px(CARD_PREVIEW_H))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::PREVIEW))
+        .bg(colors::INSET);
+    let source = match thumb {
+        Thumb::Image => Some(path.to_string_lossy().into_owned()),
+        Thumb::Poster(poster) => Some(poster.to_string_lossy().into_owned()),
+        Thumb::None | Thumb::PendingVideo => None,
+    };
+    match source {
+        Some(source) => frame.child(
+            image(source)
+                .w_full()
+                .h(px(CARD_PREVIEW_H))
+                .object_fit(ResizeMode::Cover)
+                .rounded(px(radius::PREVIEW)),
+        ),
+        None => frame.border_1().border_color(colors::BORDER).child(
+            text("▶")
+                .text_size(px(text::HEADING))
+                .text_color(colors::MUTED),
+        ),
+    }
+}
+
+/// One card of a media group: large preview, then the name, its folder and
+/// the same controls a row carries. Only the border and the badge move when
+/// the keeper changes, so the group never reflows during a decision.
+fn media_card(group_index: usize, member: GroupMember, checked: bool) -> View {
+    let thumb = thumb_for(&member);
+    let similarity = member
+        .similarity
+        .map(|s| format!("{:.0}% similar", s * 100.0));
     card()
+        .flex_1()
+        .min_w(px(0.0))
+        .p(px(8.0))
+        .gap(px(8.0))
+        .border_color(if member.keep {
+            colors::ACCENT
+        } else {
+            colors::BORDER
+        })
+        .child(card_preview(&thumb, &member.path))
         .child(
             view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .p(px(12.0))
-                .child(ghost_button(if expanded { "v" } else { ">" }, move || {
-                    actions::toggle_expanded(index)
-                }))
+                .flex_col()
+                .min_w(px(0.0))
+                .gap(px(2.0))
                 .child(
-                    text(header)
-                        .flex_1()
+                    text(member_name(&member))
                         .truncate()
                         .text_size(px(text::BODY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors::TEXT),
                 )
-                .child(caption(format!(
-                    "{keep} keep - {} dup",
-                    members.len() - keep
-                )))
-                .child(chip(
-                    util::human_bytes(dup),
-                    colors::ACCENT_WASH,
-                    colors::ACCENT,
-                )),
+                .child(caption(member_parent(&member))),
         )
-        .child(when(expanded, move || {
-            view()
-                .flex_col()
-                .gap(px(2.0))
-                .px(px(12.0))
-                .pb(px(12.0))
-                .children(members.iter().map(|member| {
-                    member_row(index, member.clone(), selected.contains(&member.path))
-                }))
-        }))
+        .child(member_actions(group_index, &member, checked, similarity))
 }
 
 fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
-    let toggle_path = member.path.clone();
-    let keep_path = member.path.clone();
+    // Rendering only reads state: poster extraction is requested when a
+    // group becomes visible (see `actions::request_group_posters`), never
+    // while the tree is being built.
+    let thumb = thumb_for(&member);
+    let similarity = member
+        .similarity
+        .map(|s| format!("{:.0}% similar", s * 100.0));
+    let name = member_name(&member);
+    let shown = fit_text(&name, 120);
+    let truncated = shown != name;
+    let cell = text(shown)
+        .truncate()
+        .text_size(px(text::BODY))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors::TEXT);
+    let cell = if truncated {
+        cell.tooltip(hint(name))
+    } else {
+        cell
+    };
+    view()
+        .flex_row()
+        .items_start()
+        .gap(px(8.0))
+        .px(px(8.0))
+        .py(px(6.0))
+        .rounded(px(radius::CONTROL))
+        .bg(if member.keep {
+            colors::ACCENT_WASH
+        } else {
+            colors::PANE
+        })
+        .transition_colors()
+        .duration(180.0)
+        .child(member_thumb(&thumb, &member.path))
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(4.0))
+                .child(cell)
+                .child(caption(member_parent(&member)))
+                .child(member_actions(group_index, &member, checked, similarity)),
+        )
+}
+
+/// The controls line both layouts use: keeper / selection state, size,
+/// similarity, the reference badge and the Keep button.
+fn member_actions(
+    group_index: usize,
+    member: &GroupMember,
+    checked: bool,
+    similarity: Option<String>,
+) -> View {
     let label = if member.keep {
         "KEEP"
     } else if checked {
@@ -642,22 +883,13 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
         "Select"
     };
     let active = member.keep || checked;
-    let similarity = member
-        .similarity
-        .map(|s| format!("{:.0}%", s * 100.0))
-        .unwrap_or_default();
+    let toggle_path = member.path.clone();
+    let keep_path = member.path.clone();
     view()
         .flex_row()
+        .flex_wrap()
         .items_center()
-        .gap(px(8.0))
-        .px(px(8.0))
-        .py(px(6.0))
-        .rounded(px(radius::CONTROL))
-        .bg(if member.keep {
-            colors::ACCENT_WASH
-        } else {
-            colors::BACKGROUND
-        })
+        .gap(px(6.0))
         .child(
             checkbox()
                 .checked(active)
@@ -714,24 +946,9 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
                         }),
                 ),
         )
-        .child({
-            let full_path = member.path.to_string_lossy().to_string();
-            let shown = fit_text(&full_path, 100);
-            let truncated = shown != full_path;
-            let cell = text(shown)
-                .flex_1()
-                .truncate()
-                .text_size(px(text::CAPTION))
-                .text_color(colors::TEXT);
-            if truncated {
-                cell.tooltip(hint(full_path))
-            } else {
-                cell
-            }
-        })
         .child(caption(util::human_bytes(member.size)))
-        .child(when(!similarity.is_empty(), move || {
-            caption(similarity.clone())
+        .child(when(similarity.is_some(), move || {
+            caption(similarity.clone().unwrap_or_default())
         }))
         .child(when(member.reference, || {
             chip("REF", colors::ACCENT_WASH, colors::ACCENT)

@@ -430,6 +430,7 @@ pub(crate) fn start_scan() {
         s.scan_done = 0;
         s.scan_total = 0;
         s.scan_determinate = false;
+        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         s.has_scanned = false;
         s.groups.clear();
         s.mode_result = None;
@@ -511,6 +512,7 @@ pub(crate) fn start_scan() {
             };
             app().update(|s| {
                 s.status = label;
+                s.scan_phase = pipeline::phase_label(ph).to_string();
                 s.scan_done = done;
                 s.scan_total = total;
                 s.scan_determinate = determinate && total > 0;
@@ -552,6 +554,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         s.scan_done = 0;
         s.scan_total = 0;
         s.scan_determinate = false;
+        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         // A cancelled scan carries no groups by design: reset to the
         // pre-scan state (the walk cleared the pane at start anyway) and
         // report the stop. `has_scanned` stays false so the 3-step empty
@@ -616,7 +619,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             crate::ui::toast::notify(s.status.clone(), false);
             s.posters.clear();
             s.strips.clear();
-            s.preview_loading.clear();
+            s.poster_jobs.clear();
             return;
         }
         s.mode_result = None;
@@ -639,8 +642,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             .filter(|m| !m.keep)
             .map(|m| m.path.clone())
             .collect();
-        // Expand the first few groups; huge result sets stay navigable.
-        s.expanded = s.groups.iter().take(10).map(|g| g.index).collect();
+        // Every group is open by default: the results are readable without
+        // a click, and Collapse all is one press away.
+        s.expanded = s.groups.iter().map(|g| g.index).collect();
         recount(s);
         if s.groups.is_empty() {
             s.status = format!(
@@ -664,36 +668,87 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         // and in-flight flags.
         s.posters.clear();
         s.strips.clear();
-        s.preview_loading.clear();
+        s.poster_jobs.clear();
     });
-    // Generate video posters off the UI thread; each completion re-renders
-    // its row's thumbnail.
-    let jobs: Vec<(PathBuf, u64, Option<i64>)> = state.with_untracked(|s| {
-        s.groups
-            .iter()
-            .flat_map(|g| g.members.iter())
-            .filter(|m| media::classify(&m.path) == media::MediaKind::Video)
-            .take(120)
-            .map(|m| (m.path.clone(), m.size, m.mtime_secs))
-            .collect()
-    });
-    if jobs.is_empty() {
+    // Posters for the groups the user can already see.
+    request_expanded_posters();
+}
+
+// --- Media previews ---------------------------------------------------------
+
+/// Extract one video's poster in the background, once.
+///
+/// The results view calls this for each video row it actually renders, so a
+/// huge scan never spawns ffmpeg for files nobody looked at. `poster_jobs`
+/// holds every path already requested this scan, so a failed extraction is
+/// not retried on every re-render; the finished poster lands in `posters`,
+/// which re-renders the row that asked for it.
+pub(crate) fn ensure_poster(path: &Path, size: u64, mtime: Option<i64>) {
+    let idle =
+        app().with_untracked(|s| !s.posters.contains_key(path) && !s.poster_jobs.contains(path));
+    if !idle {
         return;
     }
+    let job = path.to_path_buf();
+    let key = job.clone();
+    app().update(|s| {
+        s.poster_jobs.insert(key.clone());
+    });
     app_spawn(async move {
-        for (path, size, mtime) in jobs {
-            let done =
-                blocking(move || poster::video_poster(&path, size, mtime).map(|p| (path, p)))
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some((orig, thumb)) = done {
-                app().update(|s| {
-                    s.posters.insert(orig, thumb);
-                });
-            }
+        let done = blocking(move || poster::video_poster(&job, size, mtime))
+            .await
+            .ok()
+            .flatten();
+        if let Some(thumb) = done {
+            app().update(move |s| {
+                s.posters.insert(key, thumb);
+            });
         }
     });
+}
+
+/// Ask for the posters of one group's videos.
+///
+/// Called when a group becomes visible (the groups a scan expands, and any
+/// group the user expands) and never from the render path: writing state
+/// while the tree is being built is re-entrancy the engine should not have
+/// to survive.
+pub(crate) fn request_group_posters(group_index: usize) {
+    let jobs: Vec<(PathBuf, u64, Option<i64>)> = app().with_untracked(|s| {
+        s.groups
+            .iter()
+            .find(|g| g.index == group_index)
+            .map(|g| {
+                g.members
+                    .iter()
+                    .filter(|m| media::classify(&m.path) == media::MediaKind::Video)
+                    .map(|m| (m.path.clone(), m.size, m.mtime_secs))
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    for (path, size, mtime) in jobs {
+        ensure_poster(&path, size, mtime);
+    }
+}
+
+/// Ask for the posters of every expanded group on the rendered page.
+///
+/// Expansion is the default now, so the bound is the page (`group_limit`),
+/// not the expansion set: a scan that finds thousands of groups must not
+/// start an ffmpeg run per video before the user has scrolled to them.
+fn request_expanded_posters() {
+    let indexes: Vec<usize> = app().with_untracked(|s| {
+        s.groups
+            .iter()
+            .take(s.group_limit)
+            .filter(|group| s.expanded.contains(&group.index))
+            .map(|group| group.index)
+            .collect()
+    });
+    for index in indexes {
+        request_group_posters(index);
+    }
 }
 
 // --- Selection and ordering -------------------------------------------------
@@ -912,14 +967,22 @@ pub(crate) fn toggle_sort_biggest() {
 
 pub(crate) fn show_more_groups() {
     app().update(|s| s.group_limit += crate::ui::state::GROUP_PAGE);
+    // The newly revealed page is expanded like the rest, so its posters are
+    // wanted too (already-requested videos are skipped).
+    request_expanded_posters();
 }
 
 pub(crate) fn toggle_expanded(index: usize) {
+    let mut opened = false;
     app().update(|s| {
         if !s.expanded.remove(&index) {
             s.expanded.insert(index);
+            opened = true;
         }
     });
+    if opened {
+        request_group_posters(index);
+    }
 }
 
 /// Open or close every group currently rendered.
@@ -931,6 +994,9 @@ pub(crate) fn set_all_expanded(open: bool) {
                 .extend(s.groups.iter().take(s.group_limit).map(|g| g.index));
         }
     });
+    if open {
+        request_expanded_posters();
+    }
 }
 
 /// Clear the delete selection (KEEP members are never selected anyway).

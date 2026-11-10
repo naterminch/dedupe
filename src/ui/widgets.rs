@@ -5,7 +5,7 @@
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
 use nsh_base::{button, switch, tooltip};
-use nsh_core::element::input;
+use nsh_core::element::{BorderCurve, ImageSrc, input, svg};
 use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, radius, text};
@@ -14,10 +14,13 @@ use crate::ui::palette::{colors, radius, text};
 pub(crate) fn card() -> View {
     view()
         .flex_col()
-        .bg(colors::CARD)
+        .bg(colors::GLASS)
         .border_1()
         .border_color(colors::BORDER)
         .rounded(px(radius::CARD))
+        .border_curve(BorderCurve::Continuous)
+        .shadow_sm()
+        .shadow_color(colors::SHADOW)
 }
 
 /// Page-level heading ("dedupe", "Settings").
@@ -62,11 +65,16 @@ pub(crate) fn primary_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(14.0))
-            .py(px(8.0))
+            .px(px(18.0))
+            .py(px(9.0))
             .bg(colors::ACCENT)
-            .rounded(px(radius::CONTROL))
-            .hover(|s| s.opacity(0.9))
+            .rounded_full()
+            .shadow_xs()
+            .shadow_color(colors::SHADOW)
+            .transition_colors()
+            .duration(180.0)
+            .ease_out()
+            .hover(|s| s.opacity(0.92))
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -87,13 +95,16 @@ pub(crate) fn secondary_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(14.0))
+            .px(px(16.0))
             .py(px(8.0))
-            .bg(colors::INSET)
+            .bg(colors::PANE)
             .border_1()
             .border_color(colors::BORDER)
-            .rounded(px(radius::CONTROL))
-            .hover(|s| s.bg(colors::BORDER))
+            .rounded_full()
+            .transition_colors()
+            .duration(180.0)
+            .ease_out()
+            .hover(|s| s.bg(colors::ACCENT_WASH))
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -114,10 +125,13 @@ pub(crate) fn ghost_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(radius::CONTROL))
-            .hover(|s| s.bg(colors::INSET))
+            .px(px(12.0))
+            .py(px(7.0))
+            .rounded_full()
+            .transition_colors()
+            .duration(180.0)
+            .ease_out()
+            .hover(|s| s.bg(colors::ACCENT_WASH))
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -125,6 +139,27 @@ pub(crate) fn ghost_button(
                     .text_color(colors::ACCENT),
             ),
     )
+}
+
+/// A right-pointing chevron, drawn as an SVG so it stays sharp at any scale.
+/// Its `currentColor` stroke follows the element's text color, so it tracks
+/// the theme. Turning one glyph beats swapping two: the same markup rotates
+/// 90° when the group opens, so the disclosure animates instead of blinking.
+const CHEVRON: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" \
+fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" \
+stroke-linejoin=\"round\"><path d=\"m9 6 6 6-6 6\"/></svg>";
+
+/// The disclosure chevron of a group header: right when closed, turned down
+/// when open. Decorative — the header row itself is the button, so it carries
+/// the expanded state for screen readers.
+pub(crate) fn chevron(open: bool) -> impl IntoElement {
+    svg(ImageSrc::svg_markup(CHEVRON))
+        .size(px(16.0))
+        .flex_shrink_0()
+        .text_color(colors::MUTED)
+        .transition_transform()
+        .duration(150.0)
+        .rotate(if open { deg(90.0) } else { deg(0.0) })
 }
 
 /// A destructive action (Delete N, Undo delete).
@@ -138,11 +173,16 @@ pub(crate) fn danger_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(14.0))
-            .py(px(8.0))
+            .px(px(16.0))
+            .py(px(9.0))
             .bg(colors::DANGER)
-            .rounded(px(radius::CONTROL))
-            .hover(|s| s.opacity(0.9))
+            .rounded_full()
+            .shadow_xs()
+            .shadow_color(colors::SHADOW)
+            .transition_colors()
+            .duration(180.0)
+            .ease_out()
+            .hover(|s| s.opacity(0.92))
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -198,12 +238,12 @@ pub(crate) fn chip(
     foreground: AdaptiveColor,
 ) -> View {
     view()
-        .px(px(8.0))
-        .py(px(2.0))
+        .px(px(10.0))
+        .py(px(3.0))
         .flex_row()
         .items_center()
         .bg(background)
-        .rounded(px(radius::CONTROL))
+        .rounded_full()
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -235,14 +275,16 @@ pub(crate) fn field(
         .caret_color(|| color(colors::ACCENT))
         .selection_color(|| color(colors::ACCENT))
         .flex_1()
-        .px(px(10.0))
-        .py(px(7.0))
+        .px(px(12.0))
+        .py(px(8.0))
         .text_size(px(text::BODY))
         .text_color(colors::TEXT)
         .bg(colors::INSET)
         .border_1()
         .border_color(colors::BORDER)
         .rounded(px(radius::CONTROL))
+        .transition_colors()
+        .duration(180.0)
 }
 
 /// An info bubble for `.tooltip(..)`: dark in light theme, light in dark

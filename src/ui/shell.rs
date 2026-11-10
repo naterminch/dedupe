@@ -10,8 +10,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, danger_button, field, field_label, ghost_button, panel_title,
-    primary_button, secondary_button, toggle_switch,
+    caption, card, chip, danger_button, field, field_label, ghost_button, primary_button,
+    secondary_button, toggle_switch,
 };
 use crate::ui_helpers::{self, fit_text};
 
@@ -57,7 +57,6 @@ fn header_block() -> impl IntoElement {
                         .flex_col()
                         .gap(px(4.0))
                         .child(section_kicker("Source folders"))
-                        .child(panel_title("Where to look"))
                         .child(caption("Protected folders are never deleted.")),
                 )
                 .child(chip(
@@ -115,12 +114,14 @@ fn folder_row(folder: ReadSignal<FolderEntry>, index: ReadSignal<usize>) -> impl
             .flex_col()
             .gap(px(8.0))
             .p(px(10.0))
-            .rounded(px(radius::CARD))
+            .rounded(px(radius::CONTROL))
             .bg(if reference {
                 colors::ACCENT_WASH
             } else {
-                colors::CARD
+                colors::PANE
             })
+            .transition_colors()
+            .duration(180.0)
             .border_1()
             .border_color(if reference {
                 colors::ACCENT_WASH_STRONG
@@ -152,9 +153,9 @@ fn protect_chip(checked: bool, index: ReadSignal<usize>) -> impl IntoElement {
         .flex_row()
         .items_center()
         .gap(px(6.0))
-        .px(px(8.0))
+        .px(px(10.0))
         .py(px(3.0))
-        .rounded(px(radius::CONTROL))
+        .rounded_full()
         .bg(if checked {
             colors::ACCENT_WASH_STRONG
         } else {
@@ -209,14 +210,7 @@ fn scope_card() -> impl IntoElement {
                 .items_start()
                 .justify_between()
                 .gap(px(12.0))
-                .child(
-                    view()
-                        .flex_col()
-                        .gap(px(2.0))
-                        .child(section_kicker("Scan scope"))
-                        .child(panel_title("Narrow the search")),
-                )
-                .child(chip("Optional", colors::INSET, colors::MUTED)),
+                .child(section_kicker("Scan scope")),
         )
         .child(labelled(
             "File types",
@@ -328,38 +322,19 @@ fn scan_card() -> impl IntoElement {
                     .items_start()
                     .justify_between()
                     .gap(px(12.0))
-                    .child(
-                        view()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .child(section_kicker(|| {
-                                if app().with(|s| s.scanning) {
-                                    "Scanning"
-                                } else {
-                                    "Ready to scan"
-                                }
-                            }))
-                            .child(panel_title(|| {
-                                if app().with(|s| s.scanning) {
-                                    "Working through your files"
-                                } else {
-                                    "Your files stay on this PC."
-                                }
-                            })),
-                    )
+                    .child(view().flex_col().gap(px(4.0)).child(section_kicker(|| {
+                        if app().with(|s| s.scanning) {
+                            "Scanning"
+                        } else {
+                            "Ready to scan"
+                        }
+                    })))
                     .child(chip(
                         || format!("{} folders", app().with(|s| s.folders.len())),
                         colors::INSET,
                         colors::MUTED,
                     )),
             )
-            .child(caption(|| {
-                if app().with(|s| s.scanning) {
-                    "Stop at any time; the view resets instantly."
-                } else {
-                    "No uploads."
-                }
-            }))
             .child(media_status())
             .child(
                 when(

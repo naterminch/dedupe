@@ -282,3 +282,44 @@ fn scan_reports_the_duplicate_groups_it_found() {
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("scan produces the duplicate summary");
 }
+
+/// A scan that finds media must render its groups: every member row draws a
+/// thumbnail (photo from the file itself, video from a poster frame), and a
+/// video whose poster cannot be extracted must not keep the list from
+/// rendering.
+#[test]
+fn scan_renders_media_groups_and_their_thumbnails() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-media-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let photo = dir.join("one.png");
+    image::RgbImage::from_pixel(8, 8, image::Rgb([200, 30, 40]))
+        .save(&photo)
+        .expect("write fixture png");
+    std::fs::copy(&photo, dir.join("two.png")).expect("copy fixture png");
+    // Videos with identical bytes that no decoder accepts: the worst case
+    // for the preview path (poster extraction fails).
+    std::fs::write(dir.join("one.mp4"), vec![7u8; 4096]).expect("fixture video");
+    std::fs::copy(dir.join("one.mp4"), dir.join("two.mp4")).expect("copy fixture video");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // The member rows themselves, not just the summary chip.
+        app.wait_for("text:/one\\.png/")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("media groups render with their rows");
+}

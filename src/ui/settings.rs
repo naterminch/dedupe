@@ -65,7 +65,7 @@ fn nav() -> View {
         .flex_shrink_0()
         .gap(px(2.0))
         .p(px(12.0))
-        .bg(colors::CARD)
+        .bg(colors::GLASS)
         .border_r_1()
         .border_color(colors::BORDER)
         .child(caption("Settings"))

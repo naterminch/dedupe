@@ -54,9 +54,10 @@ fn header() -> impl IntoElement {
         .items_center()
         .justify_between()
         .gap(px(16.0))
-        .px(px(24.0))
-        .py(px(14.0))
-        .bg(colors::CARD)
+        .px(px(28.0))
+        .py(px(16.0))
+        .bg(colors::GLASS)
+        .backdrop_blur(24.0_f32)
         .border_b_1()
         .border_color(colors::BORDER)
         .child(
@@ -65,10 +66,7 @@ fn header() -> impl IntoElement {
                 .min_w(px(0.0))
                 .gap(px(2.0))
                 .child(heading("dedupe"))
-                .child(caption(format!(
-                    "v{} - exact and similar duplicates, kept local",
-                    env!("CARGO_PKG_VERSION")
-                ))),
+                .child(caption(format!("v{}", env!("CARGO_PKG_VERSION")))),
         )
         .child(
             view()
@@ -120,9 +118,10 @@ fn status_bar() -> impl IntoElement {
         .items_center()
         .justify_between()
         .gap(px(16.0))
-        .px(px(24.0))
-        .py(px(8.0))
-        .bg(colors::CARD)
+        .px(px(28.0))
+        .py(px(10.0))
+        .bg(colors::GLASS)
+        .backdrop_blur(20.0_f32)
         .border_t_1()
         .border_color(colors::BORDER)
         .child(caption(|| app().with(|s| s.status.clone())))
