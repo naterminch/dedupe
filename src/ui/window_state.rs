@@ -11,6 +11,8 @@
 //!   which persists it in `dedupe.json`.
 //! - [`restore`]: replays a saved frame (and maximized state) right after
 //!   the first launch layout.
+//! - [`exit_when_window_closes`]: ends the process once the window is gone,
+//!   because the platform's message loop stops there without returning.
 //!
 //! Everything is best-effort: a failed Win32 call leaves the defaults in
 //! place and never takes the GUI down.
@@ -132,6 +134,73 @@ pub(crate) fn start_watching() {
 
 #[cfg(any(not(target_os = "windows"), test))]
 pub(crate) fn start_watching() {}
+
+/// End the process when the app window closes.
+///
+/// Closing the window destroys it, but on nsh 0.4.0 `run_app` never returns
+/// afterwards: its loop stops pumping messages and the UI thread parks with
+/// nothing left to dispatch, so `main` would never finish. The window is
+/// gone either way, yet the process lingers in Task Manager and keeps the
+/// single-instance mutex, so the next launch raises no window and looks
+/// broken. Watching for our window is the one signal that survives: it is
+/// seen once the app is up, and its disappearance means the user closed it.
+///
+/// Two consecutive misses are required so a lookup that races a momentary
+/// window teardown (a DPI or theme re-create) cannot quit the app.
+#[cfg(all(target_os = "windows", not(test)))]
+pub(crate) fn exit_when_window_closes() {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(200);
+    const MISSES: u8 = 2;
+    let spawned = std::thread::Builder::new()
+        .name("dedupe-close-watch".into())
+        .spawn(|| {
+            let mut seen = false;
+            let mut misses = 0;
+            loop {
+                std::thread::sleep(POLL);
+                if our_window().is_some() {
+                    seen = true;
+                    misses = 0;
+                } else if seen {
+                    misses += 1;
+                    if misses >= MISSES {
+                        break;
+                    }
+                }
+            }
+            save_frame();
+            // `std::process::exit` runs `ExitProcess`, which detaches every
+            // loaded DLL; the parked UI thread holds graphics and shell locks,
+            // so that detach blocks. Terminate the process outright instead:
+            // the frame above is already on disk, and the job object closes
+            // with us, taking any running ffmpeg with it.
+            // SAFETY: terminates only this process, and only after the work
+            // this function is responsible for (persisting the frame) is done.
+            unsafe {
+                use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+                let _ = TerminateProcess(GetCurrentProcess(), 0);
+            }
+        });
+    let _ = spawned;
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+pub(crate) fn exit_when_window_closes() {}
+
+/// Persist the last sampled frame before the window watcher exits.
+///
+/// The sampler keeps running while the window is up, so the last frame is the
+/// size and place the user actually left behind. Read-modify-write on disk so
+/// the settings the app already saved stay as they are.
+#[cfg(all(target_os = "windows", not(test)))]
+fn save_frame() {
+    let Some(frame) = current() else {
+        return;
+    };
+    let mut prefs = crate::prefs::GuiPrefs::load();
+    prefs.window = Some(frame);
+    let _ = prefs.save();
+}
 
 /// Sample the real frame into [`LAST_FRAME`].
 #[cfg(all(target_os = "windows", not(test)))]
