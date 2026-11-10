@@ -1,3 +1,9 @@
+// Windows: link as a GUI-subsystem app so no console window is ever created
+// for the binary — opening the desktop app from Explorer, the Run dialog or a
+// shortcut shows no terminal at all. CLI runs re-attach to the terminal that
+// launched them in `main` (see `util::attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use anyhow::Result;
 use clap::Parser;
 use console::style;
@@ -5,7 +11,14 @@ use dedupe::pipeline::{self, ScanPhase};
 use dedupe::{cache, cancel, cli, report};
 
 fn main() {
-    let t0 = std::time::Instant::now();
+    // Before anything spawns: child processes (ffmpeg, ffprobe) must die with
+    // the app instead of outliving a closed window.
+    dedupe::util::own_child_processes();
+    // A bare `dedupe` is the desktop app and must not touch the console; every
+    // other invocation is a CLI run that needs the launching terminal back.
+    if std::env::args().count() > 1 {
+        dedupe::util::attach_parent_console();
+    }
     init_colors();
     let cli = cli::Cli::parse();
     // Clearing is a side effect, not a scan: handle it before deciding
@@ -29,7 +42,6 @@ fn main() {
     // user came for the CLI. clap still handles `dedupe --help` /
     // `dedupe --version` (exit 0) before we get here.
     if cli.gui || std::env::args().count() == 1 {
-        eprintln!("[startup] args parsed in {:?}", t0.elapsed());
         dedupe::ui::run();
         return;
     }
