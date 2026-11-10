@@ -1004,11 +1004,20 @@ fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
                 .object_fit(ResizeMode::Cover)
                 .rounded(px(radius::CONTROL)),
         ),
-        None => frame.border_1().border_color(colors::BORDER).child(
-            text("▶")
-                .text_size(px(text::HEADING))
-                .text_color(colors::MUTED),
-        ),
+        None => {
+            let empty = frame.border_1().border_color(colors::BORDER);
+            match thumb {
+                // Only a video waiting on its poster frame gets the glyph: a
+                // photo the image element cannot decode is a plain box, not
+                // something with a player behind it.
+                Thumb::PendingVideo => empty.child(
+                    text("▶")
+                        .text_size(px(text::HEADING))
+                        .text_color(colors::MUTED),
+                ),
+                _ => empty,
+            }
+        }
     };
     if playable {
         // The preview is the play button: a click loads the clip, muted.
@@ -1125,7 +1134,10 @@ fn media_card(
             keep,
             checked,
             similarity,
-            Some(playing),
+            // Videos only: `thumb_for` maps a video to a poster frame (or a
+            // pending one), so this is the player's own switch. A photo has
+            // nothing to play and gets no control for it.
+            matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo).then_some(playing),
         ))
 }
 

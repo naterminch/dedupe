@@ -532,3 +532,40 @@ fn video_preview_plays_and_stops() {
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("video previews play and stop in place");
 }
+
+/// Photos carry no player: the Play/Stop control and the play glyph belong to
+/// videos, so an image card never offers an action with nothing behind it.
+#[test]
+fn image_cards_have_no_play_button() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-image-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.png"), vec![1u8; 4096]).expect("fixture image");
+    std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for("text:/one\\.png/")?;
+        // Let a wrongly offered control show up before asserting it is absent.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if app.shows("Play") || app.shows("Stop") {
+            return Err("an image card offers a play control".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("image cards render without play controls");
+}
