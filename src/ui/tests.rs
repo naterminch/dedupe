@@ -89,18 +89,21 @@ fn shell_shows_the_core_controls() {
     app.wait_for("text:dedupe").expect("header title");
     app.wait_for("text:Scan for duplicates")
         .expect("scan button");
-    assert!(app.shows("Settings"), "settings button");
+    assert!(
+        app.screen().count("label:Settings").unwrap_or(0) > 0,
+        "settings button"
+    );
     assert!(app.shows("Source folders"), "sidebar heading");
 }
 
 #[test]
 fn settings_page_opens_and_closes() {
     let (mut app, _guard) = start();
-    app.wait_for("text:Settings").expect("settings button");
-    app.press("text:Settings").expect("open settings");
-    app.wait_for("text:Back").expect("back button");
+    app.wait_for("label:Settings").expect("settings button");
+    app.press("label:Settings").expect("open settings");
+    app.wait_for("label:Back to results").expect("back button");
     app.wait_for("text:Preferences").expect("settings nav");
-    app.press("text:Back").expect("close settings");
+    app.press("label:Back to results").expect("close settings");
     app.wait_for("text:Scan for duplicates")
         .expect("main flow returns");
 }
@@ -126,9 +129,9 @@ fn adding_a_folder_updates_the_sidebar() {
     pasted.text = r"C:\media".to_owned();
     app.paste("text:Folder path", &pasted)
         .expect("paste the path");
-    app.press("text:Add").expect("press add");
+    app.press("label:Add folder").expect("press add");
     app.wait_for(r"text:C:\media").expect("folder row appears");
-    app.wait_for("text:Remove").expect("row controls");
+    app.wait_for("label:Remove folder").expect("row controls");
 }
 
 #[test]
@@ -335,8 +338,8 @@ fn delete_asks_for_confirmation_before_removing_anything() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         // Both copies are 4096 bytes, so the button names its exact count.
@@ -398,8 +401,8 @@ fn scan_reports_the_duplicate_groups_it_found() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         // The scan pumps on the wall clock (200 ms timer loop), so poll the
         // rendered summary for up to a minute of real time.
@@ -439,8 +442,8 @@ fn scan_renders_media_groups_and_their_thumbnails() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         // The member rows themselves, not just the summary chip.
@@ -477,8 +480,8 @@ fn every_group_starts_expanded() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/2 group\\(s\\)/", std::time::Duration::from_secs(60))?;
         // Both groups' rows render with no Expand press in between.
@@ -510,19 +513,19 @@ fn video_preview_plays_and_stops() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         // A video group offers the inline player: both cards have one, and
         // pressing either starts that card's clip.
-        app.wait_for("text:Play")?;
-        app.press("text:Play >> nth=0")?;
-        app.wait_for("text:Stop")?;
-        app.press("text:Stop >> nth=0")?;
+        app.wait_for("label:Play video")?;
+        app.press("label:Play video >> nth=0")?;
+        app.wait_for("label:Stop video")?;
+        app.press("label:Stop video >> nth=0")?;
         // Stopping returns the card to its poster/placeholder state.
         for _ in 0..60 {
-            if !app.shows("Stop") {
+            if app.screen().count("label:Stop video").unwrap_or(0) == 0 {
                 return Ok(());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -554,14 +557,16 @@ fn image_cards_have_no_play_button() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         app.wait_for("text:/one\\.png/")?;
         // Let a wrongly offered control show up before asserting it is absent.
         std::thread::sleep(std::time::Duration::from_millis(300));
-        if app.shows("Play") || app.shows("Stop") {
+        let players = app.screen().count("label:Play video").unwrap_or(0)
+            + app.screen().count("label:Stop video").unwrap_or(0);
+        if players > 0 {
             return Err("an image card offers a play control".to_string());
         }
         Ok(())
@@ -591,16 +596,16 @@ fn layout_switch_keeps_the_results_listed() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         app.wait_for("text:/one\\.png/")?;
         // List, then back to Grid: the same two members stay listed.
-        app.press("text:List")?;
+        app.press("label:List layout")?;
         app.wait_for("text:/one\\.png/")?;
         app.wait_for("text:/two\\.png/")?;
-        app.press("text:Grid")?;
+        app.press("label:Grid layout")?;
         app.wait_for("text:/two\\.png/")
     })();
     let _ = std::fs::remove_dir_all(&dir);

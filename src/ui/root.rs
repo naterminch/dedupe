@@ -9,7 +9,7 @@ use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app};
-use crate::ui::widgets::{caption, ghost_button, heading, secondary_button};
+use crate::ui::widgets::{caption, heading, icon_button, icon_ghost_button, icons};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
@@ -82,14 +82,25 @@ fn header() -> impl IntoElement {
                 .items_center()
                 .gap(px(8.0))
                 .child(dynamic(|| {
-                    let label = if dark() { "Light" } else { "Dark" };
-                    ghost_button(label, actions::toggle_theme)
+                    if dark() {
+                        icon_ghost_button(
+                            icons::SUN,
+                            "Switch to light theme",
+                            actions::toggle_theme,
+                        )
+                    } else {
+                        icon_ghost_button(
+                            icons::MOON,
+                            "Switch to dark theme",
+                            actions::toggle_theme,
+                        )
+                    }
                 }))
                 .child(dynamic(|| {
                     if app().with(|s| s.view) == AppView::Settings {
-                        secondary_button("Back", actions::leave_settings)
+                        icon_button(icons::BACK, "Back to results", actions::leave_settings)
                     } else {
-                        secondary_button("Settings", actions::open_settings)
+                        icon_button(icons::GEAR, "Settings", actions::open_settings)
                     }
                 })),
         )

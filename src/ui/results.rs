@@ -18,8 +18,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app};
 use crate::ui::widgets::{
-    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, motion,
-    primary_button, secondary_button,
+    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint,
+    icon_button, icon_chip, icon_ghost_button, icons, motion, secondary_button,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -216,19 +216,31 @@ fn selection_row() -> View {
             view()
                 .flex_row()
                 .gap(px(4.0))
-                .child(ghost_button("Expand", || actions::set_all_expanded(true)))
-                .child(ghost_button("Collapse", || {
-                    actions::set_all_expanded(false)
-                })),
+                .child(icon_ghost_button(
+                    icons::EXPAND,
+                    "Expand all groups",
+                    || actions::set_all_expanded(true),
+                ))
+                .child(icon_ghost_button(
+                    icons::COLLAPSE,
+                    "Collapse all groups",
+                    || actions::set_all_expanded(false),
+                )),
         )
         .child(
             view()
                 .flex_row()
                 .gap(px(4.0))
-                .child(ghost_button("Select all", || {
-                    app().update(actions::reselect_all_dups);
-                }))
-                .child(ghost_button("Clear", actions::select_none)),
+                .child(icon_ghost_button(
+                    icons::SELECT_ALL,
+                    "Select all duplicates",
+                    || app().update(actions::reselect_all_dups),
+                ))
+                .child(icon_ghost_button(
+                    icons::CLEAR,
+                    "Clear selection",
+                    actions::select_none,
+                )),
         )
 }
 
@@ -244,7 +256,11 @@ fn action_row() -> View {
         .child(layout_toggle())
         .child(delete_bar())
         .child(consolidate_button())
-        .child(ghost_button("Export JSON", actions::save_report))
+        .child(icon_ghost_button(
+            icons::EXPORT,
+            "Export JSON report",
+            actions::save_report,
+        ))
 }
 
 fn sim_filter() -> impl IntoElement {
@@ -281,7 +297,7 @@ fn sim_filter() -> impl IntoElement {
                 .border_color(colors::BORDER)
                 .rounded(px(radius::CONTROL)),
         )
-        .child(secondary_button("Apply", || {
+        .child(icon_button(icons::CHECK, "Apply similarity", || {
             let raw = app().with(|s| s.min_sim_input.clone());
             actions::apply_sim_input(&raw);
         }))
@@ -364,42 +380,16 @@ fn layout_toggle() -> View {
     view().child(dynamic(|| {
         let current = app().with(|s| s.layout);
         let mut row = view().flex_row().gap(px(2.0));
-        for (layout, label) in [(Layout::Grid, "Grid"), (Layout::List, "List")] {
-            row = row.child(layout_chip(layout, label, current == layout));
+        for (layout, markup, label) in [
+            (Layout::Grid, icons::GRID, "Grid layout"),
+            (Layout::List, icons::LIST, "List layout"),
+        ] {
+            row = row.child(icon_chip(markup, label, current == layout, move || {
+                actions::set_layout(layout)
+            }));
         }
         radio_group().child(row)
     }))
-}
-
-fn layout_chip(layout: Layout, label: &'static str, active: bool) -> impl IntoElement {
-    radio()
-        .checked(active)
-        .on_change(move |_: &bool| actions::set_layout(layout))
-        .accessibility_label(label)
-        .px(px(space::SM))
-        .py(px(space::XS))
-        .rounded_full()
-        .bg(if active {
-            colors::ACCENT_WASH_STRONG
-        } else {
-            colors::INSET
-        })
-        .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
-        .child(
-            text(label)
-                .text_size(px(text::CAPTION))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if active {
-                    colors::ACCENT
-                } else {
-                    colors::MUTED
-                }),
-        )
 }
 
 fn delete_bar() -> View {
@@ -431,7 +421,11 @@ fn delete_bar() -> View {
             row = row.child(danger_button(label, actions::request_delete).tooltip(hint(tip)));
         }
         if can_undo {
-            row = row.child(secondary_button("Undo delete", actions::undo_delete));
+            row = row.child(icon_button(
+                icons::UNDO,
+                "Undo delete",
+                actions::undo_delete,
+            ));
         }
         row
     }))
@@ -575,9 +569,17 @@ pub(crate) fn delete_confirm() -> View {
 fn consolidate_button() -> View {
     view().child(dynamic(|| {
         if app().with(|s| s.consolidate_dest.is_some()) {
-            primary_button("Move keepers here", actions::perform_consolidate)
+            icon_button(
+                icons::FOLDER_MOVE,
+                "Move keepers into the chosen folder",
+                actions::perform_consolidate,
+            )
         } else {
-            secondary_button("Consolidate", actions::pick_consolidate_dir)
+            icon_button(
+                icons::FOLDER,
+                "Choose a folder to consolidate into",
+                actions::pick_consolidate_dir,
+            )
         }
     }))
 }
@@ -1085,7 +1087,7 @@ fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
                     .absolute()
                     .top(px(space::SM))
                     .right(px(space::SM))
-                    .child(secondary_button("Stop", move || {
+                    .child(icon_button(icons::STOP, "Stop video", move || {
                         actions::toggle_play(&stop_path);
                     })),
             );
@@ -1153,11 +1155,23 @@ fn media_card(
         .w_full()
         .p(px(space::SM))
         .gap(px(space::SM))
-        .bg(colors::PANE)
+        .bg(if keep {
+            colors::KEEP_WASH
+        } else if checked {
+            colors::SELECT_WASH
+        } else {
+            colors::PANE
+        })
         .rounded(px(radius::CARD))
         .border_curve(BorderCurve::Continuous)
         .border_1()
-        .border_color(if keep { colors::ACCENT } else { colors::BORDER })
+        .border_color(if keep {
+            colors::KEEP
+        } else if checked {
+            colors::SELECT
+        } else {
+            colors::BORDER
+        })
         .child(card_preview(&thumb, &member.path, playing))
         .child(
             view()
@@ -1249,10 +1263,22 @@ fn member_row(
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
+        // Green keeps, amber ticks: two decisions that must never look
+        // like the same one.
         .bg(if keep {
-            colors::ACCENT_WASH
+            colors::KEEP_WASH
+        } else if checked {
+            colors::SELECT_WASH
         } else {
             colors::PANE
+        })
+        .border_1()
+        .border_color(if keep {
+            colors::KEEP
+        } else if checked {
+            colors::SELECT
+        } else {
+            colors::BORDER
         })
         .transition_colors()
         .duration(motion(180.0));
@@ -1320,15 +1346,17 @@ fn member_actions(
                 .gap(px(6.0))
                 .rounded(px(radius::CONTROL))
                 .bg(if keep {
-                    colors::ACCENT_WASH_STRONG
+                    colors::KEEP_WASH_STRONG
                 } else if checked {
-                    colors::ACCENT_WASH
+                    colors::SELECT_WASH_STRONG
                 } else {
                     colors::INSET
                 })
                 .border_1()
-                .border_color(if active {
-                    colors::ACCENT
+                .border_color(if keep {
+                    colors::KEEP
+                } else if checked {
+                    colors::SELECT
                 } else {
                     colors::BORDER
                 })
@@ -1340,12 +1368,17 @@ fn member_actions(
                         .items_center()
                         .justify_center()
                         .border_1()
-                        .border_color(if active {
-                            colors::ACCENT
+                        .border_color(if keep {
+                            colors::KEEP
+                        } else if checked {
+                            colors::SELECT
                         } else {
                             colors::MUTED
                         })
-                        .checked(|s| s.bg(colors::ACCENT).border_color(colors::ACCENT))
+                        .checked(move |s| {
+                            let tint = if keep { colors::KEEP } else { colors::SELECT };
+                            s.bg(tint).border_color(tint)
+                        })
                 })
                 .indicator(
                     text(if active { "✓" } else { "" })
@@ -1357,8 +1390,10 @@ fn member_actions(
                     text(label)
                         .text_size(px(text::CAPTION))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active {
-                            colors::ACCENT
+                        .text_color(if keep {
+                            colors::KEEP
+                        } else if checked {
+                            colors::SELECT
                         } else {
                             colors::MUTED
                         }),
@@ -1373,13 +1408,18 @@ fn member_actions(
         }))
         .child(when(play.is_some(), move || {
             let path = play_path.clone();
-            ghost_button(if playing { "Stop" } else { "Play" }, move || {
+            let (markup, label) = if playing {
+                (icons::STOP, "Stop video")
+            } else {
+                (icons::PLAY, "Play video")
+            };
+            icon_ghost_button(markup, label, move || {
                 actions::toggle_play(&path);
             })
         }))
         .child(when(!keep, move || {
             let path = keep_path.clone();
-            ghost_button("Keep", move || {
+            icon_ghost_button(icons::CHECK, "Keep this copy", move || {
                 actions::set_keeper(group_index, &path);
             })
         }))
