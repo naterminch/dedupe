@@ -1,15 +1,10 @@
-//! Pure UI helpers extracted from `ui.rs`: text capping, hash captions,
-//! progress-bar reads, and size slider/text syncing.
+//! Pure UI helpers: text capping, hash captions, selector-to-CLI mapping,
+//! and size-limit parsing.
 //!
-//! No view state lives here — only functions. `DedupeView` appears solely
-//! as the `Context` generic so slider/input sync can notify correctly.
+//! No view state lives here, only functions.
 
 use crate::cli;
-use crate::ui::{DedupeView, SIZE_SLIDER_MAX, SIZE_SLIDER_MIN};
 use crate::util;
-use gpui_kit::component::input::InputState;
-use gpui_kit::component::slider::SliderState;
-use gpui_kit::{Context, Entity, SharedString, Window};
 
 /// Read (position, length) off a headless progress bar.
 pub(crate) fn bar_pos(bar: &indicatif::ProgressBar) -> (u64, u64) {
@@ -116,78 +111,50 @@ pub(crate) fn parse_size_limit(raw: &str) -> anyhow::Result<Option<u64>> {
     util::parse_size(raw.trim()).map(Some)
 }
 
-/// Mirror a size slider position into its text box. `empty_at_min`: the
-/// min-size slider clears the box at the left end (no limit); the max-size
-/// slider clears it at the right end. The empty end writes `unlimited`
-/// so the box never looks broken.
-pub(crate) fn size_slider_to_text(
-    value: f32,
-    empty_at_min: bool,
-    input: &Entity<InputState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let at_empty_end = if empty_at_min {
-        value <= SIZE_SLIDER_MIN * 1.001
+/// Absolute path from an OS file-drop URI (`file:///C:/a%20b.png`), or
+/// `None` for anything that is not a local `file:` URL. Drops carry
+/// `file:` URLs, not paths; `actions::drop_folders` needs the plain path.
+pub(crate) fn file_url_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("file://")?;
+    // A local drop's host is `localhost`; anything else is a network
+    // share, not a scan root here.
+    let rest = rest.strip_prefix("localhost/").unwrap_or(rest);
+    // Fragments and queries are URL parts, never part of the path.
+    let rest = rest.split(['#', '?']).next()?;
+    let decoded = percent_decode(rest)?;
+    let path = decoded.strip_suffix('/').unwrap_or(&decoded);
+    // Windows drive drops arrive as `file:///C:/...`: lose the extra
+    // leading slash so the path is in native `Path` form.
+    if cfg!(target_os = "windows")
+        && path.len() >= 3
+        && path.as_bytes()[0] == b'/'
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+    {
+        Some(path[1..].to_string())
     } else {
-        value >= SIZE_SLIDER_MAX / 1.001
-    };
-    let text = if at_empty_end {
-        NO_LIMIT_LABEL.to_string()
-    } else {
-        util::human_bytes(value.max(1.0) as u64)
-    };
-    input.update(cx, |state, cx| {
-        state.set_value(SharedString::from(text), window, cx);
-    });
-}
-
-/// Mirror a typed size into its slider. Blank or `unlimited` means "no
-/// limit" (slider to the empty end); unparsable text leaves the slider alone.
-pub(crate) fn size_text_to_slider(
-    raw: &str,
-    empty_at_min: bool,
-    slider: &Entity<SliderState>,
-    window: &mut Window,
-    cx: &mut Context<DedupeView>,
-) {
-    let raw = raw.trim();
-    let target: f32 = if is_no_limit(raw) {
-        if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        }
-    } else {
-        match util::parse_size(raw) {
-            Ok(b) => (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-            Err(_) => return,
-        }
-    };
-    slider.update(cx, |state, cx| {
-        state.set_value(target, window, cx);
-    });
-}
-
-/// Initial slider position for a restored prefs size string. Blank,
-/// `unlimited`, or unparsable means "no limit" (slider to the empty end).
-pub(crate) fn prefs_size_to_slider(raw: &str, empty_at_min: bool) -> f32 {
-    let raw = raw.trim();
-    if is_no_limit(raw) {
-        return if empty_at_min {
-            SIZE_SLIDER_MIN
-        } else {
-            SIZE_SLIDER_MAX
-        };
+        Some(path.to_string())
     }
-    util::parse_size(raw).map_or(
-        if empty_at_min {
-            SIZE_SLIDER_MIN
+}
+
+/// Percent-decode (`%C3%BC` → `ü`). `None` when an escape is malformed or
+/// the bytes are not UTF-8: junk URLs must never become junk paths.
+pub(crate) fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = bytes.get(i + 1..i + 3)?;
+            let byte = u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok()?;
+            out.push(byte);
+            i += 3;
         } else {
-            SIZE_SLIDER_MAX
-        },
-        |b| (b as f32).clamp(SIZE_SLIDER_MIN, SIZE_SLIDER_MAX),
-    )
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -212,6 +179,47 @@ mod tests {
         assert_eq!(parse_size_limit("  UNLIMITED  ").unwrap(), None);
         assert_eq!(parse_size_limit("100KB").unwrap(), Some(100_000));
         assert!(parse_size_limit("abc").is_err());
+    }
+
+    #[test]
+    fn percent_decode_only_accepts_well_formed_utf8() {
+        assert_eq!(percent_decode("a%20b"), Some("a b".to_string()));
+        assert_eq!(percent_decode("m%C3%BCller"), Some("müller".to_string()));
+        assert_eq!(percent_decode("plain"), Some("plain".to_string()));
+        assert_eq!(percent_decode("bad%zz"), None);
+        assert_eq!(percent_decode("short%C3"), None);
+        assert_eq!(percent_decode("%FF%FE"), None);
+    }
+
+    #[test]
+    fn file_urls_decode_to_paths() {
+        // Windows drive drop straight from Explorer.
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                file_url_path("file:///C:/media/albums"),
+                Some("C:/media/albums".to_string())
+            );
+            assert_eq!(
+                file_url_path("file:///C:/m%C3%BCller/"),
+                Some("C:/müller".to_string())
+            );
+        }
+        // Trailing separators, fragments and queries are not the path.
+        assert_eq!(
+            file_url_path("file:///home/al/dups/#frag"),
+            Some("/home/al/dups".to_string())
+        );
+        assert_eq!(
+            file_url_path("file:///home/al/a?b"),
+            Some("/home/al/a".to_string())
+        );
+        // Loose strings and other schemes are something else entirely.
+        assert_eq!(file_url_path("C:\\media"), None);
+        assert_eq!(file_url_path("https://example.com/x"), None);
+        // Malformed percent escapes are junk, never paths.
+        assert_eq!(file_url_path("file:///a%zz"), None);
+        assert_eq!(file_url_path("file:///a%C3"), None);
+        assert_eq!(file_url_path("file:///a%FF"), None);
     }
 
     #[test]
@@ -250,18 +258,5 @@ mod tests {
         for index in 0..=10 {
             assert!(!find_mode_caption(Some(index)).is_empty());
         }
-    }
-
-    #[test]
-    fn prefs_slider_positions_clamp_to_slider_bounds() {
-        assert_eq!(prefs_size_to_slider("", true), SIZE_SLIDER_MIN);
-        assert_eq!(prefs_size_to_slider("", false), SIZE_SLIDER_MAX);
-        assert_eq!(prefs_size_to_slider("unlimited", true), SIZE_SLIDER_MIN);
-        // Below the floor clamps up; astronomically large clamps down.
-        assert_eq!(prefs_size_to_slider("1", true), SIZE_SLIDER_MIN);
-        assert_eq!(prefs_size_to_slider("99999TB", false), SIZE_SLIDER_MAX);
-        // A sane middle value lands strictly inside the range.
-        let mid = prefs_size_to_slider("500MB", true);
-        assert!(mid > SIZE_SLIDER_MIN && mid < SIZE_SLIDER_MAX);
     }
 }

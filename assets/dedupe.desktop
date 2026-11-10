@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=dedupe
+GenericName=Duplicate file finder
+Comment=Find and remove duplicate files
+Exec=dedupe
+TryExec=dedupe
+Icon=dedupe
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=duplicate;dedupe;cleanup;

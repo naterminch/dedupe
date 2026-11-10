@@ -73,7 +73,7 @@ pub fn plan_consolidation(
 
 /// Move `targets` non-interactively, re-hashing each file first.
 ///
-/// Mirrors [`delete_targets`]: a keeper that changed since the scan is
+/// Mirrors [`crate::actions::delete_targets`]: a keeper that changed since the scan is
 /// skipped (with a warning), never moved.
 pub fn consolidate_targets(targets: &[MoveTarget], engine: &HashEngine) -> ConsolidateOutcome {
     let mut outcome = ConsolidateOutcome::default();

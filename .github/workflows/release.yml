@@ -2,8 +2,8 @@ name: Release binaries
 
 # When a GitHub Release is published (tag it, e.g. v0.1.0, then
 # "Publish release"): bump Cargo.toml/Cargo.lock to the tag version, then
-# build optimized binaries for every OS and attach them as downloadable
-# assets (dedupe CLI + dedupe-gui per platform).
+# build one optimized binary per OS and attach it as a downloadable
+# asset.
 on:
   release:
     types: [published]
@@ -93,9 +93,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev \
-            libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libssl-dev libzstd-dev
+          sudo apt-get install -y gcc g++ clang libgtk-4-dev libwayland-dev
 
       - name: Build release binaries
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -107,16 +105,62 @@ jobs:
           $name = "dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path dist | Out-Null
           Compress-Archive -LiteralPath `
-            "target/${{ matrix.target }}/release/dedupe.exe", `
-            "target/${{ matrix.target }}/release/dedupe-gui.exe" `
+            "target/${{ matrix.target }}/release/dedupe.exe" `
             -DestinationPath "dist/$name.zip"
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      # macOS opens a bare executable in Terminal, so the GUI is shipped as an
+      # .app bundle (double-click, no terminal). The plain binary stays in the
+      # archive next to it for CLI use.
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
         run: |
           name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
-          mkdir -p dist
-          tar -czf "dist/$name.tar.gz" -C "target/${{ matrix.target }}/release" dedupe dedupe-gui
+          version='${{ github.event.release.tag_name }}'
+          app=dist/dedupe.app
+          mkdir -p dist "$app/Contents/MacOS"
+          cp "target/${{ matrix.target }}/release/dedupe" dist/dedupe
+          cp "target/${{ matrix.target }}/release/dedupe" "$app/Contents/MacOS/dedupe"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>dedupe</string>
+            <key>CFBundleDisplayName</key>
+            <string>dedupe</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.naterminch.dedupe</string>
+            <key>CFBundleExecutable</key>
+            <string>dedupe</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${version#v}</string>
+            <key>CFBundleVersion</key>
+            <string>${version#v}</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>11.0</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          tar -czf "dist/$name.tar.gz" -C dist dedupe dedupe.app
+
+      # Linux: the bare binary is both surfaces. Double-clicking an ELF is
+      # unreliable across file managers, so the archive also carries a
+      # .desktop launcher with `Terminal=false`: opening the GUI from the
+      # desktop never spawns a terminal (the binary itself creates none —
+      # only an inherited terminal, i.e. a shell run, is ever shown).
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
+          mkdir -p dist staging
+          cp "target/${{ matrix.target }}/release/dedupe" staging/dedupe
+          cp assets/dedupe.desktop staging/dedupe.desktop
+          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

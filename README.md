@@ -68,17 +68,20 @@ Findings honour `--ignore GLOB` (repeatable), `--types`, size limits, depth and 
 ### GUI
 
 ```sh
-dedupe-gui     # desktop app, no terminal
-dedupe         # desktop app + terminal
+dedupe         # no arguments: opens the desktop app
 dedupe --gui   # same, explicit
 ```
+
+One binary for both surfaces: any argument or flag (`dedupe --help`, `dedupe <path>...`) runs a CLI scan instead.
+
+Opening the GUI never shows a terminal on any OS: on Windows the binary links as a GUI-subsystem app, so no console window is created (CLI runs re-attach to the terminal that launched them), on macOS the release ships a `dedupe.app` bundle to double-click, and on Linux the release ships a `dedupe.desktop` launcher with `Terminal=false`.
 
 - Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete N** (trash by default; the tooltip carries the total bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
 - Settings → Preferences picks the scan type (duplicates or a cleanup mode), duplicate matching (`content`/`size`/`name`/`fuzzy`), image fingerprint, partial-clip detection, and music matching. Cleanup-mode findings are read-only in the GUI; use the CLI with `--delete` or `--trash` to act on them.
 - **Consolidate** gathers every group's keeper into one folder (two clicks: pick folder, confirm).
-- Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), thumbnails + cached video poster strips, JSON export, light/dark + prefs persisted.
+- Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), JSON export, light/dark + prefs persisted.
 
-> GUI builds need VS 2022 C++ workload on Windows ([details](https://gpui-kit.com/docs/installation)).
+> The GUI is a [Native Shell](https://github.com/longbridge/nsh) app; on Windows it renders through the system Direct2D backend, so the MSVC toolchain Rust already needs is the only requirement.
 
 ## CLI
 
@@ -101,11 +104,13 @@ Flags: `--find` · `--match` · `--fuzzy-threshold` · `--top` · `--image-hash`
 ## Build
 
 ```sh
-.\build.ps1            # Windows: release -> dedupe.exe + dedupe-gui.exe
-cargo build --release  # any OS
+.\build.ps1            # Windows: release binary copied to .\dedupe.exe
+cargo build --release  # any OS (same single binary)
 ```
 
-Needs Rust; optional FFmpeg for media metadata + video comparison (`dedupe.exe` = CLI+GUI, `dedupe-gui.exe` = GUI only, no console).
+Needs Rust; optional FFmpeg for media metadata + video comparison. The one binary launches the desktop app with no arguments and runs CLI scans when given arguments or flags.
+
+Release archives: Windows ships `dedupe.exe`, Linux the bare binary plus a `dedupe.desktop` launcher (put the binary on `PATH` or point `Exec=` at it), and macOS a `dedupe.app` bundle next to the bare binary (double-click the app for the GUI, or run the binary for the CLI).
 
 ## How it works
 

@@ -30,8 +30,8 @@ fn cli_styles() -> Styles {
     styles = cli_styles()
 )]
 pub struct Cli {
-    /// Paths to scan (files or directories). Omit to open the graphical
-    /// interface instead (same as --gui).
+    /// Paths to scan (files or directories). Run with no arguments (or
+    /// --gui) to open the desktop app instead.
     #[arg(value_name = "PATH", num_args = 1..)]
     pub paths: Vec<String>,
 
