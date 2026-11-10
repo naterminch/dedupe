@@ -41,6 +41,15 @@ pub(crate) enum AppView {
     Settings,
 }
 
+/// How the duplicate groups are laid out: the original two-column preview
+/// cards for media groups, or one compact row list for everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Layout {
+    #[default]
+    Grid,
+    List,
+}
+
 /// Active tab inside the Settings page side nav.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SettingsTab {
@@ -152,6 +161,8 @@ pub(crate) struct AppState {
     /// The video playing in its card's preview, if any. One at a time: media
     /// engines and audio are heavy, and a click elsewhere stops this one.
     pub(crate) playing: Option<PathBuf>,
+    /// Results layout picked in the toolbar.
+    pub(crate) layout: Layout,
     pub(crate) selected: HashSet<PathBuf>,
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
@@ -240,6 +251,7 @@ impl Default for AppState {
             last_hash: HashAlgo::Blake3,
             collapsed: HashSet::new(),
             playing: None,
+            layout: Layout::Grid,
             selected: HashSet::new(),
             last_trashed: Vec::new(),
             consolidate_dest: None,

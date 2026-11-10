@@ -972,6 +972,19 @@ pub(crate) fn apply_keep_mode(index: usize) {
     save_prefs();
 }
 
+/// Switch the results layout. The list's structure changes, so it is rebuilt
+/// (that is what the revision is for) and any inline player stops: the card
+/// or row it lived in no longer exists.
+pub(crate) fn set_layout(layout: crate::ui::state::Layout) {
+    app().update(|s| {
+        if s.layout != layout {
+            s.layout = layout;
+            s.playing = None;
+            s.results_rev += 1;
+        }
+    });
+}
+
 /// Play a video in its card's preview, or stop the one already playing.
 ///
 /// One at a time: starting another replaces it. The player is muted, so a

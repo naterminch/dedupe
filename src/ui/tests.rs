@@ -569,3 +569,40 @@ fn image_cards_have_no_play_button() {
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("image cards render without play controls");
 }
+
+/// Grid is the original layout, List is the opt-in compact one: switching
+/// re-lays the same results and keeps the group open and its members listed.
+#[test]
+fn layout_switch_keeps_the_results_listed() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-layout-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.png"), vec![2u8; 4096]).expect("fixture image");
+    std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for("text:/one\\.png/")?;
+        // List, then back to Grid: the same two members stay listed.
+        app.press("text:List")?;
+        app.wait_for("text:/one\\.png/")?;
+        app.wait_for("text:/two\\.png/")?;
+        app.press("text:Grid")?;
+        app.wait_for("text:/two\\.png/")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("the layout switch keeps the results listed");
+}
