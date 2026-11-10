@@ -76,7 +76,7 @@ One binary for both surfaces: any argument or flag (`dedupe --help`, `dedupe <pa
 
 Opening the GUI never shows a terminal on any OS: on Windows the binary links as a GUI-subsystem app, so no console window is created (CLI runs re-attach to the terminal that launched them), on macOS the release ships a `dedupe.app` bundle to double-click, and on Linux the release ships a `dedupe.desktop` launcher with `Terminal=false`.
 
-- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete N** (trash by default; the tooltip carries the total bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
+- Same pipeline as CLI; opens when no path given; pick folders, **Scan**, tick, **Delete N** — which opens a per-group confirmation listing exactly what goes — then confirm (trash by default; the tooltip carries the total bytes). **Stop** (replaces Scan while running) cancels instantly — the view resets right away and the pipeline winds down in the background.
 - Settings → Preferences picks the scan type (duplicates or a cleanup mode), duplicate matching (`content`/`size`/`name`/`fuzzy`), image fingerprint, partial-clip detection, and music matching. Cleanup-mode findings are read-only in the GUI; use the CLI with `--delete` or `--trash` to act on them.
 - **Consolidate** gathers every group's keeper into one folder (two clicks: pick folder, confirm).
 - Per-folder **Protect** (never deleted), **Keep** switch without rescanning (First / Smallest / Newest / Oldest / Best quality), JSON export, light/dark + prefs persisted.

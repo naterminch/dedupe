@@ -18,7 +18,7 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::app;
 use crate::ui::widgets::{
-    caption, card, chevron, chip, danger_button, field_label, ghost_button, hint, motion,
+    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, motion,
     primary_button, secondary_button,
 };
 use crate::ui_helpers::fit_text;
@@ -365,13 +365,148 @@ fn delete_bar() -> View {
                     util::human_bytes(bytes)
                 )
             };
-            row = row.child(danger_button(label, actions::perform_delete).tooltip(hint(tip)));
+            row = row.child(danger_button(label, actions::request_delete).tooltip(hint(tip)));
         }
         if can_undo {
             row = row.child(secondary_button("Undo delete", actions::undo_delete));
         }
         row
     }))
+}
+
+/// The delete confirmation: a per-group dry run of exactly what will go,
+/// with in-dialog Keep picks. Nothing is removed until "Delete N" is
+/// pressed, and every file is re-hashed immediately before it is.
+///
+/// Reads its plan from the live selection, so ticking a box or changing a
+/// keeper behind the dialog is reflected here instead of going stale.
+pub(crate) fn delete_confirm() -> View {
+    let (count, bytes, groups, hidden_groups, trash) = app().with(|s| {
+        let targets = actions::pending_targets(s);
+        let (groups, hidden_groups) = actions::confirm_groups(s);
+        (
+            targets.len(),
+            targets.iter().map(|t| t.size).sum::<u64>(),
+            groups,
+            hidden_groups,
+            s.trash,
+        )
+    });
+    let action = if trash {
+        "move to the trash"
+    } else {
+        "permanently delete"
+    };
+    let mut body = view().flex_col().gap(px(space::MD));
+    for group in &groups {
+        let mut section = view().flex_col().gap(px(space::XS)).child(
+            text(format!(
+                "Group #{} - keeps {} - deletes {} ({})",
+                group.index + 1,
+                group.keeper,
+                group.rows.len() + group.hidden_rows,
+                util::human_bytes(group.bytes),
+            ))
+            .text_size(px(text::CAPTION))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(colors::TEXT),
+        );
+        for path in &group.rows {
+            let full = path.display().to_string();
+            let shown = fit_text(&full, 56);
+            let truncated = shown != full;
+            let cell = text(shown)
+                .flex_1()
+                .truncate()
+                .text_size(px(text::CAPTION))
+                .text_color(colors::MUTED);
+            let cell = if truncated {
+                cell.tooltip(hint(full))
+            } else {
+                cell
+            };
+            let index = group.index;
+            let keep_path = path.clone();
+            section = section.child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .child(cell)
+                    .child(ghost_button("Keep", move || {
+                        actions::set_keeper(index, &keep_path);
+                    })),
+            );
+        }
+        if group.hidden_rows > 0 {
+            section = section.child(caption(format!(
+                "... and {} more in this group",
+                group.hidden_rows
+            )));
+        }
+        body = body.child(section);
+    }
+    if hidden_groups > 0 {
+        body = body.child(caption(format!("... and {hidden_groups} more group(s)")));
+    }
+    if count == 0 {
+        body = body.child(caption("Nothing is ticked for deletion."));
+    }
+    let description = if count == 0 {
+        "Ticking a duplicate in a group lists it here.".to_string()
+    } else {
+        format!(
+            "This will {action} {count} file(s) ({}). Keepers are kept; every file is re-hashed before removal.",
+            util::human_bytes(bytes)
+        )
+    };
+    let panel = card()
+        .w(px(520.0))
+        .flex_shrink_0()
+        .gap(px(space::SM))
+        .p(px(space::LG))
+        .shadow_lg()
+        .shadow_color(colors::SHADOW)
+        .child(
+            text(format!("Delete {count} file(s)?"))
+                .text_size(px(text::BODY))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors::TEXT),
+        )
+        .child(caption(description))
+        .child(scroll().max_h(px(320.0)).child(body))
+        .child(divider())
+        .child(
+            view()
+                .flex_row()
+                .justify_end()
+                .gap(px(space::SM))
+                .child(secondary_button("Cancel", actions::cancel_delete))
+                .child(when(count > 0, move || {
+                    danger_button(format!("Delete {count}"), actions::confirm_delete)
+                })),
+        );
+    // Two layers, as a sheet is built: the scrim takes the presses that miss
+    // the panel and Escape, the panel is transparent to them (box-none) so
+    // only its card is hit.
+    view()
+        .child(
+            overlay()
+                .inset_0()
+                .bg(colors::SCRIM)
+                .on_press(actions::cancel_delete)
+                .on_cancel(actions::cancel_delete),
+        )
+        .child(
+            overlay()
+                .inset_0()
+                .pointer_events(PointerEvents::BoxNone)
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .p(px(space::XL))
+                .child(panel),
+        )
 }
 
 fn consolidate_button() -> View {

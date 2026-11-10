@@ -127,10 +127,13 @@ pub(crate) fn drop_folders(uris: &[String]) {
     add_folder_paths(folders);
 }
 
-/// Escape outside a text input: leave the Settings page when it is open.
+/// Escape outside a text input: close the delete confirmation when it is
+/// open, otherwise leave the Settings page when it is open.
 pub(crate) fn escape_leaves_settings() {
     app().update(|s| {
-        if s.view == AppView::Settings {
+        if s.confirm_delete {
+            s.confirm_delete = false;
+        } else if s.view == AppView::Settings {
             s.view = AppView::Main;
         }
     });
@@ -627,8 +630,10 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         // Pristine copy for live re-thresholding; the floor starts at the
         // scan threshold (everything qualifies).
         s.base_groups = s.groups.clone();
-        // Fresh results: disarm any pending consolidate from last scan.
+        // Fresh results: disarm any pending consolidate from last scan and
+        // drop a confirmation that previewed those paths.
         s.consolidate_dest = None;
+        s.confirm_delete = false;
         s.min_sim = s.scan_similarity;
         s.group_limit = crate::ui::state::GROUP_PAGE;
         // One display ordering for the whole scan (honors the sort toggle).
@@ -1022,6 +1027,98 @@ pub(crate) fn pending_targets(s: &AppState) -> Vec<file_actions::DeleteTarget> {
         }
     }
     out
+}
+
+/// Groups drawn in the delete confirmation before it summarises the rest.
+pub(crate) const CONFIRM_GROUPS: usize = 6;
+/// Files drawn per group in the delete confirmation.
+pub(crate) const CONFIRM_ROWS: usize = 4;
+
+/// One group's line in the delete confirmation: the keeper that stays, the
+/// ticked duplicates that go and the group's total bytes.
+pub(crate) struct ConfirmGroup {
+    pub(crate) index: usize,
+    pub(crate) keeper: String,
+    pub(crate) rows: Vec<PathBuf>,
+    pub(crate) hidden_rows: usize,
+    pub(crate) bytes: u64,
+}
+
+/// Per-group dry run behind the delete confirmation, in display order, plus
+/// the number of further groups with ticked files beyond [`CONFIRM_GROUPS`].
+///
+/// The dialog caps what it lists so a huge selection stays readable; the
+/// counts it shows stay exact (`rows + hidden_rows`).
+pub(crate) fn confirm_groups(s: &AppState) -> (Vec<ConfirmGroup>, usize) {
+    let mut groups = Vec::new();
+    let mut qualifying = 0usize;
+    for g in &s.groups {
+        let mut rows = Vec::new();
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        for m in &g.members {
+            if m.keep || !s.selected.contains(&m.path) {
+                continue;
+            }
+            count += 1;
+            bytes += m.size;
+            if count <= CONFIRM_ROWS {
+                rows.push(m.path.clone());
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        qualifying += 1;
+        if groups.len() >= CONFIRM_GROUPS {
+            continue;
+        }
+        let keeper = g
+            .members
+            .iter()
+            .find(|m| m.keep)
+            .map(|m| {
+                m.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| m.path.display().to_string())
+            })
+            .unwrap_or_else(|| "—".to_string());
+        groups.push(ConfirmGroup {
+            index: g.index,
+            keeper,
+            rows,
+            hidden_rows: count.saturating_sub(CONFIRM_ROWS),
+            bytes,
+        });
+    }
+    let hidden_groups = qualifying.saturating_sub(groups.len());
+    (groups, hidden_groups)
+}
+
+/// The Delete button's job: open the confirmation for the ticked duplicates.
+/// Nothing is removed until it is confirmed.
+pub(crate) fn request_delete() {
+    let state = app();
+    if state.with_untracked(|s| pending_targets(s).is_empty()) {
+        state.update(|s| {
+            s.status = "Tick the duplicate copies you want deleted first.".to_string();
+        });
+        return;
+    }
+    state.update(|s| s.confirm_delete = true);
+}
+
+/// Dismiss the confirmation without removing anything.
+pub(crate) fn cancel_delete() {
+    app().update(|s| s.confirm_delete = false);
+}
+
+/// Run the delete once it is confirmed. The dialog closes first, so its rows
+/// are gone before the files are.
+pub(crate) fn confirm_delete() {
+    app().update(|s| s.confirm_delete = false);
+    perform_delete();
 }
 
 pub(crate) fn perform_delete() {

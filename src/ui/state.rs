@@ -149,6 +149,9 @@ pub(crate) struct AppState {
     /// second click moves. Disarmed by any keeper/group change, since the
     /// previewed paths would be stale.
     pub(crate) consolidate_dest: Option<PathBuf>,
+    /// The delete confirmation dialog is open: the ticked duplicates are
+    /// shown as a dry run and nothing is removed until it is confirmed.
+    pub(crate) confirm_delete: bool,
     /// Cooperative cancellation for the running scan; Stop sets it and the
     /// pipeline polls it at phase boundaries.
     pub(crate) scan_cancel: CancelToken,
@@ -226,6 +229,7 @@ impl Default for AppState {
             selected: HashSet::new(),
             last_trashed: Vec::new(),
             consolidate_dest: None,
+            confirm_delete: false,
             scan_cancel: CancelToken::new(),
             scan_gen: 0,
         }

@@ -62,6 +62,9 @@ pub(crate) mod colors {
     /// turns into a dark smear on the glass.
     pub(crate) const SHADOW: AdaptiveColor =
         tone(veil(0x00, 0x00, 0x00, 40), veil(0x00, 0x00, 0x00, 150));
+    /// The veil behind a dialog: dims the app without hiding it.
+    pub(crate) const SCRIM: AdaptiveColor =
+        tone(veil(0x00, 0x00, 0x00, 64), veil(0x00, 0x00, 0x00, 150));
 }
 
 pub(crate) mod text {

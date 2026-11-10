@@ -46,6 +46,14 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(body())
         .child(status_bar())
         .child(toast::toast_layer())
+        // Above the panes and the toasts: a confirmation must not be buried.
+        .child(dynamic(|| {
+            if app().with(|s| s.confirm_delete) {
+                results::delete_confirm()
+            } else {
+                view()
+            }
+        }))
 }
 
 fn header() -> impl IntoElement {

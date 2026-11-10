@@ -241,6 +241,83 @@ fn pending_targets_are_selected_duplicates_only() {
 }
 
 #[test]
+fn confirm_plan_caps_rows_but_keeps_its_counts_exact() {
+    let mut members = vec![member("keep.txt", 10, true, None)];
+    for i in 0..8 {
+        members.push(member(&format!("dup-{i}.txt"), 10, false, None));
+    }
+    let s = AppState {
+        groups: vec![group(1, members.clone())],
+        selected: members
+            .iter()
+            .filter(|m| !m.keep)
+            .map(|m| m.path.clone())
+            .collect(),
+        ..AppState::default()
+    };
+    let (groups, hidden_groups) = actions::confirm_groups(&s);
+    assert_eq!(hidden_groups, 0);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].keeper, "keep.txt");
+    assert_eq!(groups[0].rows.len(), actions::CONFIRM_ROWS);
+    assert_eq!(groups[0].hidden_rows, 8 - actions::CONFIRM_ROWS);
+    assert_eq!(groups[0].bytes, 80);
+}
+
+/// The Delete button asks first: the confirmation names the keeper and the
+/// file that would go, and Cancel leaves every file in place.
+#[test]
+fn delete_asks_for_confirmation_before_removing_anything() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-confirm-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // Both copies are 4096 bytes, so the button names its exact count.
+        app.wait_for("text:Delete 1 (4.10 KB)")?;
+        app.press("text:Delete 1 (4.10 KB)")?;
+        app.wait_for("text:Delete 1 file(s)?")?;
+        app.wait_for(r"text:/keeps (one|two)\.txt/")?;
+        app.press("text:Cancel")?;
+        // Cancel dismisses it without touching the files.
+        let mut closed = false;
+        for _ in 0..40 {
+            if !app.shows("Delete 1 file(s)?") {
+                closed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !closed {
+            return Err("Cancel did not dismiss the confirmation".to_string());
+        }
+        if !(dir.join("one.txt").is_file() && dir.join("two.txt").is_file()) {
+            return Err("nothing may be removed before the delete is confirmed".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("the delete confirmation asks first and cancels cleanly");
+}
+
+#[test]
 fn scanning_without_folders_is_refused_with_a_helpful_message() {
     let s = AppState::default();
     let err = actions::collect_options(&s).expect_err("no folders to scan");
