@@ -438,7 +438,7 @@ pub(crate) fn start_scan() {
         s.groups.clear();
         s.mode_result = None;
         s.selected.clear();
-        s.expanded.clear();
+        s.collapsed.clear();
         s.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
     });
     let generation = state.with_untracked(|s| s.scan_gen);
@@ -541,7 +541,7 @@ pub(crate) fn stop_scan() {
         s.mode_result = None;
         s.base_groups.clear();
         s.selected.clear();
-        s.expanded.clear();
+        s.collapsed.clear();
         s.last_stats = None;
         s.status = "Scan cancelled.".to_string();
     });
@@ -567,7 +567,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.mode_result = None;
             s.base_groups.clear();
             s.selected.clear();
-            s.expanded.clear();
+            s.collapsed.clear();
             s.has_scanned = false;
             s.files_scanned = out.stats.files_scanned;
             s.bytes_scanned = out.stats.bytes_scanned;
@@ -597,7 +597,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.groups.clear();
             s.base_groups.clear();
             s.selected.clear();
-            s.expanded.clear();
+            s.collapsed.clear();
             s.consolidate_dest = None;
             s.group_limit = crate::ui::state::GROUP_PAGE;
             s.dup_files = findings as u64;
@@ -648,8 +648,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             .map(|m| m.path.clone())
             .collect();
         // Every group is open by default: the results are readable without
-        // a click, and Collapse all is one press away.
-        s.expanded = s.groups.iter().map(|g| g.index).collect();
+        // a click, and Collapse all is one press away. Nothing is remembered
+        // as closed, so a later re-threshold or "Show more" opens too.
+        s.collapsed.clear();
         recount(s);
         if s.groups.is_empty() {
             s.status = format!(
@@ -737,7 +738,7 @@ pub(crate) fn request_group_posters(group_index: usize) {
     }
 }
 
-/// Ask for the posters of every expanded group on the rendered page.
+/// Ask for the posters of every open group on the rendered page.
 ///
 /// Expansion is the default now, so the bound is the page (`group_limit`),
 /// not the expansion set: a scan that finds thousands of groups must not
@@ -747,7 +748,7 @@ fn request_expanded_posters() {
         s.groups
             .iter()
             .take(s.group_limit)
-            .filter(|group| s.expanded.contains(&group.index))
+            .filter(|group| !s.collapsed.contains(&group.index))
             .map(|group| group.index)
             .collect()
     });
@@ -1002,9 +1003,11 @@ pub(crate) fn show_more_groups() {
 pub(crate) fn toggle_expanded(index: usize) {
     let mut opened = false;
     app().update(|s| {
-        if !s.expanded.remove(&index) {
-            s.expanded.insert(index);
+        // Groups start open: the set holds only the ones the user closed.
+        if s.collapsed.remove(&index) {
             opened = true;
+        } else {
+            s.collapsed.insert(index);
         }
     });
     if opened {
@@ -1015,9 +1018,11 @@ pub(crate) fn toggle_expanded(index: usize) {
 /// Open or close every group currently rendered.
 pub(crate) fn set_all_expanded(open: bool) {
     app().update(|s| {
-        s.expanded.clear();
-        if open {
-            s.expanded
+        s.collapsed.clear();
+        if !open {
+            // Only the rendered page is closed; a later page opens with the
+            // rest when "Show more" reveals it.
+            s.collapsed
                 .extend(s.groups.iter().take(s.group_limit).map(|g| g.index));
         }
     });

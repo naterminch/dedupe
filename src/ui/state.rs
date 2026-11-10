@@ -144,7 +144,11 @@ pub(crate) struct AppState {
     /// button so huge result sets stay navigable (and fast).
     pub(crate) group_limit: usize,
     pub(crate) last_hash: HashAlgo,
-    pub(crate) expanded: HashSet<usize>,
+    /// Groups the user closed; every other group is open. Storing the closed
+    /// ones instead of the open ones is what makes expansion the default: a
+    /// scan, a re-threshold, a delete and "Show more" all start fully open
+    /// without having to list every group.
+    pub(crate) collapsed: HashSet<usize>,
     pub(crate) selected: HashSet<PathBuf>,
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
@@ -231,7 +235,7 @@ impl Default for AppState {
             min_sim: similarity,
             group_limit: GROUP_PAGE,
             last_hash: HashAlgo::Blake3,
-            expanded: HashSet::new(),
+            collapsed: HashSet::new(),
             selected: HashSet::new(),
             last_trashed: Vec::new(),
             consolidate_dest: None,

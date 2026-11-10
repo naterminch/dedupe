@@ -449,3 +449,42 @@ fn scan_renders_media_groups_and_their_thumbnails() {
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("media groups render with their rows");
 }
+
+/// Every duplicate group starts expanded: after a scan both groups' members
+/// are on screen without pressing Expand first.
+#[test]
+fn every_group_starts_expanded() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-expanded-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for (name, byte) in [
+        ("a1.txt", b'a'),
+        ("a2.txt", b'a'),
+        ("b1.txt", b'b'),
+        ("b2.txt", b'b'),
+    ] {
+        std::fs::write(dir.join(name), vec![byte; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/2 group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // Both groups' rows render with no Expand press in between.
+        app.wait_for("text:/a1\\.txt/")?;
+        app.wait_for("text:/b1\\.txt/")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("every group renders expanded after a scan");
+}

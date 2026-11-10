@@ -800,11 +800,14 @@ fn group_header(group: &Group) -> String {
 
 /// One group's slot: rebuilt only when its disclosure flips. Keeper picks,
 /// ticks and previews are member decisions and update their own cards.
+///
+/// Open is the default — `collapsed` holds only what the user closed — so a
+/// freshly scanned group renders expanded without any per-group bookkeeping.
 fn group_slot(position: usize, group: &Group) -> View {
     let group = group.clone();
     let expanded = computed({
         let index = group.index;
-        move || app().with(|s| s.expanded.contains(&index))
+        move || app().with(|s| !s.collapsed.contains(&index))
     });
     view().child(dynamic(move || {
         group_card(position, &group, expanded.get())
