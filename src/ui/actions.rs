@@ -789,6 +789,8 @@ pub(crate) fn recount(s: &mut AppState) {
 /// similarity filter, global keep mode) — never on keeper picks or renders,
 /// so clicking a card cannot reshuffle the list underneath.
 pub(crate) fn sort_groups(s: &mut AppState) {
+    // A new order is a new list: the cards must be rebuilt in it.
+    s.results_rev += 1;
     if s.sort_biggest {
         s.groups.sort_by_key(|b| std::cmp::Reverse(b.dup_bytes()));
     } else {
@@ -897,22 +899,42 @@ pub(crate) fn apply_sim_input(raw: &str) {
 }
 
 /// Promote one member to keeper of its group (per-group decision).
+///
 /// Member order never changes here: the grid keeps every card in place and
-/// only the highlight (KEEP/DUP badge + border) moves.
+/// only the highlight (KEEP/DUP badge + border) moves. Ticks outside the
+/// group are left alone too — a keeper pick says nothing about the other
+/// groups' selections, and re-ticking them all would churn the whole list.
 pub(crate) fn set_keeper(group_index: usize, path: &Path) {
-    app().update(|s| {
-        if let Some(g) = s.groups.iter_mut().find(|g| g.index == group_index) {
-            for m in g.members.iter_mut() {
-                m.keep = m.path == path;
-            }
+    app().update(|s| set_keeper_in(s, group_index, path));
+}
+
+/// [`set_keeper`] on plain state, so the decision can be tested without the
+/// app's signal.
+pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
+    let Some(group) = s.groups.iter_mut().find(|g| g.index == group_index) else {
+        return;
+    };
+    if group.members.iter().any(|m| m.keep && m.path == path) {
+        // Already the keeper: nothing moves, nothing re-renders.
+        return;
+    }
+    for member in group.members.iter_mut() {
+        if member.keep {
+            // The retiring keeper is a duplicate again, ticked like every
+            // other duplicate in its group.
+            member.keep = false;
+            s.selected.insert(member.path.clone());
         }
-        reselect_all_dups(s);
-        sync_keep_to_base(s);
-        // Keeper swap changes which bytes count as reclaimable.
-        recount(s);
-        // Keeper change: disarm a pending consolidate (stale paths).
-        s.consolidate_dest = None;
-    });
+        if member.path == path {
+            member.keep = true;
+            s.selected.remove(&member.path);
+        }
+    }
+    sync_keep_to_base(s);
+    // Keeper swap changes which bytes count as reclaimable.
+    recount(s);
+    // Keeper change: disarm a pending consolidate (stale paths).
+    s.consolidate_dest = None;
 }
 
 /// Apply a new global keep mode to the current results (no rescan).
@@ -1160,6 +1182,8 @@ pub(crate) fn perform_delete() {
                 g.members.retain(|m| !gone.contains(&m.path));
             }
             s.base_groups.retain(|g| g.members.len() >= 2);
+            // Members are gone: the list's cards are stale now.
+            s.results_rev += 1;
             for p in &outcome.deleted {
                 s.selected.remove(p);
             }
@@ -1357,6 +1381,8 @@ pub(crate) fn perform_consolidate() {
                     s.selected.insert(to.clone());
                 }
             }
+            // Member paths moved: rebuild the list against the new ones.
+            s.results_rev += 1;
             s.consolidate_dest = None;
             s.status = format!(
                 "Consolidated {} keeper(s) ({}) into {}; {} skipped.",

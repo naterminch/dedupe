@@ -123,6 +123,11 @@ pub(crate) struct AppState {
     pub(crate) has_scanned: bool,
     pub(crate) ffprobe_note: bool,
     pub(crate) groups: Vec<Group>,
+    /// Bumped whenever the shape of `groups` changes (a scan, a threshold, a
+    /// delete, a consolidate, a re-sort). The results list keys its rebuilds
+    /// on it, so keeper picks and ticks — which change no structure — never
+    /// rebuild or reorder the list.
+    pub(crate) results_rev: u64,
     /// Non-duplicate cleanup scan output (`--find` modes). Mutually
     /// exclusive with `groups`: a mode scan never fills the duplicate list.
     pub(crate) mode_result: Option<ModeResult>,
@@ -219,6 +224,7 @@ impl Default for AppState {
             has_scanned: false,
             ffprobe_note: false,
             groups: Vec::new(),
+            results_rev: 0,
             mode_result: None,
             base_groups: Vec::new(),
             scan_similarity: similarity,

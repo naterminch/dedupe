@@ -7,7 +7,7 @@
 //! is process-global), so nothing here touches the real
 //! `~/.dedupe/dedupe.json`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
 
 use nsh_core::Size;
@@ -238,6 +238,55 @@ fn pending_targets_are_selected_duplicates_only() {
     let targets = actions::pending_targets(&s);
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0].path, PathBuf::from("dup"));
+}
+
+/// A keeper pick is a per-group decision: it moves the highlight, keeps the
+/// member order, and leaves the other groups' ticks alone.
+#[test]
+fn keeper_picks_move_only_the_highlight() {
+    let mut s = AppState {
+        groups: vec![
+            group(
+                1,
+                vec![
+                    member("a", 10, true, None),
+                    member("b", 10, false, None),
+                    member("c", 10, false, None),
+                ],
+            ),
+            group(
+                2,
+                vec![member("d", 10, true, None), member("e", 10, false, None)],
+            ),
+        ],
+        selected: [PathBuf::from("b"), PathBuf::from("e")]
+            .into_iter()
+            .collect(),
+        ..AppState::default()
+    };
+    let order: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
+    actions::set_keeper_in(&mut s, 1, Path::new("c"));
+    let after: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
+    assert_eq!(order, after, "members keep their order");
+    assert!(
+        s.groups[0]
+            .members
+            .iter()
+            .any(|m| m.path == Path::new("c") && m.keep),
+        "the picked file becomes the keeper"
+    );
+    assert!(
+        s.groups[0]
+            .members
+            .iter()
+            .all(|m| m.path == Path::new("c") || !m.keep),
+        "only one keeper per group"
+    );
+    // The retiring keeper becomes a ticked duplicate; the other group is
+    // untouched, so a pick never re-ticks the whole list.
+    assert!(s.selected.contains(Path::new("b")));
+    assert!(!s.selected.contains(Path::new("c")));
+    assert!(s.selected.contains(Path::new("e")));
 }
 
 #[test]

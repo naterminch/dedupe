@@ -50,7 +50,7 @@ enum Thumb {
 /// Videos cannot be decoded by the UI toolkit, so they show a poster frame
 /// ffmpeg extracts into the shared state; until it lands the row shows a
 /// placeholder. Photos render straight from the file path.
-fn thumb_for(member: &GroupMember) -> Thumb {
+fn thumb_for(member: &GroupMember, poster: Option<&Path>) -> Thumb {
     match media::classify(&member.path) {
         media::MediaKind::Image => {
             // Only files that are still on disk become image sources: a
@@ -65,10 +65,10 @@ fn thumb_for(member: &GroupMember) -> Thumb {
                 && member.path.is_file();
             if thumbable { Thumb::Image } else { Thumb::None }
         }
-        media::MediaKind::Video => app().with(|s| {
-            s.posters
-                .get(&member.path)
-                .map_or(Thumb::PendingVideo, |poster| Thumb::Poster(poster.clone()))
+        // The poster frame (when ffmpeg extracted one) is part of the card's
+        // own signature, so it swaps in without the group rebuilding.
+        media::MediaKind::Video => poster.map_or(Thumb::PendingVideo, |frame| {
+            Thumb::Poster(frame.to_path_buf())
         }),
         media::MediaKind::Other => Thumb::None,
     }
@@ -149,7 +149,25 @@ fn duplicate_workspace() -> View {
         .child(header_row())
         .child(selection_row())
         .child(action_row())
-        .child(scroll().flex_1().child(dynamic(list_body)))
+        // Rebuild only when the results change shape: a scan, a threshold, a
+        // delete, a consolidate, a re-sort, Show more. Keeper picks and ticks
+        // update their own cards, so pressing Keep never rebuilds (or
+        // reorders) the list.
+        .child(scroll().flex_1().child(dynamic(|| {
+            let signature = computed(|| {
+                app().with(|s| {
+                    (
+                        s.results_rev,
+                        s.scanning,
+                        s.has_scanned,
+                        s.groups.len(),
+                        s.group_limit,
+                        s.ffprobe_note,
+                    )
+                })
+            });
+            list_body(signature.get())
+        })))
 }
 
 fn header_row() -> View {
@@ -519,18 +537,21 @@ fn consolidate_button() -> View {
     }))
 }
 
-fn list_body() -> View {
-    let (scanning, has_scanned, total, ffprobe_note) =
-        app().with(|s| (s.scanning, s.has_scanned, s.groups.len(), s.ffprobe_note));
+/// What decides when the results list is rebuilt. It leaves keeper picks and
+/// ticks out on purpose: those are member-level decisions ([`member_slot`])
+/// and must not rebuild, or reorder, the list.
+type ListSignature = (u64, bool, bool, usize, usize, bool);
+
+fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignature) -> View {
     let mut list = view().flex_col().gap(px(space::MD));
     if scanning {
-        list = list.child(progress_card());
+        list = list.child(dynamic(progress_card));
     }
     if !has_scanned && !scanning {
-        list = list.child(empty_state());
+        list = list.child(dynamic(empty_state));
     }
     if has_scanned && total > 0 {
-        list = list.child(stat_chips());
+        list = list.child(dynamic(stat_chips));
     }
     if ffprobe_note {
         list = list.child(note_card(
@@ -540,9 +561,11 @@ fn list_body() -> View {
     if has_scanned && total == 0 {
         list = list.child(note_card("No duplicate files found."));
     }
-    let limit = app().with(|s| s.group_limit.min(s.groups.len()));
-    for group in 0..limit {
-        list = list.child(group_card(group));
+    // Structural snapshot, read untracked: nothing here subscribes, so this
+    // list only re-runs when the signature above changes.
+    let groups = app().with_untracked(|s| s.groups.clone());
+    for (position, group) in groups.iter().take(limit).enumerate() {
+        list = list.child(group_slot(position, group));
     }
     if total > limit {
         let remaining = total - limit;
@@ -775,41 +798,39 @@ fn group_header(group: &Group) -> String {
     )
 }
 
-fn group_card(position: usize) -> View {
-    let (index, expanded, header, keep, dup) = app().with(|s| {
-        let group = &s.groups[position];
-        (
-            group.index,
-            s.expanded.contains(&group.index),
-            group_header(group),
-            group.keep_count(),
-            group.dup_bytes(),
-        )
+/// One group's slot: rebuilt only when its disclosure flips. Keeper picks,
+/// ticks and previews are member decisions and update their own cards.
+fn group_slot(position: usize, group: &Group) -> View {
+    let group = group.clone();
+    let expanded = computed({
+        let index = group.index;
+        move || app().with(|s| s.expanded.contains(&index))
     });
-    let members = app().with(|s| s.groups[position].members.clone());
-    // Per-member flags rather than a copy of the selection set: a scan
-    // pre-selects every duplicate, so the set holds thousands of paths and
-    // this runs once per visible group.
-    let checked: Vec<bool> = app().with(|s| {
-        members
-            .iter()
-            .map(|member| s.selected.contains(&member.path))
-            .collect()
-    });
+    view().child(dynamic(move || {
+        group_card(position, &group, expanded.get())
+    }))
+}
+
+fn group_card(position: usize, group: &Group, expanded: bool) -> View {
+    let index = group.index;
+    let header = group_header(group);
+    let members = group.members.clone();
     // Media groups keep the layout the app shipped with: every member is a
     // photo or a video, so each is shown once as a large card, two to a row.
     // Anything else (plain files, archives, mixed groups) stays a compact
     // row list, which reads better for paths than a wall of empty previews.
-    let grid = members.len() >= 2 && members.iter().all(|m| is_grid_preview(&thumb_for(m)));
+    let grid = members.len() >= 2 && members.iter().all(|m| is_grid_preview(&thumb_for(m, None)));
     let mut body = view().flex_col().gap(px(8.0)).px(px(12.0)).pb(px(12.0));
     if grid {
         for (row_index, pair) in members.chunks(2).enumerate() {
             let mut row = view().flex_row().items_stretch().gap(px(8.0));
             for (column, member) in pair.iter().enumerate() {
-                row = row.child(media_card(
+                row = row.child(member_slot(
+                    position,
                     index,
+                    row_index * 2 + column,
                     member.clone(),
-                    checked[row_index * 2 + column],
+                    true,
                 ));
             }
             if pair.len() == 1 {
@@ -819,10 +840,27 @@ fn group_card(position: usize) -> View {
             body = body.child(row);
         }
     } else {
-        for (member, is_checked) in members.iter().zip(&checked) {
-            body = body.child(member_row(index, member.clone(), *is_checked));
+        for (member_pos, member) in members.iter().enumerate() {
+            body = body.child(member_slot(
+                position,
+                index,
+                member_pos,
+                member.clone(),
+                false,
+            ));
         }
     }
+    // The header counts move with the keeper; they update on their own
+    // instead of taking the group's cards with them.
+    let stats = computed(move || {
+        app().with(|s| {
+            s.groups
+                .iter()
+                .find(|g| g.index == index)
+                .map_or((1, 0), |g| (g.keep_count(), g.dup_bytes()))
+        })
+    });
+    let member_count = members.len();
     // `nsh`'s Collapsible owns the disclosure: the whole header is the
     // trigger (one big hit target instead of a 16 pt chevron to aim at), it
     // reports the expanded state to screen readers, and `reveal` springs the
@@ -856,15 +894,22 @@ fn group_card(position: usize) -> View {
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(colors::TEXT),
                     )
-                    .child(caption(format!(
-                        "{keep} keep - {} dup",
-                        members.len() - keep
-                    )))
-                    .child(chip(
-                        util::human_bytes(dup),
-                        colors::ACCENT_WASH,
-                        colors::ACCENT,
-                    )),
+                    .child(dynamic(move || {
+                        let (keep, dup) = stats.get();
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .child(caption(format!(
+                                "{keep} keep - {} dup",
+                                member_count - keep
+                            )))
+                            .child(chip(
+                                util::human_bytes(dup),
+                                colors::ACCENT_WASH,
+                                colors::ACCENT,
+                            ))
+                    })),
             )
             .content(body),
     )
@@ -928,11 +973,52 @@ fn card_preview(thumb: &Thumb, path: &Path) -> View {
     }
 }
 
+/// One member's slot, with its own rebuild signature: its keeper flag, its
+/// tick and its poster frame. Pressing Keep on another member therefore
+/// updates the two cards involved and nothing else — the group keeps its
+/// order, its scroll and its other cards untouched.
+fn member_slot(
+    group_pos: usize,
+    group_index: usize,
+    member_pos: usize,
+    member: GroupMember,
+    grid: bool,
+) -> View {
+    let path = member.path.clone();
+    let signature = computed(move || {
+        app().with(|s| {
+            let current = s
+                .groups
+                .get(group_pos)
+                .and_then(|g| g.members.get(member_pos));
+            (
+                current.is_some_and(|m| m.keep),
+                s.selected.contains(&path),
+                s.posters.get(&path).cloned(),
+            )
+        })
+    });
+    view().child(dynamic(move || {
+        let (keep, checked, poster) = signature.get();
+        if grid {
+            media_card(group_index, &member, keep, checked, poster.as_deref())
+        } else {
+            member_row(group_index, &member, keep, checked, poster.as_deref())
+        }
+    }))
+}
+
 /// One card of a media group: large preview, then the name, its folder and
 /// the same controls a row carries. Only the border and the badge move when
 /// the keeper changes, so the group never reflows during a decision.
-fn media_card(group_index: usize, member: GroupMember, checked: bool) -> View {
-    let thumb = thumb_for(&member);
+fn media_card(
+    group_index: usize,
+    member: &GroupMember,
+    keep: bool,
+    checked: bool,
+    poster: Option<&Path>,
+) -> View {
+    let thumb = thumb_for(member, poster);
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
@@ -948,11 +1034,7 @@ fn media_card(group_index: usize, member: GroupMember, checked: bool) -> View {
         .rounded(px(radius::CARD))
         .border_curve(BorderCurve::Continuous)
         .border_1()
-        .border_color(if member.keep {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
+        .border_color(if keep { colors::ACCENT } else { colors::BORDER })
         .child(card_preview(&thumb, &member.path))
         .child(
             view()
@@ -960,26 +1042,38 @@ fn media_card(group_index: usize, member: GroupMember, checked: bool) -> View {
                 .min_w(px(0.0))
                 .gap(px(2.0))
                 .child(
-                    text(member_name(&member))
+                    text(member_name(member))
                         .truncate()
                         .text_size(px(text::BODY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors::TEXT),
                 )
-                .child(caption(member_parent(&member))),
+                .child(caption(member_parent(member))),
         )
-        .child(member_actions(group_index, &member, checked, similarity))
+        .child(member_actions(
+            group_index,
+            member,
+            keep,
+            checked,
+            similarity,
+        ))
 }
 
-fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
+fn member_row(
+    group_index: usize,
+    member: &GroupMember,
+    keep: bool,
+    checked: bool,
+    poster: Option<&Path>,
+) -> View {
     // Rendering only reads state: poster extraction is requested when a
     // group becomes visible (see `actions::request_group_posters`), never
     // while the tree is being built.
-    let thumb = thumb_for(&member);
+    let thumb = thumb_for(member, poster);
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
-    let name = member_name(&member);
+    let name = member_name(member);
     let shown = fit_text(&name, 120);
     let truncated = shown != name;
     let cell = text(shown)
@@ -999,7 +1093,7 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
-        .bg(if member.keep {
+        .bg(if keep {
             colors::ACCENT_WASH
         } else {
             colors::PANE
@@ -1014,8 +1108,14 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
                 .min_w(px(0.0))
                 .gap(px(4.0))
                 .child(cell)
-                .child(caption(member_parent(&member)))
-                .child(member_actions(group_index, &member, checked, similarity)),
+                .child(caption(member_parent(member)))
+                .child(member_actions(
+                    group_index,
+                    member,
+                    keep,
+                    checked,
+                    similarity,
+                )),
         )
 }
 
@@ -1024,17 +1124,18 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
 fn member_actions(
     group_index: usize,
     member: &GroupMember,
+    keep: bool,
     checked: bool,
     similarity: Option<String>,
 ) -> View {
-    let label = if member.keep {
+    let label = if keep {
         "KEEP"
     } else if checked {
         "Selected"
     } else {
         "Select"
     };
-    let active = member.keep || checked;
+    let active = keep || checked;
     let toggle_path = member.path.clone();
     let keep_path = member.path.clone();
     view()
@@ -1045,7 +1146,7 @@ fn member_actions(
         .child(
             checkbox()
                 .checked(active)
-                .disabled(member.keep)
+                .disabled(keep)
                 .on_change(move |_: &bool| actions::toggle_selected(&toggle_path))
                 .px(px(8.0))
                 .py(px(2.0))
@@ -1053,7 +1154,7 @@ fn member_actions(
                 .items_center()
                 .gap(px(6.0))
                 .rounded(px(radius::CONTROL))
-                .bg(if member.keep {
+                .bg(if keep {
                     colors::ACCENT_WASH_STRONG
                 } else if checked {
                     colors::ACCENT_WASH
@@ -1105,7 +1206,7 @@ fn member_actions(
         .child(when(member.reference, || {
             chip("REF", colors::ACCENT_WASH, colors::ACCENT)
         }))
-        .child(when(!member.keep, move || {
+        .child(when(!keep, move || {
             let path = keep_path.clone();
             ghost_button("Keep", move || {
                 actions::set_keeper(group_index, &path);
