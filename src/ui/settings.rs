@@ -9,7 +9,7 @@ use nsh_core::prelude::*;
 use crate::cache;
 use crate::cli::{FindMode, MatchMode};
 use crate::ui::actions;
-use crate::ui::palette::{colors, radius, text};
+use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
     caption, card, divider, heading, panel_title, secondary_button, toggle_switch,
@@ -91,8 +91,8 @@ fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> im
         .on_press(move |_: &()| actions::set_settings_tab(which))
         .accessibility_label(label)
         .w_full()
-        .px(px(10.0))
-        .py(px(7.0))
+        .px(px(space::MD))
+        .py(px(space::SM))
         .child(
             text(label)
                 .text_size(px(text::BODY))
@@ -110,8 +110,8 @@ fn page_column(children: Vec<View>) -> View {
         .flex_col()
         .w_full()
         .max_w(px(880.0))
-        .gap(px(20.0))
-        .p(px(32.0));
+        .gap(px(space::XL))
+        .p(px(space::XXL));
     for child in children {
         column = column.child(child);
     }
@@ -121,7 +121,7 @@ fn page_column(children: Vec<View>) -> View {
 fn header(title: &'static str, description: &'static str) -> View {
     view()
         .flex_col()
-        .gap(px(6.0))
+        .gap(px(space::XS))
         .child(caption("Settings"))
         .child(heading(title))
         .child(caption(description))
@@ -154,7 +154,7 @@ fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View
 }
 
 fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> View {
-    let mut body = view().flex_col().w_full().gap(px(8.0));
+    let mut body = view().flex_col().w_full().gap(px(space::SM));
     for (index, content) in rows.into_iter().enumerate() {
         if index > 0 {
             body = body.child(divider());
@@ -163,8 +163,8 @@ fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> V
     }
     card()
         .w_full()
-        .gap(px(10.0))
-        .p(px(16.0))
+        .gap(px(space::MD))
+        .p(px(space::LG))
         .child(panel_title(title))
         .child(caption(description))
         .child(body)
@@ -179,8 +179,8 @@ fn choice_chip(
         .checked(active)
         .on_change(move |_: &bool| on_press())
         .accessibility_label(label)
-        .px(px(10.0))
-        .py(px(5.0))
+        .px(px(space::SM))
+        .py(px(space::XS))
         .rounded(px(radius::CONTROL))
         .bg(if active {
             colors::ACCENT_WASH_STRONG
@@ -237,12 +237,12 @@ fn choice_row(label: &'static str, hint: impl IntoReactive<SharedString>, contro
         .flex_col()
         .w_full()
         .min_w(px(0.0))
-        .gap(px(6.0))
+        .gap(px(space::SM))
         .child(
             view()
                 .flex_col()
                 .min_w(px(0.0))
-                .gap(px(2.0))
+                .gap(px(space::XXS))
                 .child(panel_title(label))
                 .child(caption(hint)),
         )
@@ -254,7 +254,7 @@ fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> Vi
         view()
             .flex_row()
             .items_center()
-            .gap(px(8.0))
+            .gap(px(space::SM))
             .child(caption(label))
             .child(toggle_switch(value, label, on_press)),
     )
@@ -288,7 +288,7 @@ fn number(
             .decrement_button_style(|s| s.w(px(22.0)).items_center().justify_center())
             .increment_button_style(|s| s.w(px(22.0)).items_center().justify_center())
             .flex_row()
-            .h(px(34.0))
+            .h(px(space::XXL))
             .bg(colors::INSET)
             .border_1()
             .border_color(colors::BORDER)

@@ -7,7 +7,7 @@
 use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
-use crate::ui::palette::colors;
+use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app};
 use crate::ui::widgets::{caption, ghost_button, heading, secondary_button};
 use crate::ui::{actions, results, settings, shell, toast};
@@ -53,9 +53,9 @@ fn header() -> impl IntoElement {
         .flex_row()
         .items_center()
         .justify_between()
-        .gap(px(16.0))
-        .px(px(28.0))
-        .py(px(16.0))
+        .gap(px(space::LG))
+        .px(px(space::XL))
+        .py(px(space::LG))
         .bg(colors::GLASS)
         .backdrop_blur(24.0_f32)
         .border_b_1()
@@ -117,9 +117,9 @@ fn status_bar() -> impl IntoElement {
         .flex_row()
         .items_center()
         .justify_between()
-        .gap(px(16.0))
-        .px(px(28.0))
-        .py(px(10.0))
+        .gap(px(space::LG))
+        .px(px(space::XL))
+        .py(px(space::MD))
         .bg(colors::GLASS)
         .backdrop_blur(20.0_f32)
         .border_t_1()

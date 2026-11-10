@@ -13,7 +13,8 @@ use nsh_base::{
 use nsh_core::prelude::*;
 use nsh_core::time::now;
 
-use crate::ui::palette::{colors, radius, text};
+use crate::ui::palette::{colors, radius, space, text};
+use crate::ui::widgets::motion;
 
 /// How long a toast stays on screen before it dismisses itself.
 const TOAST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -77,7 +78,7 @@ pub(crate) fn toast_layer() -> impl IntoElement {
         .absolute()
         .left(px(0.0))
         .right(px(0.0))
-        .bottom(px(28.0))
+        .bottom(px(space::XL))
         .flex_row()
         .justify_center()
         .child(
@@ -111,8 +112,8 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                                 }
                             })
                             .rounded(px(radius::CARD))
-                            .px(px(16.0))
-                            .py(px(12.0))
+                            .px(px(space::LG))
+                            .py(px(space::MD))
                             .bg(colors::GLASS)
                             .backdrop_blur(20.0_f32)
                             .shadow_lg()
@@ -124,7 +125,7 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                                 colors::BORDER
                             })
                             .transition_all()
-                            .duration(200.0)
+                            .duration(motion(200.0))
                             .starting_class("translate-y-3 opacity-0")
                             .ending_class("opacity-0")
                             .child(

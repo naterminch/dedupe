@@ -8,17 +8,18 @@ use std::path::{Path, PathBuf};
 
 use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
 use nsh_core::AccessibilityState;
+use nsh_core::element::BorderCurve;
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
 use crate::media;
 use crate::modes::{ModeResult, mode_title};
 use crate::ui::actions;
-use crate::ui::palette::{colors, radius, text};
+use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::app;
 use crate::ui::widgets::{
-    caption, card, chevron, chip, danger_button, field_label, ghost_button, hint, primary_button,
-    secondary_button,
+    caption, card, chevron, chip, danger_button, field_label, ghost_button, hint, motion,
+    primary_button, secondary_button,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -143,8 +144,8 @@ fn duplicate_workspace() -> View {
         .flex_col()
         .flex_1()
         .h_full()
-        .gap(px(16.0))
-        .p(px(24.0))
+        .gap(px(space::LG))
+        .p(px(space::XL))
         .child(header_row())
         .child(selection_row())
         .child(action_row())
@@ -231,7 +232,7 @@ fn sim_filter() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(space::SM))
         .child(field_label("Similarity"))
         .child(
             number_input()
@@ -255,7 +256,7 @@ fn sim_filter() -> impl IntoElement {
                 .increment_button_style(|s| s.w(px(20.0)).items_center().justify_center())
                 .flex_row()
                 .w(px(120.0))
-                .h(px(32.0))
+                .h(px(space::XXL))
                 .bg(colors::INSET)
                 .border_1()
                 .border_color(colors::BORDER)
@@ -283,8 +284,8 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .checked(active)
         .on_change(move |_: &bool| actions::apply_keep_mode(index))
         .accessibility_label(label)
-        .px(px(10.0))
-        .py(px(4.0))
+        .px(px(space::SM))
+        .py(px(space::XS))
         .rounded_full()
         .bg(if active {
             colors::ACCENT_WASH_STRONG
@@ -386,7 +387,7 @@ fn consolidate_button() -> View {
 fn list_body() -> View {
     let (scanning, has_scanned, total, ffprobe_note) =
         app().with(|s| (s.scanning, s.has_scanned, s.groups.len(), s.ffprobe_note));
-    let mut list = view().flex_col().gap(px(12.0));
+    let mut list = view().flex_col().gap(px(space::MD));
     if scanning {
         list = list.child(progress_card());
     }
@@ -436,8 +437,8 @@ fn progress_card() -> View {
         app().with(|s| s.status.clone())
     };
     card()
-        .gap(px(8.0))
-        .p(px(12.0))
+        .gap(px(space::SM))
+        .p(px(space::MD))
         .child(
             view()
                 .flex_row()
@@ -473,18 +474,20 @@ fn empty_state() -> View {
         == crate::cli::FindMode::Duplicates;
     let folders = app().with(|s| s.folders.len());
     let trash = app().with(|s| s.trash);
-    card()
+    // Not a card: the preview panel and the three steps are cards, and a card
+    // around them would nest surfaces two deep.
+    view()
+        .flex_col()
         .w_full()
         .max_w(px(980.0))
-        .gap(px(20.0))
-        .p(px(24.0))
+        .gap(px(space::XL))
         .self_center()
         .child(
             view()
                 .flex_row()
                 .flex_wrap()
                 .items_center()
-                .gap(px(24.0))
+                .gap(px(space::XL))
                 .child(
                     view()
                         .flex_1()
@@ -505,8 +508,8 @@ fn empty_state() -> View {
                     card()
                         .w(px(250.0))
                         .flex_shrink_0()
-                        .gap(px(8.0))
-                        .p(px(16.0))
+                        .gap(px(space::SM))
+                        .p(px(space::LG))
                         .child(
                             view()
                                 .flex_row()
@@ -544,7 +547,7 @@ fn empty_state() -> View {
                 .flex_row()
                 .flex_wrap()
                 .items_stretch()
-                .gap(px(12.0))
+                .gap(px(space::MD))
                 .child(step_card("01", "Add folders"))
                 .child(step_card("02", "Run a scan"))
                 .child(step_card("03", "Review results")),
@@ -552,20 +555,24 @@ fn empty_state() -> View {
 }
 
 fn preview_row(label: &'static str, value: String) -> View {
-    view().flex_col().gap(px(1.0)).child(caption(label)).child(
-        text(value)
-            .text_size(px(text::BODY))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(colors::TEXT),
-    )
+    view()
+        .flex_col()
+        .gap(px(space::XXS))
+        .child(caption(label))
+        .child(
+            text(value)
+                .text_size(px(text::BODY))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors::TEXT),
+        )
 }
 
 fn step_card(step: &'static str, heading: &'static str) -> View {
     card()
         .flex_1()
         .min_w(px(220.0))
-        .gap(px(8.0))
-        .p(px(12.0))
+        .gap(px(space::SM))
+        .p(px(space::MD))
         .child(
             view()
                 .flex_row()
@@ -583,7 +590,10 @@ fn step_card(step: &'static str, heading: &'static str) -> View {
 }
 
 fn note_card(message: &'static str) -> View {
-    card().p(px(12.0)).bg(colors::INSET).child(caption(message))
+    card()
+        .p(px(space::MD))
+        .bg(colors::INSET)
+        .child(caption(message))
 }
 
 fn stat_chips() -> View {
@@ -696,11 +706,11 @@ fn group_card(position: usize) -> View {
                     .on_press(move || actions::toggle_expanded(index))
                     .flex_row()
                     .items_center()
-                    .gap(px(10.0))
-                    .p(px(12.0))
+                    .gap(px(space::SM))
+                    .p(px(space::MD))
                     .rounded(px(radius::CONTROL))
                     .transition_colors()
-                    .duration(150.0)
+                    .duration(motion(150.0))
                     .hover(|s| s.bg(colors::INSET))
                     .child(chevron(expanded))
                     .child(
@@ -760,7 +770,7 @@ fn card_preview(thumb: &Thumb, path: &Path) -> View {
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded(px(radius::PREVIEW))
+        .rounded(px(radius::CONTROL))
         .bg(colors::INSET);
     let source = match thumb {
         Thumb::Image => Some(path.to_string_lossy().into_owned()),
@@ -773,7 +783,7 @@ fn card_preview(thumb: &Thumb, path: &Path) -> View {
                 .w_full()
                 .h(px(CARD_PREVIEW_H))
                 .object_fit(ResizeMode::Cover)
-                .rounded(px(radius::PREVIEW)),
+                .rounded(px(radius::CONTROL)),
         ),
         None => frame.border_1().border_color(colors::BORDER).child(
             text("▶")
@@ -791,11 +801,18 @@ fn media_card(group_index: usize, member: GroupMember, checked: bool) -> View {
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
-    card()
+    // A row surface, not a card: it sits inside the group card, and a card in
+    // a card draws a second border and shadow on the same edge.
+    view()
+        .flex_col()
         .flex_1()
         .min_w(px(0.0))
-        .p(px(8.0))
-        .gap(px(8.0))
+        .p(px(space::SM))
+        .gap(px(space::SM))
+        .bg(colors::PANE)
+        .rounded(px(radius::CARD))
+        .border_curve(BorderCurve::Continuous)
+        .border_1()
         .border_color(if member.keep {
             colors::ACCENT
         } else {
@@ -843,9 +860,9 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
     view()
         .flex_row()
         .items_start()
-        .gap(px(8.0))
-        .px(px(8.0))
-        .py(px(6.0))
+        .gap(px(space::SM))
+        .px(px(space::SM))
+        .py(px(space::XS))
         .rounded(px(radius::CONTROL))
         .bg(if member.keep {
             colors::ACCENT_WASH
@@ -853,7 +870,7 @@ fn member_row(group_index: usize, member: GroupMember, checked: bool) -> View {
             colors::PANE
         })
         .transition_colors()
-        .duration(180.0)
+        .duration(motion(180.0))
         .child(member_thumb(&thumb, &member.path))
         .child(
             view()
@@ -889,7 +906,7 @@ fn member_actions(
         .flex_row()
         .flex_wrap()
         .items_center()
-        .gap(px(6.0))
+        .gap(px(space::SM))
         .child(
             checkbox()
                 .checked(active)
@@ -966,8 +983,8 @@ fn mode_workspace() -> View {
         .flex_col()
         .flex_1()
         .h_full()
-        .gap(px(16.0))
-        .p(px(24.0))
+        .gap(px(space::LG))
+        .p(px(space::XL))
         .child(mode_header())
         .child(scroll().flex_1().child(dynamic(mode_list)))
 }
@@ -1040,13 +1057,13 @@ fn mode_chips(result: &ModeResult) -> View {
 
 fn mode_finding_row(finding: &crate::modes::Finding) -> View {
     card()
-        .gap(px(4.0))
-        .p(px(10.0))
+        .gap(px(space::XS))
+        .p(px(space::MD))
         .child(
             view()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(space::SM))
                 .child(chip(finding.kind, colors::INSET, colors::MUTED))
                 .child({
                     let full_path = finding.path.to_string_lossy().to_string();
@@ -1070,13 +1087,13 @@ fn mode_finding_row(finding: &crate::modes::Finding) -> View {
 
 fn mode_group_card(group: &crate::modes::FindingGroup) -> View {
     card()
-        .gap(px(4.0))
-        .p(px(10.0))
+        .gap(px(space::XS))
+        .p(px(space::MD))
         .child(
             view()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(space::SM))
                 .child(
                     text(group.label.clone())
                         .flex_1()
@@ -1105,7 +1122,7 @@ fn mode_group_card(group: &crate::modes::FindingGroup) -> View {
 
 fn note_card_error(message: &str) -> View {
     card()
-        .p(px(10.0))
+        .p(px(space::MD))
         .border_color(colors::DANGER)
         .child(caption(message.to_owned()))
 }

@@ -8,7 +8,16 @@ use nsh_base::{button, switch, tooltip};
 use nsh_core::element::{BorderCurve, ImageSrc, input, svg};
 use nsh_core::prelude::*;
 
-use crate::ui::palette::{colors, radius, text};
+use crate::ui::palette::{colors, radius, space, text};
+
+/// Transition length for colour and transform changes.
+///
+/// The platform's reduce-motion preference collapses it to zero: the same end
+/// state arrives, without the animation. Reads the environment reactively, so
+/// turning the setting off is picked up on the next frame.
+pub(crate) fn motion(ms: f32) -> f32 {
+    if reduce_motion() { 0.0 } else { ms }
+}
 
 /// A raised surface for panels, cards and dialogs.
 pub(crate) fn card() -> View {
@@ -65,14 +74,14 @@ pub(crate) fn primary_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(18.0))
-            .py(px(9.0))
+            .px(px(space::LG))
+            .py(px(space::SM))
             .bg(colors::ACCENT)
             .rounded_full()
             .shadow_xs()
             .shadow_color(colors::SHADOW)
             .transition_colors()
-            .duration(180.0)
+            .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.opacity(0.92))
             .child(
@@ -95,14 +104,14 @@ pub(crate) fn secondary_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(16.0))
-            .py(px(8.0))
+            .px(px(space::LG))
+            .py(px(space::SM))
             .bg(colors::PANE)
             .border_1()
             .border_color(colors::BORDER)
             .rounded_full()
             .transition_colors()
-            .duration(180.0)
+            .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::ACCENT_WASH))
             .child(
@@ -125,11 +134,11 @@ pub(crate) fn ghost_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(12.0))
-            .py(px(7.0))
+            .px(px(space::MD))
+            .py(px(space::SM))
             .rounded_full()
             .transition_colors()
-            .duration(180.0)
+            .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::ACCENT_WASH))
             .child(
@@ -158,7 +167,7 @@ pub(crate) fn chevron(open: bool) -> impl IntoElement {
         .flex_shrink_0()
         .text_color(colors::MUTED)
         .transition_transform()
-        .duration(150.0)
+        .duration(motion(150.0))
         .rotate(if open { deg(90.0) } else { deg(0.0) })
 }
 
@@ -173,14 +182,14 @@ pub(crate) fn danger_button(
             .flex_row()
             .items_center()
             .justify_center()
-            .px(px(16.0))
-            .py(px(9.0))
+            .px(px(space::LG))
+            .py(px(space::SM))
             .bg(colors::DANGER)
             .rounded_full()
             .shadow_xs()
             .shadow_color(colors::SHADOW)
             .transition_colors()
-            .duration(180.0)
+            .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.opacity(0.92))
             .child(
@@ -208,7 +217,7 @@ pub(crate) fn toggle_switch(
                 .h(px(20.0))
                 .flex_row()
                 .items_center()
-                .p(px(2.0))
+                .p(px(space::XXS))
                 .rounded_full()
                 .bg(if checked {
                     colors::ACCENT
@@ -238,8 +247,8 @@ pub(crate) fn chip(
     foreground: AdaptiveColor,
 ) -> View {
     view()
-        .px(px(10.0))
-        .py(px(3.0))
+        .px(px(space::SM))
+        .py(px(space::XXS))
         .flex_row()
         .items_center()
         .bg(background)
@@ -254,7 +263,12 @@ pub(crate) fn chip(
 
 /// A one-pixel rule between sections.
 pub(crate) fn divider() -> View {
-    view().h(px(1.0)).w_full().bg(colors::BORDER)
+    // One device pixel, not one point: a point-wide rule doubles on a 2x
+    // display and reads as a filled bar instead of a hairline.
+    view()
+        .h(move || px(1.0 / pixel_ratio()))
+        .w_full()
+        .bg(colors::BORDER)
 }
 
 /// A labelled single-line text field bound to the shared state.
@@ -275,8 +289,8 @@ pub(crate) fn field(
         .caret_color(|| color(colors::ACCENT))
         .selection_color(|| color(colors::ACCENT))
         .flex_1()
-        .px(px(12.0))
-        .py(px(8.0))
+        .px(px(space::MD))
+        .py(px(space::SM))
         .text_size(px(text::BODY))
         .text_color(colors::TEXT)
         .bg(colors::INSET)
@@ -284,7 +298,7 @@ pub(crate) fn field(
         .border_color(colors::BORDER)
         .rounded(px(radius::CONTROL))
         .transition_colors()
-        .duration(180.0)
+        .duration(motion(180.0))
 }
 
 /// An info bubble for `.tooltip(..)`: dark in light theme, light in dark
@@ -293,8 +307,8 @@ pub(crate) fn field(
 pub(crate) fn hint(label: impl IntoReactive<SharedString>) -> impl IntoTooltip {
     tooltip()
         .rounded(px(radius::CONTROL))
-        .px(px(10.0))
-        .py(px(5.0))
+        .px(px(space::SM))
+        .py(px(space::XS))
         .bg(colors::TEXT)
         .child(
             text(label)

@@ -7,7 +7,7 @@ use nsh_core::prelude::*;
 
 use crate::cli;
 use crate::ui::actions;
-use crate::ui::palette::{colors, radius, text};
+use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
     caption, card, chip, danger_button, field, field_label, ghost_button, primary_button,
@@ -30,9 +30,9 @@ pub(crate) fn sidebar() -> impl IntoElement {
             scroll().flex_1().child(
                 view()
                     .flex_col()
-                    .gap(px(12.0))
-                    .px(px(16.0))
-                    .pb(px(16.0))
+                    .gap(px(space::MD))
+                    .px(px(space::XL))
+                    .pb(px(space::XL))
                     .child(scope_card()),
             ),
         )
@@ -42,20 +42,20 @@ pub(crate) fn sidebar() -> impl IntoElement {
 fn header_block() -> impl IntoElement {
     view()
         .flex_col()
-        .gap(px(12.0))
-        .px(px(16.0))
-        .pt(px(20.0))
-        .pb(px(16.0))
+        .gap(px(space::MD))
+        .px(px(space::XL))
+        .pt(px(space::XL))
+        .pb(px(space::LG))
         .child(
             view()
                 .flex_row()
                 .items_start()
                 .justify_between()
-                .gap(px(12.0))
+                .gap(px(space::MD))
                 .child(
                     view()
                         .flex_col()
-                        .gap(px(4.0))
+                        .gap(px(space::XS))
                         .child(section_kicker("Source folders"))
                         .child(caption("Protected folders are never deleted.")),
                 )
@@ -77,7 +77,7 @@ fn section_kicker(label: impl IntoReactive<SharedString>) -> Text {
 }
 
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(8.0)).child(
+    view().flex_col().gap(px(space::SM)).child(
         when(|| app().with(|s| s.folders.is_empty()), empty_folders).otherwise(|| {
             each(
                 || app().with(|s| s.folders.clone()),
@@ -91,8 +91,8 @@ fn folder_list() -> impl IntoElement {
 fn empty_folders() -> impl IntoElement {
     view()
         .flex_col()
-        .gap(px(4.0))
-        .p(px(12.0))
+        .gap(px(space::XS))
+        .p(px(space::MD))
         .rounded(px(radius::CARD))
         .border_1()
         .border_dashed()
@@ -112,8 +112,8 @@ fn folder_row(folder: ReadSignal<FolderEntry>, index: ReadSignal<usize>) -> impl
         let path = folder.with(|f| fit_text(&f.path, 60));
         view()
             .flex_col()
-            .gap(px(8.0))
-            .p(px(10.0))
+            .gap(px(space::SM))
+            .p(px(space::MD))
             .rounded(px(radius::CONTROL))
             .bg(if reference {
                 colors::ACCENT_WASH
@@ -152,9 +152,9 @@ fn protect_chip(checked: bool, index: ReadSignal<usize>) -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
-        .gap(px(6.0))
-        .px(px(10.0))
-        .py(px(3.0))
+        .gap(px(space::XXS))
+        .px(px(space::SM))
+        .py(px(space::XXS))
         .rounded_full()
         .bg(if checked {
             colors::ACCENT_WASH_STRONG
@@ -187,7 +187,7 @@ fn protect_chip(checked: bool, index: ReadSignal<usize>) -> impl IntoElement {
 fn add_row() -> impl IntoElement {
     view()
         .flex_row()
-        .gap(px(8.0))
+        .gap(px(space::SM))
         .items_center()
         .child(field(
             "Folder path",
@@ -202,14 +202,14 @@ fn add_row() -> impl IntoElement {
 
 fn scope_card() -> impl IntoElement {
     card()
-        .gap(px(12.0))
-        .p(px(12.0))
+        .gap(px(space::MD))
+        .p(px(space::MD))
         .child(
             view()
                 .flex_row()
                 .items_start()
                 .justify_between()
-                .gap(px(12.0))
+                .gap(px(space::MD))
                 .child(section_kicker("Scan scope")),
         )
         .child(labelled(
@@ -298,11 +298,11 @@ fn labelled(
 ) -> impl IntoElement {
     view()
         .flex_col()
-        .gap(px(6.0))
+        .gap(px(space::XS))
         .child(
             view()
                 .flex_row()
-                .gap(px(6.0))
+                .gap(px(space::XS))
                 .items_center()
                 .child(field_label(label))
                 .child(hint.map(caption)),
@@ -311,39 +311,48 @@ fn labelled(
 }
 
 fn scan_card() -> impl IntoElement {
-    view().px(px(16.0)).pt(px(8.0)).pb(px(16.0)).child(
-        card()
-            .gap(px(12.0))
-            .p(px(12.0))
-            .border_color(colors::ACCENT_WASH_STRONG)
-            .child(
-                view()
-                    .flex_row()
-                    .items_start()
-                    .justify_between()
-                    .gap(px(12.0))
-                    .child(view().flex_col().gap(px(4.0)).child(section_kicker(|| {
-                        if app().with(|s| s.scanning) {
-                            "Scanning"
-                        } else {
-                            "Ready to scan"
-                        }
-                    })))
-                    .child(chip(
-                        || format!("{} folders", app().with(|s| s.folders.len())),
-                        colors::INSET,
-                        colors::MUTED,
-                    )),
-            )
-            .child(media_status())
-            .child(
-                when(
-                    || app().with(|s| s.scanning),
-                    || danger_button("Stop", actions::stop_scan).w_full(),
+    view()
+        .px(px(space::XL))
+        .pt(px(space::SM))
+        .pb(px(space::XL))
+        .child(
+            card()
+                .gap(px(space::MD))
+                .p(px(space::MD))
+                .border_color(colors::ACCENT_WASH_STRONG)
+                .child(
+                    view()
+                        .flex_row()
+                        .items_start()
+                        .justify_between()
+                        .gap(px(space::MD))
+                        .child(
+                            view()
+                                .flex_col()
+                                .gap(px(space::XS))
+                                .child(section_kicker(|| {
+                                    if app().with(|s| s.scanning) {
+                                        "Scanning"
+                                    } else {
+                                        "Ready to scan"
+                                    }
+                                })),
+                        )
+                        .child(chip(
+                            || format!("{} folders", app().with(|s| s.folders.len())),
+                            colors::INSET,
+                            colors::MUTED,
+                        )),
                 )
-                .otherwise(|| primary_button(scan_label, actions::start_scan).w_full()),
-            ),
-    )
+                .child(media_status())
+                .child(
+                    when(
+                        || app().with(|s| s.scanning),
+                        || danger_button("Stop", actions::stop_scan).w_full(),
+                    )
+                    .otherwise(|| primary_button(scan_label, actions::start_scan).w_full()),
+                ),
+        )
 }
 
 fn scan_label() -> &'static str {

@@ -67,14 +67,30 @@ pub(crate) mod colors {
 pub(crate) mod text {
     pub(crate) const CAPTION: f32 = 12.0;
     pub(crate) const BODY: f32 = 14.0;
-    pub(crate) const HEADING: f32 = 26.0;
+    /// Page headings. Text scales with the user's text size by itself; only
+    /// the step value lives here.
+    pub(crate) const HEADING: f32 = 20.0;
 }
 
+/// Corner radii: one finite scale instead of a value per element. A large
+/// surface gets the softer tier, and the controls inside it take the tighter
+/// one, so the nesting stays legible.
 pub(crate) mod radius {
-    /// Cards, bars and floating panels.
-    pub(crate) const CARD: f32 = 18.0;
-    /// Inputs, rows and small controls.
+    /// Cards, bars, floating panels and media cards.
+    pub(crate) const CARD: f32 = 16.0;
+    /// Inputs, rows, previews and small controls.
     pub(crate) const CONTROL: f32 = 12.0;
-    /// Photo and poster previews.
-    pub(crate) const PREVIEW: f32 = 14.0;
+}
+
+/// Spacing scale, the same relationships the guide names: optical correction,
+/// parts of one control, closely related controls, one content group, separate
+/// groups, separate sections, region boundaries.
+pub(crate) mod space {
+    pub(crate) const XXS: f32 = 2.0;
+    pub(crate) const XS: f32 = 4.0;
+    pub(crate) const SM: f32 = 8.0;
+    pub(crate) const MD: f32 = 12.0;
+    pub(crate) const LG: f32 = 16.0;
+    pub(crate) const XL: f32 = 24.0;
+    pub(crate) const XXL: f32 = 32.0;
 }
