@@ -102,7 +102,11 @@ fn body() -> impl IntoElement {
         .min_h(px(0.0))
         .overflow_hidden()
         .child(dynamic(|| {
-            if app().with(|s| s.view) == AppView::Settings {
+            // The body owns the results pane's scroll container, so it may
+            // only rebuild when the page actually changes: rebuilding it on a
+            // keeper pick or a tick would jump the list back to the top.
+            let page = computed(|| app().with(|s| s.view));
+            if page.get() == AppView::Settings {
                 view()
                     .flex_1()
                     .h_full()

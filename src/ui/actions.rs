@@ -439,6 +439,7 @@ pub(crate) fn start_scan() {
         s.mode_result = None;
         s.selected.clear();
         s.collapsed.clear();
+        s.playing = None;
         s.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
     });
     let generation = state.with_untracked(|s| s.scan_gen);
@@ -542,6 +543,7 @@ pub(crate) fn stop_scan() {
         s.base_groups.clear();
         s.selected.clear();
         s.collapsed.clear();
+        s.playing = None;
         s.last_stats = None;
         s.status = "Scan cancelled.".to_string();
     });
@@ -568,6 +570,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.base_groups.clear();
             s.selected.clear();
             s.collapsed.clear();
+            s.playing = None;
             s.has_scanned = false;
             s.files_scanned = out.stats.files_scanned;
             s.bytes_scanned = out.stats.bytes_scanned;
@@ -598,6 +601,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.base_groups.clear();
             s.selected.clear();
             s.collapsed.clear();
+            s.playing = None;
             s.consolidate_dest = None;
             s.group_limit = crate::ui::state::GROUP_PAGE;
             s.dup_files = findings as u64;
@@ -968,6 +972,17 @@ pub(crate) fn apply_keep_mode(index: usize) {
     save_prefs();
 }
 
+/// Play a video in its card's preview, or stop the one already playing.
+///
+/// One at a time: starting another replaces it. The player is muted, so a
+/// click never starts sound the user did not ask for.
+pub(crate) fn toggle_play(path: &Path) {
+    app().update(|s| {
+        let same = s.playing.as_deref() == Some(path);
+        s.playing = if same { None } else { Some(path.to_path_buf()) };
+    });
+}
+
 /// Flip one duplicate's tick (KEEP members are never selectable).
 pub(crate) fn toggle_selected(path: &Path) {
     app().update(|s| {
@@ -1189,6 +1204,7 @@ pub(crate) fn perform_delete() {
             s.base_groups.retain(|g| g.members.len() >= 2);
             // Members are gone: the list's cards are stale now.
             s.results_rev += 1;
+            s.playing = None;
             for p in &outcome.deleted {
                 s.selected.remove(p);
             }
@@ -1388,6 +1404,7 @@ pub(crate) fn perform_consolidate() {
             }
             // Member paths moved: rebuild the list against the new ones.
             s.results_rev += 1;
+            s.playing = None;
             s.consolidate_dest = None;
             s.status = format!(
                 "Consolidated {} keeper(s) ({}) into {}; {} skipped.",

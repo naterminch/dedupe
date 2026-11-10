@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
 use nsh_core::AccessibilityState;
-use nsh_core::element::BorderCurve;
+use nsh_core::element::{BorderCurve, video};
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
@@ -818,11 +818,17 @@ fn group_card(position: usize, group: &Group, expanded: bool) -> View {
     let index = group.index;
     let header = group_header(group);
     let members = group.members.clone();
-    // Media groups keep the layout the app shipped with: every member is a
-    // photo or a video, so each is shown once as a large card, two to a row.
-    // Anything else (plain files, archives, mixed groups) stays a compact
-    // row list, which reads better for paths than a wall of empty previews.
-    let grid = members.len() >= 2 && members.iter().all(|m| is_grid_preview(&thumb_for(m, None)));
+    // Media groups always render as cards, two to a row. The layout follows
+    // the group's kind, not each member's decodable frame, so every item in
+    // every group gets the same fixed preview box: a copy whose own frame
+    // cannot be decoded keeps that box instead of shrinking the whole group
+    // into the compact row list. Plain files, archives and mixed groups stay
+    // rows, which read better for paths than a wall of empty previews.
+    let grid = members.len() >= 2
+        && matches!(
+            group.media_kind,
+            media::MediaKind::Image | media::MediaKind::Video
+        );
     let mut body = view().flex_col().gap(px(8.0)).px(px(12.0)).pb(px(12.0));
     if grid {
         for (row_index, pair) in members.chunks(2).enumerate() {
@@ -918,11 +924,6 @@ fn group_card(position: usize, group: &Group, expanded: bool) -> View {
     )
 }
 
-/// Groups where every member has a large preview render as a card grid.
-fn is_grid_preview(thumb: &Thumb) -> bool {
-    matches!(thumb, Thumb::Image | Thumb::Poster(_) | Thumb::PendingVideo)
-}
-
 /// File name for a member, or the whole path when the file has none.
 fn member_name(member: &GroupMember) -> String {
     member.path.file_name().map_or_else(
@@ -946,7 +947,11 @@ const CARD_PREVIEW_H: f32 = 180.0;
 /// The large preview on top of a media card. Photos and videos (whose poster
 /// ffmpeg extracts) share one box so cards in a row line up; a video whose
 /// poster has not landed yet keeps the box with a play glyph.
-fn card_preview(thumb: &Thumb, path: &Path) -> View {
+///
+/// Clicking a video's preview plays the clip in that same box, muted, and the
+/// `Stop` pill puts the poster frame back — the card never changes size, and
+/// one video plays at a time (see [`actions::toggle_play`]).
+fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
     let frame = view()
         .w_full()
         .h(px(CARD_PREVIEW_H))
@@ -955,12 +960,34 @@ fn card_preview(thumb: &Thumb, path: &Path) -> View {
         .justify_center()
         .rounded(px(radius::CONTROL))
         .bg(colors::INSET);
+    let playable = matches!(thumb, Thumb::Poster(_) | Thumb::PendingVideo);
+    if playing && playable {
+        let stop_path = path.to_path_buf();
+        return frame
+            .child(
+                video(path.to_string_lossy().into_owned())
+                    .w_full()
+                    .h(px(CARD_PREVIEW_H))
+                    .rounded(px(radius::CONTROL))
+                    .muted(true)
+                    .controls(true),
+            )
+            .child(
+                view()
+                    .absolute()
+                    .top(px(space::SM))
+                    .right(px(space::SM))
+                    .child(secondary_button("Stop", move || {
+                        actions::toggle_play(&stop_path);
+                    })),
+            );
+    }
     let source = match thumb {
         Thumb::Image => Some(path.to_string_lossy().into_owned()),
         Thumb::Poster(poster) => Some(poster.to_string_lossy().into_owned()),
         Thumb::None | Thumb::PendingVideo => None,
     };
-    match source {
+    let frame = match source {
         Some(source) => frame.child(
             image(source)
                 .w_full()
@@ -973,6 +1000,16 @@ fn card_preview(thumb: &Thumb, path: &Path) -> View {
                 .text_size(px(text::HEADING))
                 .text_color(colors::MUTED),
         ),
+    };
+    if playable {
+        // The preview is the play button: a click loads the clip, muted.
+        let play_path = path.to_path_buf();
+        frame
+            .transition_colors()
+            .duration(motion(180.0))
+            .on_press(move || actions::toggle_play(&play_path))
+    } else {
+        frame
     }
 }
 
@@ -998,15 +1035,30 @@ fn member_slot(
                 current.is_some_and(|m| m.keep),
                 s.selected.contains(&path),
                 s.posters.get(&path).cloned(),
+                s.playing.as_deref() == Some(path.as_path()),
             )
         })
     });
     view().child(dynamic(move || {
-        let (keep, checked, poster) = signature.get();
+        let (keep, checked, poster, playing) = signature.get();
         if grid {
-            media_card(group_index, &member, keep, checked, poster.as_deref())
+            media_card(
+                group_index,
+                &member,
+                keep,
+                checked,
+                poster.as_deref(),
+                playing,
+            )
         } else {
-            member_row(group_index, &member, keep, checked, poster.as_deref())
+            member_row(
+                group_index,
+                &member,
+                keep,
+                checked,
+                poster.as_deref(),
+                playing,
+            )
         }
     }))
 }
@@ -1020,6 +1072,7 @@ fn media_card(
     keep: bool,
     checked: bool,
     poster: Option<&Path>,
+    playing: bool,
 ) -> View {
     let thumb = thumb_for(member, poster);
     let similarity = member
@@ -1038,7 +1091,7 @@ fn media_card(
         .border_curve(BorderCurve::Continuous)
         .border_1()
         .border_color(if keep { colors::ACCENT } else { colors::BORDER })
-        .child(card_preview(&thumb, &member.path))
+        .child(card_preview(&thumb, &member.path, playing))
         .child(
             view()
                 .flex_col()
@@ -1059,6 +1112,7 @@ fn media_card(
             keep,
             checked,
             similarity,
+            Some(playing),
         ))
 }
 
@@ -1068,6 +1122,7 @@ fn member_row(
     keep: bool,
     checked: bool,
     poster: Option<&Path>,
+    playing: bool,
 ) -> View {
     // Rendering only reads state: poster extraction is requested when a
     // group becomes visible (see `actions::request_group_posters`), never
@@ -1118,6 +1173,7 @@ fn member_row(
                     keep,
                     checked,
                     similarity,
+                    (media::classify(&member.path) == media::MediaKind::Video).then_some(playing),
                 )),
         )
 }
@@ -1130,6 +1186,7 @@ fn member_actions(
     keep: bool,
     checked: bool,
     similarity: Option<String>,
+    play: Option<bool>,
 ) -> View {
     let label = if keep {
         "KEEP"
@@ -1141,6 +1198,8 @@ fn member_actions(
     let active = keep || checked;
     let toggle_path = member.path.clone();
     let keep_path = member.path.clone();
+    let play_path = member.path.clone();
+    let playing = play.unwrap_or(false);
     view()
         .flex_row()
         .flex_wrap()
@@ -1208,6 +1267,12 @@ fn member_actions(
         }))
         .child(when(member.reference, || {
             chip("REF", colors::ACCENT_WASH, colors::ACCENT)
+        }))
+        .child(when(play.is_some(), move || {
+            let path = play_path.clone();
+            ghost_button(if playing { "Stop" } else { "Play" }, move || {
+                actions::toggle_play(&path);
+            })
         }))
         .child(when(!keep, move || {
             let path = keep_path.clone();

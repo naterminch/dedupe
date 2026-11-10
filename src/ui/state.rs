@@ -149,6 +149,9 @@ pub(crate) struct AppState {
     /// scan, a re-threshold, a delete and "Show more" all start fully open
     /// without having to list every group.
     pub(crate) collapsed: HashSet<usize>,
+    /// The video playing in its card's preview, if any. One at a time: media
+    /// engines and audio are heavy, and a click elsewhere stops this one.
+    pub(crate) playing: Option<PathBuf>,
     pub(crate) selected: HashSet<PathBuf>,
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
@@ -236,6 +239,7 @@ impl Default for AppState {
             group_limit: GROUP_PAGE,
             last_hash: HashAlgo::Blake3,
             collapsed: HashSet::new(),
+            playing: None,
             selected: HashSet::new(),
             last_trashed: Vec::new(),
             consolidate_dest: None,

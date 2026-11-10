@@ -488,3 +488,47 @@ fn every_group_starts_expanded() {
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("every group renders expanded after a scan");
 }
+
+/// A video preview plays in place and stops again: the card swaps in the
+/// muted player and the Stop pill puts it back, without leaving the list.
+#[test]
+fn video_preview_plays_and_stops() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-video-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.mp4"), vec![7u8; 4096]).expect("fixture video");
+    std::fs::copy(dir.join("one.mp4"), dir.join("two.mp4")).expect("copy fixture video");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("text:Add")?;
+        app.wait_for("text:Remove")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // A video group offers the inline player: both cards have one, and
+        // pressing either starts that card's clip.
+        app.wait_for("text:Play")?;
+        app.press("text:Play >> nth=0")?;
+        app.wait_for("text:Stop")?;
+        app.press("text:Stop >> nth=0")?;
+        // Stopping returns the card to its poster/placeholder state.
+        for _ in 0..60 {
+            if !app.shows("Stop") {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err("Stop left the preview playing".to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("video previews play and stop in place");
+}
