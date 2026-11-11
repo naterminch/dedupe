@@ -775,35 +775,57 @@ fn pill_row() -> View {
         .child(trash_select())
 }
 
+/// One choice out of `items`, as nsh's Select: nsh owns the behaviour (the
+/// list, the keys, typeahead, what screen readers hear), the app supplies
+/// the look — its trigger, the popup's surface, the rows' resting text — and
+/// nsh's own state classes give the highlighted and chosen rows their state.
+fn option_select(
+    items: Vec<SelectItem>,
+    accessibility: &'static str,
+    value: impl Fn() -> Option<SharedString> + 'static,
+    on_change: impl Fn(&Option<SharedString>) + 'static,
+    trigger: View,
+) -> impl IntoElement {
+    select()
+        .items(items)
+        .value(value)
+        .on_change(on_change)
+        .accessibility_label(accessibility)
+        // The list hangs just under the trigger rather than touching it.
+        .offset(px(4.0))
+        .popup_style(|s| {
+            s.min_w(px(220.0))
+                .p(px(space::XXS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+                .shadow_md()
+        })
+        // `focus:` marks the row the keys or the pointer are on, `selected:`
+        // the choice in effect: nsh applies them, the app only names them.
+        .item_class("rounded-md focus:bg-accent selected:font-medium")
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
+        .trigger(trigger)
+        .w(px(220.0))
+}
+
 /// What the next scan looks for, as one choice out of the scan modes.
 fn find_select() -> impl IntoElement {
     let items: Vec<SelectItem> = crate::ui::settings::FIND_LABELS
         .iter()
         .map(|label| SelectItem::new(*label, *label))
         .collect();
-    select()
-        .items(items)
-        .value(|| Some(find_label()))
-        .accessibility_label("What to find")
-        .w(px(220.0))
-        // The app supplies the look: without a surface the rows draw as bare
-        // text over the page.
-        .popup_style(|s| {
-            s.min_w(px(220.0))
-                .p(px(space::XS))
-                .bg(colors::CARD)
-                .border_1()
-                .border_color(colors::BORDER)
-                .rounded(px(radius::CARD))
-        })
-        .item_style(|s| {
-            s.px(px(space::SM))
-                .py(px(space::XS))
-                .rounded(px(radius::CONTROL))
-                .text_size(px(text::BODY))
-                .text_color(colors::TEXT)
-        })
-        .on_change(|picked: &Option<SharedString>| {
+    option_select(
+        items,
+        "What to find",
+        || Some(find_label()),
+        |picked: &Option<SharedString>| {
             let Some(picked) = picked.as_deref() else {
                 return;
             };
@@ -814,48 +836,34 @@ fn find_select() -> impl IntoElement {
                 app().update(|s| s.find_index = Some(index));
                 actions::save_prefs();
             }
-        })
-        .trigger(dropdown_trigger(icons::SEARCH, find_label))
+        },
+        dropdown_trigger(icons::SEARCH, find_label),
+    )
 }
 
 /// Where a delete puts the files, as one choice of two.
 fn trash_select() -> impl IntoElement {
-    select()
-        .items(vec![
+    option_select(
+        vec![
             SelectItem::new("trash", "Move to trash"),
             SelectItem::new("delete", "Delete permanently"),
-        ])
-        .value(|| {
+        ],
+        "Where deleted files go",
+        || {
             Some(SharedString::from(if app().with(|s| s.trash) {
                 "trash"
             } else {
                 "delete"
             }))
-        })
-        .accessibility_label("Where deleted files go")
-        .w(px(220.0))
-        .popup_style(|s| {
-            s.min_w(px(220.0))
-                .p(px(space::XS))
-                .bg(colors::CARD)
-                .border_1()
-                .border_color(colors::BORDER)
-                .rounded(px(radius::CARD))
-        })
-        .item_style(|s| {
-            s.px(px(space::SM))
-                .py(px(space::XS))
-                .rounded(px(radius::CONTROL))
-                .text_size(px(text::BODY))
-                .text_color(colors::TEXT)
-        })
-        .on_change(|picked: &Option<SharedString>| {
+        },
+        |picked: &Option<SharedString>| {
             app().update(|s| s.trash = matches!(picked.as_deref(), Some("trash")));
             actions::save_prefs();
-        })
-        .trigger(dropdown_trigger(icons::TRASH, || {
+        },
+        dropdown_trigger(icons::TRASH, || {
             SharedString::from(trash_label(app().with(|s| s.trash)))
-        }))
+        }),
+    )
 }
 
 fn find_label() -> SharedString {
