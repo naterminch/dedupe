@@ -36,8 +36,8 @@ indicatif = "0.18.6"
 md-5 = "0.11.0"
 # Native Shell: the GUI is an nsh app written in Rust. `nsh-base` holds the
 # unstyled behavior components; the styled layer lives in `src/ui`.
-nsh-base = { version = "0.4.0", default-features = false }
-nsh-core = "0.4.0"
+nsh-base = { version = "0.5.0", default-features = false }
+nsh-core = "0.5.0"
 rayon = "1.12.0"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -51,22 +51,23 @@ walkdir = "2.5.0"
 # target. `default-features = false` drops the embedded JS runtime (`js`):
 # this app is Rust-only.
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-platform-linux = { version = "0.4.0", default-features = false }
+nsh-platform-linux = { version = "0.5.0", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = { version = "0.4.0", default-features = false }
+nsh-platform-macos = { version = "0.5.0", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-nsh-platform-windows = { version = "0.4.0", default-features = false }
+nsh-platform-windows = { version = "0.5.0", default-features = false }
 # The direct Win32 calls here and in `src/ui/window_state.rs` (console
-# attach/reopen for CLI runs, window placement save/restore and the
-# single-instance mutex). nsh-platform-windows already enables a superset
-# of these windows-rs features, so this adds no extra compiled code; it
-# just makes the listed APIs visible to this crate, which resolves its own
-# dependency graph.
+# attach/reopen for CLI runs, the single-instance mutex and the frame
+# sampler). Listed explicitly: nsh-platform-windows enables the graphics
+# and shell features, not these, and `Win32_Security` gates the
+# `SECURITY_ATTRIBUTES` parameters of `CreateFileW`, `CreateMutexW` and
+# `CreateJobObjectW`.
 windows = { version = "0.62", features = [
     "std",
     "Win32_Foundation",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_JobObjects",
@@ -78,8 +79,8 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 serde_json = "1.0.154"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
-nsh-engine = { version = "0.4.0", default-features = false }
-nsh-testing = { version = "0.4.0", default-features = false }
+nsh-engine = { version = "0.5.0", default-features = false }
+nsh-testing = { version = "0.5.0", default-features = false }
 
 [build-dependencies]
 winres = "0.1.12"

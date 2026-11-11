@@ -101,12 +101,14 @@ fn our_window() -> Option<windows::Win32::Foundation::HWND> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn restore(saved: Option<WindowGeometry>) {
-    use nsh_core::desktop::WindowFrame;
-    use nsh_core::element::desktop::{set_frame, toggle_maximize};
+    use nsh_core::desktop::{WindowFrame, WindowMode};
     let Some(g) = saved.filter(WindowGeometry::usable) else {
         return;
     };
-    set_frame(WindowFrame {
+    // The main window: this runs before any render, so the command addresses
+    // the root directly instead of resolving a window from context.
+    let window = nsh_core::element::desktop::main_window();
+    window.set_bounds(WindowFrame {
         x: Some(nsh_core::Points(g.x)),
         y: Some(nsh_core::Points(g.y)),
         width: Some(nsh_core::Points(g.width)),
@@ -114,7 +116,7 @@ pub(crate) fn restore(saved: Option<WindowGeometry>) {
         animated: Some(false),
     });
     if g.maximized {
-        toggle_maximize();
+        window.set_mode(WindowMode::Maximized);
     }
 }
 

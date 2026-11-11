@@ -48,15 +48,65 @@ pub(crate) fn settings_page() -> View {
         .overflow_hidden()
         .child(nav())
         .child(
-            view().flex_1().h_full().min_w(px(0.0)).child(
-                scroll().h_full().child(view().w_full().child(dynamic(|| {
-                    match app().with(|s| s.settings_tab) {
+            view()
+                .flex_1()
+                .h_full()
+                .min_w(px(0.0))
+                .child(scroll().h_full().child(view().w_full().child(dynamic(|| {
+                    // The page follows the settings it shows, not the app's
+                    // progress: reading the app signal directly rebuilt every
+                    // control here on each scan tick (and re-walked the cache
+                    // directory with it).
+                    let shape = computed(settings_shape);
+                    shape.get();
+                    match app().with_untracked(|s| s.settings_tab) {
                         SettingsTab::General => general_page(),
                         SettingsTab::Preferences => preferences_page(),
                     }
-                }))),
-            ),
+                })))),
         )
+}
+
+/// Everything the Settings pages render from the app state.
+///
+/// A rebuild follows a change here, so a scan's progress ticks leave the
+/// page alone while a real setting change still redraws it. The number
+/// inputs are absent on purpose: they hold their own text and follow the
+/// state reactively, so typing never rebuilds the page.
+#[derive(Clone, PartialEq)]
+struct SettingsShape {
+    tab: SettingsTab,
+    cache_msg: String,
+    trash: bool,
+    remember_folders: bool,
+    find_index: usize,
+    /// Match mode, hash algorithm, no-cache, image fingerprint, partial
+    /// clips, music-by-content: the choices the Preferences page builds from.
+    matching: (usize, usize, bool, usize, bool, bool),
+    keep_index: usize,
+    sort_biggest: bool,
+    exact: bool,
+}
+
+fn settings_shape() -> SettingsShape {
+    app().with(|s| SettingsShape {
+        tab: s.settings_tab,
+        cache_msg: s.cache_msg.clone(),
+        trash: s.trash,
+        remember_folders: s.remember_folders,
+        find_index: s.find_index.unwrap_or(0),
+        matching: (
+            s.match_index.unwrap_or(0),
+            s.hash_index.unwrap_or(0),
+            s.no_cache,
+            s.image_hash_index.unwrap_or(0),
+            s.partial_clips,
+            s.music_by_content,
+        ),
+        keep_index: s.keep_index.unwrap_or(0),
+        sort_biggest: s.sort_biggest,
+        exact: s.exact,
+    })
 }
 
 fn nav() -> View {
@@ -73,7 +123,10 @@ fn nav() -> View {
         .child(heading("Settings"))
         .gap(px(2.0))
         .child(view().child(dynamic(|| {
-            let tab = app().with(|s| s.settings_tab);
+            // The chosen tab alone rebuilds these; a scan tick while Settings
+            // is open would restart their hover and swallow presses.
+            let tab = computed(|| app().with(|s| s.settings_tab));
+            let tab = tab.get();
             tabs()
                 .w_full()
                 .gap(px(2.0))

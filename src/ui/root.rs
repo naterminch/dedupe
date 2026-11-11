@@ -10,8 +10,8 @@ use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
-use crate::ui::state::{AppView, app};
-use crate::ui::widgets::{caption, icon, icon_ghost_button, icons, motion};
+use crate::ui::state::{AppView, app, scan_status};
+use crate::ui::widgets::{caption, focus_ring, icon, icon_ghost_button, icons, motion};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
@@ -26,6 +26,7 @@ pub fn DedupeApp() -> impl IntoElement {
         KeyOptions {
             when: When::Always,
             repeat: false,
+            pass_through: false,
         },
         |_| dismiss_keyboard(),
     );
@@ -34,6 +35,7 @@ pub fn DedupeApp() -> impl IntoElement {
         KeyOptions {
             when: When::NotEditing,
             repeat: false,
+            pass_through: false,
         },
         |_| actions::escape_leaves_settings(),
     );
@@ -56,7 +58,12 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(toast::toast_layer())
         // Above the panes and the toasts: a confirmation must not be buried.
         .child(dynamic(|| {
-            if app().with(|s| s.confirm_delete) {
+            // Only the confirmation opening rebuilds it: a scan tick would
+            // replace the dialog's buttons between press and release.
+            // The plan follows the ticked duplicates too: ticking one in the
+            // dialog rebuilds it, a scan tick does not.
+            let open = computed(|| app().with(|s| (s.confirm_delete, s.selected.len())));
+            if open.get().0 {
                 results::delete_confirm()
             } else {
                 view()
@@ -70,7 +77,12 @@ pub fn DedupeApp() -> impl IntoElement {
 /// of the body.
 fn nav_rail() -> View {
     view().child(dynamic(|| {
-        let view_now = app().with(|s| s.view);
+        // Rebuild only when the page changes. Reading the app signal here
+        // directly rebuilt the rail on every scan tick (five a second), which
+        // restarted the buttons' hover fade and dropped presses: a button
+        // replaced between press and release never reports one.
+        let page = computed(|| app().with(|s| s.view));
+        let view_now = page.get();
         view()
             .flex_col()
             .items_center()
@@ -126,6 +138,10 @@ fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: 
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::PANE))
+            .active(|s| s.bg(colors::ELEVATED))
+            .focus_visible(focus_ring)
+            .disabled_style(|s| s.opacity(0.45))
+            .hit_slop(EdgeInsets::all(px(4.0)))
             .child(icon(
                 markup,
                 20.0,
@@ -174,7 +190,17 @@ fn status_bar() -> impl IntoElement {
         .bg(colors::CARD)
         .border_t_1()
         .border_color(colors::BORDER)
-        .child(caption(|| app().with(|s| s.status.clone())))
+        .child(caption(|| {
+            // A running scan's phase is what the line reports. It lives in the
+            // scan signal, so the status line follows a tick without the app
+            // signal changing under every other pane.
+            let phase = scan_status().with(|p| p.phase.clone());
+            if app().with(|s| s.scanning) && !phase.is_empty() {
+                phase
+            } else {
+                app().with(|s| s.status.clone())
+            }
+        }))
         .child(caption(|| {
             let state = app();
             let files = state.with(|s| s.files_scanned);

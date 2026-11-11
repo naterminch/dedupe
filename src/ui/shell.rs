@@ -12,7 +12,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, divider, field, heading, hint, icon, icon_ghost_button, icons, motion,
+    caption, card, chip, divider, field, focus_ring, heading, hint, icon, icon_ghost_button, icons,
+    motion,
 };
 use crate::ui_helpers::fit_text;
 
@@ -67,7 +68,11 @@ fn header_block() -> impl IntoElement {
                 ))),
         )
         .child(view().child(dynamic(|| {
-            if app().with(|s| s.folder_filter.is_some()) {
+            // Only the filter opening rebuilds this: reading the app signal
+            // directly rebuilt it on every scan tick, replacing the field
+            // under the pointer.
+            let open = computed(|| app().with(|s| s.folder_filter.is_some()));
+            if open.get() {
                 view().child(filter_field())
             } else {
                 view()
@@ -114,25 +119,27 @@ fn quick_actions() -> impl IntoElement {
             RowState::Ready,
             actions::browse_folder,
         ))
-        // A run is a single background job: starting a second one while the
-        // first is in flight would only be thrown away, so the row goes
-        // quiet until this scan finishes (or is stopped).
+        // Clearing the list only means something while it has folders.
         .child(view().child(dynamic(|| {
-            let scanning = app().with(|s| s.scanning);
+            // Folder changes alone flip this row: a scan tick must not rebuild
+            // it under the pointer, or its hover restarts and its press drops.
+            let any = computed(|| app().with(|s| !s.folders.is_empty()));
             side_row(
-                icons::PLAY,
-                "Scan now",
+                icons::CLEAR,
+                "Remove all folders",
                 None,
-                if scanning {
-                    RowState::Disabled
-                } else {
+                if any.get() {
                     RowState::Ready
+                } else {
+                    RowState::Disabled
                 },
-                actions::start_scan,
+                actions::remove_all_folders,
             )
         })))
         .child(view().child(dynamic(|| {
-            let trash = app().with(|s| s.trash);
+            // The switch alone rebuilds this row, not the scan's progress.
+            let trash = computed(|| app().with(|s| s.trash));
+            let trash = trash.get();
             side_row(
                 icons::TRASH,
                 "Trash deletes",
@@ -194,6 +201,8 @@ fn side_row(
         .duration(motion(150.0))
         .ease_out()
         .hover(move |s| if ready { s.bg(colors::PANE) } else { s })
+        .active(|s| s.bg(colors::ELEVATED))
+        .focus_visible(focus_ring)
         .child(icon(markup, 16.0, colors::MUTED))
         .child(
             text(label)
@@ -211,24 +220,29 @@ fn side_row(
 /// narrows the list by path; rows address the live list by path so a
 /// filtered view never removes the wrong folder.
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(2.0)).child(
-        when(
-            || filtered_folders().is_empty(),
-            || {
-                view()
-                    .px(px(space::SM))
-                    .py(px(space::SM))
-                    .child(caption("No folders yet"))
-            },
-        )
-        .otherwise(|| {
-            each(
-                filtered_folders,
-                |f: &FolderEntry| f.path.clone(),
-                folder_row,
+    view().flex_col().gap(px(2.0)).child(dynamic(|| {
+        // The list and the filter rebuild the rows; a scan tick must not,
+        // or the Protect and Remove buttons under the pointer restart their
+        // hover and never report a press.
+        let rows = computed(|| {
+            filtered_folders()
+                .into_iter()
+                .map(|folder| (folder.path, folder.reference))
+                .collect::<Vec<_>>()
+        });
+        let rows = rows.get();
+        if rows.is_empty() {
+            view()
+                .px(px(space::SM))
+                .py(px(space::SM))
+                .child(caption("No folders yet"))
+        } else {
+            view().flex_col().gap(px(2.0)).children(
+                rows.into_iter()
+                    .map(|(path, reference)| folder_row(path, reference)),
             )
-        }),
-    )
+        }
+    }))
 }
 
 fn filtered_folders() -> Vec<FolderEntry> {
@@ -251,69 +265,67 @@ fn filtered_folders() -> Vec<FolderEntry> {
     })
 }
 
-fn folder_row(folder: ReadSignal<FolderEntry>, _index: ReadSignal<usize>) -> impl IntoElement {
-    dynamic(move || {
-        let path = folder.with(|f| f.path.clone());
-        let reference = folder.with(|f| f.reference);
-        let shown = fit_text(&path, 42);
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(space::XS))
-            .px(px(space::SM))
-            .py(px(space::XXS))
-            .rounded(px(radius::CONTROL))
-            .bg(if reference {
-                colors::PANE
+/// One folder row. It takes the row's values rather than a live signal: the
+/// list rebuilds when a folder changes, never on a scan tick.
+fn folder_row(path: String, reference: bool) -> View {
+    let shown = fit_text(&path, 42);
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(space::XS))
+        .px(px(space::SM))
+        .py(px(space::XXS))
+        .rounded(px(radius::CONTROL))
+        .bg(if reference {
+            colors::PANE
+        } else {
+            colors::SIDEBAR
+        })
+        .transition_colors()
+        .duration(motion(150.0))
+        .hover(|s| s.bg(colors::PANE))
+        .child(icon(
+            icons::FOLDER,
+            15.0,
+            if reference {
+                colors::ACCENT
             } else {
-                colors::SIDEBAR
-            })
-            .transition_colors()
-            .duration(motion(150.0))
-            .hover(|s| s.bg(colors::PANE))
-            .child(icon(
-                icons::FOLDER,
-                15.0,
-                if reference {
-                    colors::ACCENT
-                } else {
-                    colors::MUTED
-                },
-            ))
-            .child(
-                view()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(
-                        text(shown)
-                            .truncate()
-                            .text_size(px(text::BODY))
-                            .text_color(colors::TEXT),
-                    )
-                    .tooltip(hint(path.clone())),
-            )
-            .child(row_ghost(
-                icons::LOCK,
-                if reference {
-                    "Unprotect folder"
-                } else {
-                    "Protect folder"
-                },
-                if reference {
-                    colors::ACCENT
-                } else {
-                    colors::MUTED
-                },
-                {
-                    let path = path.clone();
-                    move || actions::toggle_reference_path(&path)
-                },
-            ))
-            .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+                colors::MUTED
+            },
+        ))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    text(shown)
+                        .truncate()
+                        .text_size(px(text::BODY))
+                        .text_color(colors::TEXT),
+                )
+                .tooltip(hint(path.clone())),
+        )
+        .child(row_ghost(
+            icons::LOCK,
+            if reference {
+                "Unprotect folder"
+            } else {
+                "Protect folder"
+            },
+            if reference {
+                colors::ACCENT
+            } else {
+                colors::MUTED
+            },
+            {
                 let path = path.clone();
-                move || actions::remove_folder_path(&path)
-            }))
-    })
+                move || actions::toggle_reference_path(&path)
+            },
+        ))
+        .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+            let path = path.clone();
+            move || actions::remove_folder_path(&path)
+        }))
 }
 
 /// A small borderless icon action for a folder row.
@@ -339,6 +351,9 @@ fn row_ghost(
                 .duration(motion(150.0))
                 .ease_out()
                 .hover(|s| s.bg(colors::ELEVATED))
+                .active(|s| s.opacity(0.9))
+                .focus_visible(focus_ring)
+                .hit_slop(EdgeInsets::all(px(4.0)))
                 .child(icon(markup, 14.0, tint)),
         )
         .tooltip(hint(label))
@@ -391,6 +406,9 @@ fn tip_card() -> impl IntoElement {
                                     .duration(motion(150.0))
                                     .ease_out()
                                     .hover(|s| s.bg(colors::ELEVATED))
+                                    .active(|s| s.opacity(0.9))
+                                    .focus_visible(focus_ring)
+                                    .hit_slop(EdgeInsets::all(px(4.0)))
                                     .child(icon(icons::ARROW_UP_RIGHT, 13.0, colors::TEXT)),
                             )
                             .tooltip(hint("Open settings")),

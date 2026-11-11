@@ -119,14 +119,6 @@ pub(crate) struct AppState {
     pub(crate) dup_files: u64,
     pub(crate) reclaim_bytes: u64,
     pub(crate) scanning: bool,
-    pub(crate) scan_done: u64,
-    pub(crate) scan_total: u64,
-    pub(crate) scan_determinate: bool,
-    /// Current pipeline phase ("Hashing files…", "Comparing media…"), shown
-    /// as the progress card's heading: a scan is two counting passes, so the
-    /// bar legitimately restarts with a different total when the phase
-    /// changes, and the heading is what makes that legible.
-    pub(crate) scan_phase: String,
     pub(crate) status: String,
     pub(crate) files_scanned: usize,
     pub(crate) bytes_scanned: u64,
@@ -233,11 +225,6 @@ impl Default for AppState {
             dup_files: 0,
             reclaim_bytes: 0,
             scanning: false,
-            scan_done: 0,
-            scan_total: 0,
-            scan_determinate: false,
-            scan_phase: crate::pipeline::phase_label(crate::pipeline::ScanPhase::Scanning)
-                .to_string(),
             status: "Choose a folder and press Scan.".to_string(),
             files_scanned: 0,
             bytes_scanned: 0,
@@ -335,4 +322,27 @@ impl AppState {
 /// The one shared state signal. Created on first use from [`AppState::default`].
 pub(crate) fn app() -> Signal<AppState> {
     global::<AppState>()
+}
+
+/// Live progress of a running scan, kept apart from [`AppState`] on purpose.
+///
+/// The scan writes it several times a second, and every write to the app
+/// signal rebuilds each region that reads it — which restarted hovers and
+/// dropped presses across the whole window. Only the progress card and the
+/// status line read this, so a tick costs exactly two regions and no control
+/// can be rebuilt by one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ScanStatus {
+    /// The pipeline's phase ("Hashing files…", "Comparing media…"): a scan
+    /// is two counting passes, so the bar restarts with a new total when the
+    /// phase changes and the heading is what makes that legible.
+    pub(crate) phase: String,
+    pub(crate) done: u64,
+    pub(crate) total: u64,
+    pub(crate) determinate: bool,
+}
+
+/// The one shared scan-progress signal.
+pub(crate) fn scan_status() -> Signal<ScanStatus> {
+    global::<ScanStatus>()
 }

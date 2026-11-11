@@ -13,7 +13,9 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
-use crate::ui::state::{AppState, AppView, FolderEntry, ReportSnapshot, SettingsTab, app};
+use crate::ui::state::{
+    AppState, AppView, FolderEntry, ReportSnapshot, ScanStatus, SettingsTab, app, scan_status,
+};
 use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, find_mode, image_hash_algo, is_no_limit, match_mode};
 use crate::{cli, hashing, media, pipeline, poster, prefs, similar, util};
@@ -190,6 +192,16 @@ pub(crate) fn remove_folder_path(path: &str) {
     if let Some(index) = folder_index(path) {
         remove_folder(index);
     }
+}
+
+/// Empty the folder list in one go: after a batch of added or dropped
+/// folders, starting over should not mean removing them one by one.
+pub(crate) fn remove_all_folders() {
+    app().update(|s| {
+        s.folders.clear();
+        s.folder_filter = None;
+    });
+    save_prefs();
 }
 
 pub(crate) fn toggle_reference_path(path: &str) {
@@ -476,10 +488,6 @@ pub(crate) fn start_scan() {
         s.scanning = true;
         s.scan_gen += 1;
         s.scan_cancel.reset();
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
-        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         s.has_scanned = false;
         s.groups.clear();
         s.mode_result = None;
@@ -487,6 +495,14 @@ pub(crate) fn start_scan() {
         s.collapsed.clear();
         s.playing = None;
         s.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
+    });
+    // Fresh progress for this run, in its own signal: the app signal must not
+    // change on a tick, or every pane that reads it is rebuilt mid-scan.
+    scan_status().update(|p| {
+        *p = ScanStatus {
+            phase: pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string(),
+            ..ScanStatus::default()
+        };
     });
     let generation = state.with_untracked(|s| s.scan_gen);
     let cancel = state.with_untracked(|s| s.scan_cancel.clone());
@@ -544,28 +560,24 @@ pub(crate) fn start_scan() {
                 .lock()
                 .map(|s| *s)
                 .unwrap_or(pipeline::ScanPhase::Scanning);
-            let (label, done, total, determinate) = match ph {
-                pipeline::ScanPhase::Scanning => {
-                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
-                }
+            let (done, total, determinate) = match ph {
+                pipeline::ScanPhase::Scanning | pipeline::ScanPhase::Finishing => (0, 0, false),
                 pipeline::ScanPhase::Hashing => {
                     let (d, t) = bar_pos(&hash_bar_poll);
-                    (format!("Hashing {d} of {t}"), d, t, true)
+                    (d, t, true)
                 }
                 pipeline::ScanPhase::ComparingMedia => {
                     let (d, t) = bar_pos(&sim_bar_poll);
-                    (format!("Comparing media {d} of {t}"), d, t, true)
-                }
-                pipeline::ScanPhase::Finishing => {
-                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
+                    (d, t, true)
                 }
             };
-            app().update(|s| {
-                s.status = label;
-                s.scan_phase = pipeline::phase_label(ph).to_string();
-                s.scan_done = done;
-                s.scan_total = total;
-                s.scan_determinate = determinate && total > 0;
+            scan_status().update(|p| {
+                *p = ScanStatus {
+                    phase: pipeline::phase_label(ph).to_string(),
+                    done,
+                    total,
+                    determinate: determinate && total > 0,
+                };
             });
         }
     });
@@ -576,13 +588,11 @@ pub(crate) fn start_scan() {
 /// finishes hashing. The pipeline winds down in the background and its late
 /// output is discarded by the generation guard.
 pub(crate) fn stop_scan() {
+    scan_status().update(|p| *p = ScanStatus::default());
     app().update(|s| {
         s.scan_cancel.cancel();
         s.scan_gen += 1;
         s.scanning = false;
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
         s.has_scanned = false;
         s.groups.clear();
         s.mode_result = None;
@@ -600,12 +610,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
     if !is_current_scan(generation) {
         return;
     }
+    scan_status().update(|p| *p = ScanStatus::default());
     state.update(|s| {
         s.scanning = false;
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
-        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         // A cancelled scan carries no groups by design: reset to the
         // pre-scan state (the walk cleared the pane at start anyway) and
         // report the stop. `has_scanned` stays false so the 3-step empty
@@ -751,16 +758,62 @@ pub(crate) fn ensure_poster(path: &Path, size: u64, mtime: Option<i64>) {
         s.poster_jobs.insert(key.clone());
     });
     app_spawn(async move {
+        let slot = poster_slot().await;
         let done = blocking(move || poster::video_poster(&job, size, mtime))
             .await
             .ok()
             .flatten();
+        drop(slot);
         if let Some(thumb) = done {
             app().update(move |s| {
                 s.posters.insert(key, thumb);
             });
         }
     });
+}
+
+/// How many poster extractions run at once.
+///
+/// Each is an `ffmpeg` process, and a finished scan asked for the posters of
+/// every video on the whole page in one go: hundreds of processes started in
+/// the same frame and left the machine (and with it the window) unresponsive
+/// right as the results appeared. A few at a time keeps the UI drawing; the
+/// posters still arrive, in the order they were asked for.
+const POSTER_EXTRACTIONS: usize = 3;
+
+/// Poster extractions in flight.
+static POSTERS_RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A turn to extract one poster; given back when dropped.
+#[derive(Debug)]
+struct PosterSlot;
+
+impl Drop for PosterSlot {
+    fn drop(&mut self) {
+        POSTERS_RUNNING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Wait for a free extraction turn.
+///
+/// Waiting is a task, not a thread: the queue costs nothing while it waits
+/// and never holds up the UI thread.
+async fn poster_slot() -> PosterSlot {
+    use std::sync::atomic::Ordering;
+    loop {
+        // A compare-exchange loop rather than `fetch_update`: that method is
+        // deprecated in current stable (it became `try_update`), and a plain
+        // compare-exchange compiles unchanged on every toolchain.
+        let running = POSTERS_RUNNING.load(Ordering::SeqCst);
+        if running < POSTER_EXTRACTIONS
+            && POSTERS_RUNNING
+                .compare_exchange_weak(running, running + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
+            return PosterSlot;
+        }
+        timer(Duration::from_millis(50)).await;
+    }
 }
 
 /// Ask for the posters of one group's videos.

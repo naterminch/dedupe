@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
+use nsh_base::{
+    SelectItem, checkbox, collapsible, dialog, number_input, progress, select, toggle,
+    toggle_group, toolbar, toolbar_group, toolbar_separator,
+};
 use nsh_core::AccessibilityState;
 use nsh_core::element::{BorderCurve, input, video};
 use nsh_core::prelude::*;
@@ -16,11 +19,11 @@ use crate::media;
 use crate::modes::{ModeResult, mode_title};
 use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
-use crate::ui::state::{Layout, app};
+use crate::ui::state::{Layout, app, scan_status};
 use crate::ui::widgets::{
     caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
-    icon_button, icon_chip, icon_ghost_button, icons, motion, pill, primary_button,
-    secondary_button, selection,
+    icon_button, icon_chip, icon_ghost_button, icons, motion, primary_button, secondary_button,
+    selection,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -120,10 +123,16 @@ pub(crate) fn results() -> View {
         .min_w(px(0.0))
         .overflow_hidden()
         .bg(colors::BACKGROUND)
-        .child(
-            when(|| app().with(|s| s.mode_result.is_some()), mode_workspace)
-                .otherwise(duplicate_workspace),
-        )
+        .child(dynamic(|| {
+            // Which workspace is up, not its progress: a scan tick must not
+            // swap these panes out from under a press.
+            let mode = computed(|| app().with(|s| s.mode_result.is_some()));
+            if mode.get() {
+                mode_workspace()
+            } else {
+                duplicate_workspace()
+            }
+        }))
 }
 
 fn kicker(label: impl IntoReactive<SharedString>) -> Text {
@@ -151,7 +160,11 @@ fn duplicate_workspace() -> View {
         // question, option pills and the scan composer. Once a scan runs the
         // toolbar takes over and the hero never returns.
         .child(dynamic(|| {
-            let (scanning, has_scanned) = app().with(|s| (s.scanning, s.has_scanned));
+            // The toolbar follows the page's shape, not its progress: reading
+            // the app signal directly rebuilt these buttons on every scan tick,
+            // which restarted their hover and dropped presses.
+            let shape = computed(|| app().with(|s| (s.scanning, s.has_scanned)));
+            let (scanning, has_scanned) = shape.get();
             if scanning || has_scanned {
                 view()
                     .flex_col()
@@ -258,23 +271,57 @@ fn selection_row() -> View {
         )
 }
 
-fn action_row() -> View {
-    view()
+/// The action bar: nsh's toolbar gives the controls one roving keyboard stop
+/// and a toolbar's semantics, its groups mark which decisions belong
+/// together, and the separators split the groups.
+fn action_row() -> impl IntoElement {
+    toolbar()
+        .accessibility_label("Results actions")
         .flex_row()
         .flex_wrap()
         .items_center()
         .gap(px(8.0))
-        .child(sim_filter())
-        .child(keep_modes())
-        .child(sort_toggle())
-        .child(layout_toggle())
-        .child(delete_bar())
-        .child(consolidate_button())
-        .child(icon_ghost_button(
-            icons::EXPORT,
-            "Export JSON report",
-            actions::save_report,
-        ))
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(sim_filter())
+                .child(keep_modes()),
+        )
+        .child(
+            toolbar_separator()
+                .h(px(20.0))
+                .w(px(1.0))
+                .bg(colors::BORDER),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(sort_toggle())
+                .child(layout_toggle()),
+        )
+        .child(
+            toolbar_separator()
+                .h(px(20.0))
+                .w(px(1.0))
+                .bg(colors::BORDER),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(delete_bar())
+                .child(consolidate_button())
+                .child(icon_ghost_button(
+                    icons::EXPORT,
+                    "Export JSON report",
+                    actions::save_report,
+                )),
+        )
 }
 
 fn sim_filter() -> impl IntoElement {
@@ -317,22 +364,33 @@ fn sim_filter() -> impl IntoElement {
         }))
 }
 
+/// One keeper rule at a time: nsh's toggle group is the view switcher here
+/// (a press releases the others and takes the new rule).
 fn keep_modes() -> View {
     view().child(dynamic(|| {
-        let current = app().with(|s| s.keep_index.unwrap_or(0));
+        // The rule alone rebuilds these chips; a scan tick would restart
+        // their hover and drop a press mid-flight.
+        let current = computed(|| app().with(|s| s.keep_index.unwrap_or(0)));
+        let current = current.get();
         let mut row = view().flex_row().gap(px(2.0));
         for (index, label) in KEEP_MODES.iter().enumerate() {
             row = row.child(keep_chip(label, index, current == index));
         }
-        radio_group().child(row)
+        toggle_group().child(row)
     }))
 }
 
 fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElement {
     let (fill, border, content) = selection(active);
-    radio()
-        .checked(active)
-        .on_change(move |_: &bool| actions::apply_keep_mode(index))
+    toggle()
+        .pressed(active)
+        // Only the press that takes this rule counts: releasing it would
+        // leave the set with nothing chosen.
+        .on_change(move |next: &bool| {
+            if *next {
+                actions::apply_keep_mode(index);
+            }
+        })
         .accessibility_label(label)
         .px(px(space::SM))
         .py(px(space::XS))
@@ -354,7 +412,8 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
 
 fn sort_toggle() -> impl IntoElement {
     dynamic(|| {
-        let biggest = app().with(|s| s.sort_biggest);
+        let biggest = computed(|| app().with(|s| s.sort_biggest));
+        let biggest = biggest.get();
         toggle()
             .pressed(biggest)
             .on_change(move |_: &bool| actions::toggle_sort_biggest())
@@ -386,7 +445,8 @@ fn sort_toggle() -> impl IntoElement {
 /// list. It is a structural choice, so switching rebuilds the list.
 fn layout_toggle() -> View {
     view().child(dynamic(|| {
-        let current = app().with(|s| s.layout);
+        let current = computed(|| app().with(|s| s.layout));
+        let current = current.get();
         let mut row = view().flex_row().gap(px(2.0));
         for (layout, markup, label) in [
             (Layout::Grid, icons::GRID, "Grid layout"),
@@ -396,21 +456,26 @@ fn layout_toggle() -> View {
                 actions::set_layout(layout)
             }));
         }
-        radio_group().child(row)
+        toggle_group().child(row)
     }))
 }
 
 fn delete_bar() -> View {
     view().child(dynamic(|| {
-        let (count, bytes, can_undo, trash) = app().with(|s| {
-            let targets = actions::pending_targets(s);
-            (
-                targets.len(),
-                targets.iter().map(|t| t.size).sum::<u64>(),
-                !s.last_trashed.is_empty(),
-                s.trash,
-            )
+        // The selection and the trash switch decide this bar. A scan tick
+        // rebuilding it replaced the Delete button under the pointer.
+        let targets = computed(|| {
+            app().with(|s| {
+                let targets = actions::pending_targets(s);
+                (
+                    targets.len(),
+                    targets.iter().map(|t| t.size).sum::<u64>(),
+                    !s.last_trashed.is_empty(),
+                    s.trash,
+                )
+            })
         });
+        let (count, bytes, can_undo, trash) = targets.get();
         let mut row = view().flex_row().gap(px(4.0)).items_center();
         if count > 0 {
             let label = format!("Delete {count} ({})", util::human_bytes(bytes));
@@ -549,32 +614,39 @@ pub(crate) fn delete_confirm() -> View {
                     danger_button(format!("Delete {count}"), actions::confirm_delete)
                 })),
         );
-    // Two layers, as a sheet is built: the scrim takes the presses that miss
-    // the panel and Escape, the panel is transparent to them (box-none) so
-    // only its card is hit.
-    view()
-        .child(
-            overlay()
-                .inset_0()
-                .bg(colors::SCRIM)
-                .on_press(actions::cancel_delete)
-                .on_cancel(actions::cancel_delete),
-        )
-        .child(
-            overlay()
-                .inset_0()
-                .pointer_events(PointerEvents::BoxNone)
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .p(px(space::XL))
-                .child(panel),
-        )
+    // nsh's dialog owns the modal layer: the focus moves into it, Escape and
+    // the back button arrive as `on_cancel`, and screen readers hear an alert
+    // dialog named by its title. The look is the app's: a scrim below the
+    // panel that takes the presses which miss it, and a transparent
+    // centering layer (box-none) so only the card is hit.
+    view().child(
+        dialog()
+            .role(AccessibilityRole::AlertDialog)
+            .label(format!("Delete {count} file(s)?"))
+            .on_cancel(actions::cancel_delete)
+            .child(
+                overlay()
+                    .inset_0()
+                    .bg(colors::SCRIM)
+                    .on_press(actions::cancel_delete),
+            )
+            .child(
+                overlay()
+                    .inset_0()
+                    .pointer_events(PointerEvents::BoxNone)
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .p(px(space::XL))
+                    .child(panel),
+            ),
+    )
 }
 
 fn consolidate_button() -> View {
     view().child(dynamic(|| {
-        if app().with(|s| s.consolidate_dest.is_some()) {
+        let dest = computed(|| app().with(|s| s.consolidate_dest.is_some()));
+        if dest.get() {
             icon_button(
                 icons::FOLDER_MOVE,
                 "Move keepers into the chosen folder",
@@ -631,8 +703,10 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
 }
 
 fn progress_card() -> View {
-    let (done, total, determinate) =
-        app().with(|s| (s.scan_done, s.scan_total, s.scan_determinate));
+    // Progress has a signal of its own: reading it here subscribes this card
+    // alone, so a tick never rebuilds the rest of the window.
+    let (done, total, determinate, phase) =
+        scan_status().with(|p| (p.done, p.total, p.determinate, p.phase.clone()));
     let fraction = if determinate && total > 0 {
         (done as f32 / total as f32).clamp(0.0, 1.0)
     } else {
@@ -645,7 +719,7 @@ fn progress_card() -> View {
     let label = if determinate && total > 0 {
         format!("{done} of {total}")
     } else {
-        app().with(|s| s.status.clone())
+        phase.clone()
     };
     card()
         .gap(px(space::SM))
@@ -656,7 +730,7 @@ fn progress_card() -> View {
                 .items_center()
                 .justify_between()
                 .gap(px(12.0))
-                .child(kicker(|| app().with(|s| s.scan_phase.clone())))
+                .child(kicker(phase))
                 .child(
                     view()
                         .flex_row()
@@ -709,8 +783,10 @@ fn hero() -> View {
         .child(composer())
 }
 
-/// The three dropdown pills under the question: where to scan, what to look
-/// for, and where deletes land. Each one carries a live action.
+/// The two dropdowns under the question: what to look for, and where
+/// deletes land. One choice each: a press opens nsh's Select list with the
+/// chosen item ticked, and the keys drive it like a native select. Where to
+/// scan lives in the sidebar and the composer, so it is not repeated here.
 fn pill_row() -> View {
     view()
         .flex_row()
@@ -718,53 +794,139 @@ fn pill_row() -> View {
         .items_center()
         .justify_center()
         .gap(px(space::SM))
-        .child(pill(
-            icons::FOLDER,
-            folder_pill_label,
-            actions::browse_folder,
-        ))
-        .child(pill(icons::SEARCH, mode_pill_label, cycle_find_mode))
-        .child(view().child(dynamic(|| {
-            let trash = app().with(|s| s.trash);
-            pill(
-                icons::TRASH,
-                if trash { "To trash" } else { "Permanently" },
-                toggle_trash,
-            )
-        })))
+        .child(find_select())
+        .child(trash_select())
 }
 
-fn folder_pill_label() -> SharedString {
-    app().with(|s| match s.folders.len() {
-        0 => SharedString::from("Add a folder"),
-        1 => SharedString::from(short_name(&s.folders[0].path)),
-        n => SharedString::from(format!("{n} folders")),
-    })
+/// One choice out of `items`, as nsh's Select: nsh owns the behaviour (the
+/// list, the keys, typeahead, what screen readers hear), the app supplies
+/// the look — its trigger, the popup's surface, the rows' resting text — and
+/// nsh's own state classes give the highlighted and chosen rows their state.
+fn option_select(
+    items: Vec<SelectItem>,
+    accessibility: &'static str,
+    value: impl Fn() -> Option<SharedString> + 'static,
+    on_change: impl Fn(&Option<SharedString>) + 'static,
+    trigger: View,
+) -> impl IntoElement {
+    select()
+        .items(items)
+        .value(value)
+        .on_change(on_change)
+        .accessibility_label(accessibility)
+        // The list hangs just under the trigger rather than touching it.
+        .offset(px(4.0))
+        .popup_style(|s| {
+            s.min_w(px(220.0))
+                .p(px(space::XXS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+                .shadow_md()
+        })
+        // `focus:` marks the row the keys or the pointer are on, `selected:`
+        // the choice in effect: nsh applies them, the app only names them.
+        .item_class("rounded-md focus:bg-accent selected:font-medium")
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
+        .trigger(trigger)
+        .w(px(220.0))
 }
 
-fn short_name(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string())
+/// What the next scan looks for, as one choice out of the scan modes.
+fn find_select() -> impl IntoElement {
+    let items: Vec<SelectItem> = crate::ui::settings::FIND_LABELS
+        .iter()
+        .map(|label| SelectItem::new(*label, *label))
+        .collect();
+    option_select(
+        items,
+        "What to find",
+        || Some(find_label()),
+        |picked: &Option<SharedString>| {
+            let Some(picked) = picked.as_deref() else {
+                return;
+            };
+            if let Some(index) = crate::ui::settings::FIND_LABELS
+                .iter()
+                .position(|label| *label == picked)
+            {
+                app().update(|s| s.find_index = Some(index));
+                actions::save_prefs();
+            }
+        },
+        dropdown_trigger(icons::SEARCH, find_label),
+    )
 }
 
-fn mode_pill_label() -> SharedString {
+/// Where a delete puts the files, as one choice of two.
+fn trash_select() -> impl IntoElement {
+    option_select(
+        vec![
+            SelectItem::new("trash", "Move to trash"),
+            SelectItem::new("delete", "Delete permanently"),
+        ],
+        "Where deleted files go",
+        || {
+            Some(SharedString::from(if app().with(|s| s.trash) {
+                "trash"
+            } else {
+                "delete"
+            }))
+        },
+        |picked: &Option<SharedString>| {
+            app().update(|s| s.trash = matches!(picked.as_deref(), Some("trash")));
+            actions::save_prefs();
+        },
+        dropdown_trigger(icons::TRASH, || {
+            SharedString::from(trash_label(app().with(|s| s.trash)))
+        }),
+    )
+}
+
+fn find_label() -> SharedString {
     let index = app().with(|s| s.find_index.unwrap_or(0));
     SharedString::from(crate::ui::settings::FIND_LABELS[index.min(10)])
 }
 
-fn cycle_find_mode() {
-    app().update(|s| {
-        let index = s.find_index.unwrap_or(0);
-        s.find_index = Some((index + 1) % crate::ui::settings::FIND_LABELS.len());
-    });
-    actions::save_prefs();
+fn trash_label(trash: bool) -> &'static str {
+    if trash {
+        "Move to trash"
+    } else {
+        "Delete permanently"
+    }
 }
 
-fn toggle_trash() {
-    app().update(|s| s.trash = !s.trash);
-    actions::save_prefs();
+/// The trigger a Select opens from: the pill's look (icon, current choice, a
+/// chevron) as the combobox that takes the press.
+fn dropdown_trigger(markup: &'static str, label: impl Fn() -> SharedString + 'static) -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(space::XS))
+        .px(px(space::MD))
+        .py(px(space::XS))
+        .bg(colors::INSET)
+        .border_1()
+        .border_color(colors::BORDER)
+        .rounded(px(radius::CONTROL))
+        .transition_colors()
+        .duration(motion(180.0))
+        .ease_out()
+        .hover(|s| s.bg(colors::ELEVATED))
+        .child(icon(markup, 14.0, colors::MUTED))
+        .child(
+            text(label)
+                .text_size(px(text::CAPTION))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors::TEXT),
+        )
+        .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED))
 }
 
 /// The ad-banner slot: what the app wants from you next, with the orange
@@ -860,32 +1022,58 @@ fn composer() -> View {
         )
 }
 
-/// The similarity floor as a pill: click cycles 100 / 97 / 95 / 90 / 85.
-fn sim_pill() -> View {
-    pill(
-        icons::SLIDERS,
-        || {
-            let value = app()
-                .with(|s| s.min_sim_input.trim().parse::<f64>().ok())
-                .unwrap_or(97.0);
-            SharedString::from(format!("{}%", value as i64))
-        },
-        cycle_similarity,
-    )
+/// The similarity floor of a run: one value out of the five offered, as a
+/// dropdown like the hero's.
+fn sim_pill() -> impl IntoElement {
+    let items: Vec<SelectItem> = SIM_STEPS
+        .iter()
+        .map(|step| SelectItem::new(step.to_string(), format!("{step}%")))
+        .collect();
+    select()
+        .items(items)
+        .value(|| {
+            Some(SharedString::from(format!(
+                "{}",
+                current_similarity() as i64
+            )))
+        })
+        .accessibility_label("Similarity floor")
+        .w(px(150.0))
+        .popup_style(|s| {
+            s.min_w(px(150.0))
+                .p(px(space::XS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+        })
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .rounded(px(radius::CONTROL))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
+        .on_change(|picked: &Option<SharedString>| {
+            let Some(picked) = picked else {
+                return;
+            };
+            let text = picked.to_string();
+            app().update(|s| s.min_sim_input = text.clone());
+            actions::apply_sim_input(&text);
+        })
+        .trigger(dropdown_trigger(icons::SLIDERS, || {
+            SharedString::from(format!("{}%", current_similarity() as i64))
+        }))
 }
 
-fn cycle_similarity() {
-    let steps = [100.0, 97.0, 95.0, 90.0, 85.0];
-    let current = app()
-        .with_untracked(|s| s.min_sim_input.trim().parse::<f64>().ok())
-        .unwrap_or(97.0);
-    let next = match steps.iter().position(|step| (*step - current).abs() < 0.5) {
-        Some(index) => steps[(index + 1) % steps.len()],
-        None => 97.0,
-    };
-    let text = format!("{}", next as i64);
-    app().update(|s| s.min_sim_input = text.clone());
-    actions::apply_sim_input(&text);
+/// The similarity steps the composer offers, loosest last.
+const SIM_STEPS: [f64; 5] = [100.0, 97.0, 95.0, 90.0, 85.0];
+
+fn current_similarity() -> f64 {
+    app()
+        .with(|s| s.min_sim_input.trim().parse::<f64>().ok())
+        .unwrap_or(97.0)
 }
 
 /// The scan button's label, per scan type. Read inside the hero's dynamic
@@ -1509,6 +1697,10 @@ fn member_actions(
                 })
                 .indicator(
                     text(if active { "✓" } else { "" })
+                        // Below the caption step on purpose: the glyph sits in
+                        // a 12pt box, so the token size would overflow the
+                        // control it marks. It still scales with the user's
+                        // text size, like every other string here.
                         .text_size(px(9.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors::ON_ACCENT),
