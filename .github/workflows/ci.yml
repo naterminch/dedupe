@@ -23,13 +23,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # cargo clippy --all-targets compiles the GUI: nsh's Linux backend is
-      # GTK 4 (docs/installation), and rfd's file dialogs build against
-      # libwayland. WebKitGTK is only needed for web views, which this app
-      # has none of.
+      # GTK 4 (docs/installation), its video element links GStreamer, and
+      # rfd's file dialogs build against libwayland. WebKitGTK is only
+      # needed for web views, which this app has none of.
       - name: Install Linux GUI dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ clang libgtk-4-dev libwayland-dev
+          sudo apt-get install -y gcc g++ clang libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwayland-dev
 
       - uses: j178/prek-action@4e14d07f9231acabce116ccfca13b13dd9755ece # v3.0.0
 
@@ -44,13 +44,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The Linux backend is GTK 4 (docs/installation); rfd builds against
-      # libwayland. WebKitGTK is only needed for web views, which this app
-      # has none of.
+      # The Linux backend is GTK 4 (docs/installation) and its video element
+      # links GStreamer; rfd builds against libwayland. WebKitGTK is only
+      # needed for web views, which this app has none of.
       - name: Install Linux GUI dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ clang libgtk-4-dev libwayland-dev
+          sudo apt-get install -y gcc g++ clang libgtk-4-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libwayland-dev
 
       # Formatting and lints run in the prek job above (prek.toml);
       # this job only runs the test suite.
