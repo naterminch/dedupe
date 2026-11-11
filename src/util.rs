@@ -195,8 +195,31 @@ pub fn init_thread_pool(jobs: usize) {
     let _ = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .thread_name(|i| format!("dedupe-{i}"))
+        // Scan workers give way to the app's own threads: while a big folder
+        // hashes, the window, its renderer and the input pump keep their
+        // slices, so the GUI answers instead of going sluggish mid-scan.
+        .start_handler(|_| lower_thread_priority())
         .build_global();
 }
+
+/// Run the calling thread below normal priority.
+///
+/// Best effort: a platform that refuses the change keeps the default.
+#[cfg(windows)]
+fn lower_thread_priority() {
+    use windows::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+    };
+    // SAFETY: both calls act on the calling thread and take no pointers; a
+    // failure only leaves the worker at its default priority.
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+}
+
+/// No thread priority to lower off Windows.
+#[cfg(not(windows))]
+fn lower_thread_priority() {}
 
 /// Format a byte count as a human-readable string (decimal units).
 #[must_use]

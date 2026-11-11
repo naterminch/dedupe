@@ -761,16 +761,58 @@ pub(crate) fn ensure_poster(path: &Path, size: u64, mtime: Option<i64>) {
         s.poster_jobs.insert(key.clone());
     });
     app_spawn(async move {
+        let slot = poster_slot().await;
         let done = blocking(move || poster::video_poster(&job, size, mtime))
             .await
             .ok()
             .flatten();
+        drop(slot);
         if let Some(thumb) = done {
             app().update(move |s| {
                 s.posters.insert(key, thumb);
             });
         }
     });
+}
+
+/// How many poster extractions run at once.
+///
+/// Each is an `ffmpeg` process, and a finished scan asked for the posters of
+/// every video on the whole page in one go: hundreds of processes started in
+/// the same frame and left the machine (and with it the window) unresponsive
+/// right as the results appeared. A few at a time keeps the UI drawing; the
+/// posters still arrive, in the order they were asked for.
+const POSTER_EXTRACTIONS: usize = 3;
+
+/// Poster extractions in flight.
+static POSTERS_RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A turn to extract one poster; given back when dropped.
+#[derive(Debug)]
+struct PosterSlot;
+
+impl Drop for PosterSlot {
+    fn drop(&mut self) {
+        POSTERS_RUNNING.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Wait for a free extraction turn.
+///
+/// Waiting is a task, not a thread: the queue costs nothing while it waits
+/// and never holds up the UI thread.
+async fn poster_slot() -> PosterSlot {
+    loop {
+        let free = POSTERS_RUNNING.fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |running| (running < POSTER_EXTRACTIONS).then_some(running + 1),
+        );
+        if free.is_ok() {
+            return PosterSlot;
+        }
+        timer(Duration::from_millis(50)).await;
+    }
 }
 
 /// Ask for the posters of one group's videos.
