@@ -114,10 +114,7 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                             .rounded(px(radius::CARD))
                             .px(px(space::LG))
                             .py(px(space::MD))
-                            .bg(colors::GLASS)
-                            .backdrop_blur(20.0_f32)
-                            .shadow_lg()
-                            .shadow_color(colors::SHADOW)
+                            .bg(colors::CARD)
                             .border_1()
                             .border_color(if error {
                                 colors::DANGER

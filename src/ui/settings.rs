@@ -1,4 +1,5 @@
-//! Settings page: General (behavior + cache) and Preferences (scan defaults).
+//! Settings page: General (behavior, cache and reset) and Preferences (scan
+//! defaults).
 //!
 //! Every control writes straight into [`AppState`] and persists through
 //! `actions::save_prefs`.
@@ -12,12 +13,13 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
-    caption, card, divider, heading, panel_title, secondary_button, toggle_switch,
+    caption, card, divider, heading, help_dot, page_heading, panel_title, secondary_button,
+    toggle_switch,
 };
 use crate::ui_helpers::{find_mode_caption, hash_caption};
 use crate::util;
 
-const FIND_LABELS: [&str; 11] = [
+pub(crate) const FIND_LABELS: [&str; 11] = [
     "Duplicates",
     "Empty files",
     "Empty folders",
@@ -60,15 +62,16 @@ pub(crate) fn settings_page() -> View {
 fn nav() -> View {
     view()
         .flex_col()
-        .w(px(200.0))
+        .w(px(280.0))
         .h_full()
         .flex_shrink_0()
-        .gap(px(2.0))
-        .p(px(12.0))
-        .bg(colors::GLASS)
+        .gap(px(space::SM))
+        .p(px(space::LG))
+        .bg(colors::SIDEBAR)
         .border_r_1()
         .border_color(colors::BORDER)
-        .child(caption("Settings"))
+        .child(heading("Settings"))
+        .gap(px(2.0))
         .child(view().child(dynamic(|| {
             let tab = app().with(|s| s.settings_tab);
             tabs()
@@ -101,7 +104,11 @@ fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> im
                 } else {
                     FontWeight::NORMAL
                 })
-                .text_color(if active { colors::ACCENT } else { colors::TEXT }),
+                .text_color(if active {
+                    colors::ACCENT
+                } else {
+                    colors::MUTED
+                }),
         )
 }
 
@@ -109,8 +116,8 @@ fn page_column(children: Vec<View>) -> View {
     let mut column = view()
         .flex_col()
         .w_full()
-        .max_w(px(880.0))
-        .gap(px(space::XL))
+        .max_w(px(970.0))
+        .gap(px(space::XXL))
         .p(px(space::XXL));
     for child in children {
         column = column.child(child);
@@ -122,16 +129,8 @@ fn header(title: &'static str, description: &'static str) -> View {
     view()
         .flex_col()
         .gap(px(space::XS))
-        .child(caption("Settings"))
-        .child(heading(title))
+        .child(page_heading(title))
         .child(caption(description))
-        .child(
-            view()
-                .h(px(2.0))
-                .w(px(56.0))
-                .rounded_full()
-                .bg(colors::ACCENT),
-        )
 }
 
 fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
@@ -143,12 +142,13 @@ fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View
         .gap(px(16.0))
         .child(
             view()
-                .flex_col()
+                .flex_row()
+                .items_center()
                 .flex_1()
                 .min_w(px(0.0))
-                .gap(px(2.0))
+                .gap(px(space::XS))
                 .child(panel_title(label))
-                .child(caption(hint)),
+                .child(help_dot(hint)),
         )
         .child(view().flex_shrink_0().child(control))
 }
@@ -183,7 +183,7 @@ fn choice_chip(
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
         .bg(if active {
-            colors::ACCENT_WASH_STRONG
+            colors::ACCENT
         } else {
             colors::INSET
         })
@@ -196,9 +196,13 @@ fn choice_chip(
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
-                .font_weight(FontWeight::MEDIUM)
+                .font_weight(if active {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                })
                 .text_color(if active {
-                    colors::ACCENT
+                    colors::ON_ACCENT
                 } else {
                     colors::MUTED
                 }),
@@ -240,11 +244,12 @@ fn choice_row(label: &'static str, hint: impl IntoReactive<SharedString>, contro
         .gap(px(space::SM))
         .child(
             view()
-                .flex_col()
+                .flex_row()
+                .items_center()
                 .min_w(px(0.0))
-                .gap(px(space::XXS))
+                .gap(px(space::XS))
                 .child(panel_title(label))
-                .child(caption(hint)),
+                .child(help_dot(hint)),
         )
         .child(control)
 }
@@ -323,11 +328,6 @@ fn general_page() -> View {
                         actions::save_prefs();
                     }),
                 ),
-                row(
-                    "Appearance",
-                    "Follows the OS theme until you switch it manually.",
-                    secondary_button("Switch theme", actions::toggle_theme),
-                ),
             ],
         ),
         section(
@@ -337,6 +337,15 @@ fn general_page() -> View {
                 "Cache on disk",
                 format!("{} file(s) - {}", files, util::human_bytes(bytes)),
                 secondary_button("Clear caches", actions::clear_cache),
+            )],
+        ),
+        section(
+            "Reset",
+            "Put the settings on this page and on Preferences back to their defaults.",
+            vec![row(
+                "Reset all settings",
+                "Restores scan defaults, filters, toggles and the theme. Folders and current results stay.",
+                secondary_button("Reset to defaults", actions::reset_settings),
             )],
         ),
         view().child(caption(cache_msg)),

@@ -81,6 +81,27 @@ pub(crate) fn toggle_theme() {
     save_prefs();
 }
 
+/// Put every persisted setting back to its shipped default: scan type,
+/// matching and thresholds, filters, toggles and the theme.
+///
+/// Session data is deliberately left alone — the folder list, results and the
+/// open page stay as they are, so a reset never costs a scan.
+pub(crate) fn reset_settings() {
+    let defaults = prefs::GuiPrefs::default();
+    set_color_scheme(if defaults.dark {
+        Appearance::Dark
+    } else {
+        Appearance::Light
+    });
+    app().update(|s| {
+        s.apply_prefs(&defaults);
+        // The live floor is seeded from the last scan; a reset starts clean.
+        s.min_sim_input.clear();
+    });
+    save_prefs();
+    crate::ui::toast::notify("Settings reset to defaults.".to_owned(), false);
+}
+
 // --- Folders ----------------------------------------------------------------
 
 /// Add folders from a raw string (semicolon/newline separated), as typed
@@ -161,6 +182,24 @@ pub(crate) fn toggle_reference(index: usize) {
         }
     });
     save_prefs();
+}
+
+/// The sidebar's filtered list addresses folders by path: resolve it to the
+/// live index, then reuse the index-based actions.
+pub(crate) fn remove_folder_path(path: &str) {
+    if let Some(index) = folder_index(path) {
+        remove_folder(index);
+    }
+}
+
+pub(crate) fn toggle_reference_path(path: &str) {
+    if let Some(index) = folder_index(path) {
+        toggle_reference(index);
+    }
+}
+
+fn folder_index(path: &str) -> Option<usize> {
+    app().with_untracked(|s| s.folders.iter().position(|f| f.path == path))
 }
 
 pub(crate) fn browse_folder() {
@@ -412,6 +451,13 @@ pub(crate) fn app_spawn<T: 'static>(future: impl Future<Output = T> + 'static) {
 }
 
 pub(crate) fn start_scan() {
+    // One scan at a time: the running job owns the view's progress, results
+    // and cancellation token, so a second start would silently discard the
+    // first one's output. The sidebar row is disabled while a scan runs; this
+    // guard also covers the keyboard and any click that lands mid-transition.
+    if app().with_untracked(|s| s.scanning) {
+        return;
+    }
     save_prefs();
     let state = app();
     let opts = match state.with_untracked(collect_options) {

@@ -1,86 +1,210 @@
-//! Main-flow sidebar: source folders, per-run scope, and the scan controls.
+//! Main-flow sidebar: wordmark, quick actions, the source-folder list and a
+//! bottom tip card.
 //!
-//! Global tuning lives on the Settings page, so the main flow stays a
-//! three-step scan: folders, scope, Scan.
+//! Folder protection, removal and filtering live on the rows themselves; the
+//! scan controls live in the workspace's composer, so the sidebar stays a
+//! quiet index of places.
 
+use nsh_base::button;
 use nsh_core::prelude::*;
 
-use crate::cli;
 use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, danger_button, field, field_label, icon_button, icon_ghost_button, icons,
-    primary_button, toggle_switch,
+    caption, card, chip, divider, field, heading, hint, icon, icon_ghost_button, icons, motion,
 };
-use crate::ui_helpers::{self, fit_text};
+use crate::ui_helpers::fit_text;
 
 /// The left column of the main flow.
 pub(crate) fn sidebar() -> impl IntoElement {
     view()
         .flex_col()
-        .w(px(320.0))
+        .w(px(300.0))
         .h_full()
         .flex_shrink_0()
-        .bg(colors::BACKGROUND)
+        .bg(colors::SIDEBAR)
         .border_r_1()
         .border_color(colors::BORDER)
         .child(header_block())
         .child(
-            scroll().flex_1().child(
+            scroll().flex_1().min_h(px(0.0)).child(
                 view()
                     .flex_col()
-                    .gap(px(space::MD))
-                    .px(px(space::XL))
-                    .pb(px(space::XL))
-                    .child(scope_card()),
+                    .gap(px(space::XS))
+                    .px(px(space::SM))
+                    .pb(px(space::MD))
+                    .child(quick_actions())
+                    .child(
+                        view()
+                            .px(px(space::SM))
+                            .pt(px(space::MD))
+                            .child(section_kicker("Folders")),
+                    )
+                    .child(folder_list()),
             ),
         )
-        .child(scan_card())
+        .child(tip_card())
 }
 
 fn header_block() -> impl IntoElement {
     view()
         .flex_col()
-        .gap(px(space::MD))
-        .px(px(space::XL))
-        .pt(px(space::XL))
-        .pb(px(space::LG))
+        .gap(px(space::SM))
+        .px(px(space::LG))
+        .pt(px(space::LG))
+        .pb(px(space::SM))
         .child(
             view()
                 .flex_row()
-                .items_start()
+                .items_center()
                 .justify_between()
-                .gap(px(space::MD))
-                .child(
-                    view()
-                        .flex_col()
-                        .gap(px(space::XS))
-                        .child(section_kicker("Source folders"))
-                        .child(caption("Protected folders are never deleted.")),
-                )
-                .child(chip(
-                    || app().with(|s| s.folders.len().to_string()),
-                    colors::INSET,
-                    colors::MUTED,
-                )),
+                .child(heading("dedupe"))
+                .child(view().flex_row().gap(px(2.0)).child(icon_ghost_button(
+                    icons::SEARCH,
+                    "Filter folders",
+                    toggle_filter,
+                ))),
         )
-        .child(folder_list())
-        .child(add_row())
+        .child(view().child(dynamic(|| {
+            if app().with(|s| s.folder_filter.is_some()) {
+                view().child(filter_field())
+            } else {
+                view()
+            }
+        })))
+}
+
+fn toggle_filter() {
+    app().update(|s| {
+        s.folder_filter = match s.folder_filter.take() {
+            Some(_) => None,
+            None => Some(String::new()),
+        };
+    });
+}
+
+fn filter_field() -> impl IntoElement {
+    field(
+        "Filter folders",
+        || app().with(|s| s.folder_filter.clone().unwrap_or_default()),
+        |value| {
+            app().update(|s| s.folder_filter = Some(value));
+        },
+    )
 }
 
 fn section_kicker(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::CAPTION))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors::ACCENT)
+        .text_color(colors::MUTED)
 }
 
+/// The "New chat"-style rows: add, scan and the trash switch, each a full
+/// quiet row with an orange status pill where one exists.
+fn quick_actions() -> impl IntoElement {
+    view()
+        .flex_col()
+        .gap(px(2.0))
+        .child(side_row(
+            icons::FOLDER,
+            "Browse for a folder",
+            None,
+            true,
+            actions::browse_folder,
+        ))
+        // A run is a single background job: starting a second one while the
+        // first is in flight would only be thrown away, so the row goes
+        // quiet until this scan finishes (or is stopped).
+        .child(view().child(dynamic(|| {
+            let scanning = app().with(|s| s.scanning);
+            side_row(
+                icons::PLAY,
+                "Scan now",
+                None,
+                !scanning,
+                actions::start_scan,
+            )
+        })))
+        .child(view().child(dynamic(|| {
+            let trash = app().with(|s| s.trash);
+            side_row(
+                icons::TRASH,
+                "Trash deletes",
+                Some(view().child(chip(
+                    if trash { "On" } else { "Off" },
+                    if trash {
+                        colors::ACCENT_WASH_STRONG
+                    } else {
+                        colors::INSET
+                    },
+                    if trash { colors::ACCENT } else { colors::MUTED },
+                ))),
+                true,
+                toggle_trash,
+            )
+        })))
+}
+
+fn toggle_trash() {
+    app().update(|s| s.trash = !s.trash);
+    actions::save_prefs();
+}
+
+fn side_row(
+    markup: &'static str,
+    label: &'static str,
+    trailing: Option<View>,
+    enabled: bool,
+    on_press: impl Fn() + 'static,
+) -> View {
+    let mut row = button()
+        .on_press(on_press)
+        .disabled(!enabled)
+        .accessibility_label(label)
+        .flex_row()
+        .items_center()
+        .gap(px(space::SM))
+        .w_full()
+        .px(px(space::SM))
+        .py(px(space::XS))
+        .rounded(px(radius::CONTROL))
+        .opacity(if enabled { 1.0 } else { 0.45 })
+        .transition_colors()
+        .duration(motion(150.0))
+        .ease_out()
+        .hover(move |s| if enabled { s.bg(colors::PANE) } else { s })
+        .child(icon(markup, 16.0, colors::MUTED))
+        .child(
+            text(label)
+                .flex_1()
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT),
+        );
+    if let Some(trailing) = trailing {
+        row = row.child(trailing);
+    }
+    view().child(row)
+}
+
+/// Folders the user typed, dropped or browsed for. The filter, when open,
+/// narrows the list by path; rows address the live list by path so a
+/// filtered view never removes the wrong folder.
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(space::SM)).child(
-        when(|| app().with(|s| s.folders.is_empty()), empty_folders).otherwise(|| {
+    view().flex_col().gap(px(2.0)).child(
+        when(
+            || filtered_folders().is_empty(),
+            || {
+                view()
+                    .px(px(space::SM))
+                    .py(px(space::SM))
+                    .child(caption("No folders yet"))
+            },
+        )
+        .otherwise(|| {
             each(
-                || app().with(|s| s.folders.clone()),
+                filtered_folders,
                 |f: &FolderEntry| f.path.clone(),
                 folder_row,
             )
@@ -88,318 +212,170 @@ fn folder_list() -> impl IntoElement {
     )
 }
 
-fn empty_folders() -> impl IntoElement {
-    view()
-        .flex_col()
-        .gap(px(space::XS))
-        .p(px(space::MD))
-        .rounded(px(radius::CARD))
-        .border_1()
-        .border_dashed()
-        .border_color(colors::BORDER)
-        .child(
-            text("No folders yet")
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors::TEXT),
-        )
-        .child(caption("Add a folder below or browse to begin."))
-}
-
-fn folder_row(folder: ReadSignal<FolderEntry>, index: ReadSignal<usize>) -> impl IntoElement {
-    dynamic(move || {
-        let reference = folder.with(|f| f.reference);
-        let path = folder.with(|f| fit_text(&f.path, 60));
-        view()
-            .flex_col()
-            .gap(px(space::SM))
-            .p(px(space::MD))
-            .rounded(px(radius::CONTROL))
-            .bg(if reference {
-                colors::ACCENT_WASH
-            } else {
-                colors::PANE
-            })
-            .transition_colors()
-            .duration(180.0)
-            .border_1()
-            .border_color(if reference {
-                colors::ACCENT_WASH_STRONG
-            } else {
-                colors::BORDER
-            })
-            .child(
-                text(path)
-                    .text_size(px(text::BODY))
-                    .truncate()
-                    .text_color(colors::TEXT),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .w_full()
-                    .items_center()
-                    .justify_between()
-                    .child(protect_chip(reference, index))
-                    .child(icon_ghost_button(
-                        icons::CLEAR,
-                        "Remove folder",
-                        move || {
-                            actions::remove_folder(index.get());
-                        },
-                    )),
-            )
+fn filtered_folders() -> Vec<FolderEntry> {
+    app().with(|s| {
+        let query = s
+            .folder_filter
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .map(str::to_lowercase);
+        match query {
+            Some(q) => s
+                .folders
+                .iter()
+                .filter(|f| f.path.to_lowercase().contains(&q))
+                .cloned()
+                .collect(),
+            None => s.folders.clone(),
+        }
     })
 }
 
-fn protect_chip(checked: bool, index: ReadSignal<usize>) -> impl IntoElement {
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(space::XXS))
-        .px(px(space::SM))
-        .py(px(space::XXS))
-        .rounded_full()
-        .bg(if checked {
-            colors::ACCENT_WASH_STRONG
-        } else {
-            colors::INSET
-        })
-        .border_1()
-        .border_color(if checked {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
-        .child(
-            text(if checked { "Protected" } else { "Protect" })
-                .text_size(px(text::CAPTION))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if checked {
+fn folder_row(folder: ReadSignal<FolderEntry>, _index: ReadSignal<usize>) -> impl IntoElement {
+    dynamic(move || {
+        let path = folder.with(|f| f.path.clone());
+        let reference = folder.with(|f| f.reference);
+        let shown = fit_text(&path, 42);
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(space::XS))
+            .px(px(space::SM))
+            .py(px(space::XXS))
+            .rounded(px(radius::CONTROL))
+            .bg(if reference {
+                colors::PANE
+            } else {
+                colors::SIDEBAR
+            })
+            .transition_colors()
+            .duration(motion(150.0))
+            .hover(|s| s.bg(colors::PANE))
+            .child(icon(
+                icons::FOLDER,
+                15.0,
+                if reference {
                     colors::ACCENT
                 } else {
                     colors::MUTED
-                }),
-        )
-        .child(toggle_switch(
-            checked,
-            "Protect this folder from deletion",
-            move || actions::toggle_reference(index.get()),
-        ))
-}
-
-fn add_row() -> impl IntoElement {
-    view()
-        .flex_row()
-        .gap(px(space::SM))
-        .items_center()
-        .child(field(
-            "Folder path",
-            || app().with(|s| s.folder_input.clone()),
-            |v| {
-                app().update(|s| s.folder_input = v);
-            },
-        ))
-        .child(icon_button(
-            icons::PLUS,
-            "Add folder",
-            actions::add_from_input,
-        ))
-        .child(icon_button(
-            icons::FOLDER,
-            "Browse for a folder",
-            actions::browse_folder,
-        ))
-}
-
-fn scope_card() -> impl IntoElement {
-    card()
-        .gap(px(space::MD))
-        .p(px(space::MD))
-        .child(
-            view()
-                .flex_row()
-                .items_start()
-                .justify_between()
-                .gap(px(space::MD))
-                .child(section_kicker("Scan scope")),
-        )
-        .child(labelled(
-            "File types",
-            None,
-            field(
-                "e.g. jpg, png, mp4",
-                || app().with(|s| s.types_input.clone()),
-                |v| {
-                    app().update(|s| s.types_input = v);
                 },
-            ),
-        ))
-        .child(labelled(
-            "Min size",
-            Some("e.g. 10MB, unlimited"),
-            field(
-                "unlimited",
-                || app().with(|s| s.min_size_input.clone()),
-                |v| {
-                    app().update(|s| s.min_size_input = v);
-                },
-            ),
-        ))
-        .child(labelled(
-            "Max size",
-            Some("e.g. 2GB, unlimited"),
-            field(
-                "unlimited",
-                || app().with(|s| s.max_size_input.clone()),
-                |v| {
-                    app().update(|s| s.max_size_input = v);
-                },
-            ),
-        ))
-        .child(labelled(
-            "Max depth",
-            Some("empty = unlimited"),
-            field(
-                "empty = unlimited",
-                || app().with(|s| s.max_depth_input.clone()),
-                |v| {
-                    app().update(|s| s.max_depth_input = v);
-                },
-            ),
-        ))
-        .child(labelled(
-            "Skip directories",
-            Some("; separated"),
-            field(
-                "node_modules; target",
-                || app().with(|s| s.exclude_dir_input.clone()),
-                |v| {
-                    app().update(|s| s.exclude_dir_input = v);
-                },
-            ),
-        ))
-        .child(labelled(
-            "Skip paths containing",
-            Some("; separated"),
-            field(
-                "C:\\Windows; /proc",
-                || app().with(|s| s.exclude_path_input.clone()),
-                |v| {
-                    app().update(|s| s.exclude_path_input = v);
-                },
-            ),
-        ))
-        .child(labelled(
-            "Ignore globs",
-            Some("; separated"),
-            field(
-                "*.tmp; ~$*",
-                || app().with(|s| s.ignore_input.clone()),
-                |v| {
-                    app().update(|s| s.ignore_input = v);
-                },
-            ),
-        ))
-}
-
-fn labelled(
-    label: &'static str,
-    hint: Option<&'static str>,
-    input: impl IntoElement,
-) -> impl IntoElement {
-    view()
-        .flex_col()
-        .gap(px(space::XS))
-        .child(
-            view()
-                .flex_row()
-                .gap(px(space::XS))
-                .items_center()
-                .child(field_label(label))
-                .child(hint.map(caption)),
-        )
-        .child(input)
-}
-
-fn scan_card() -> impl IntoElement {
-    view()
-        .px(px(space::XL))
-        .pt(px(space::SM))
-        .pb(px(space::XL))
-        .child(
-            card()
-                .gap(px(space::MD))
-                .p(px(space::MD))
-                .border_color(colors::ACCENT_WASH_STRONG)
-                .child(
-                    view()
-                        .flex_row()
-                        .items_start()
-                        .justify_between()
-                        .gap(px(space::MD))
-                        .child(
-                            view()
-                                .flex_col()
-                                .gap(px(space::XS))
-                                .child(section_kicker(|| {
-                                    if app().with(|s| s.scanning) {
-                                        "Scanning"
-                                    } else {
-                                        "Ready to scan"
-                                    }
-                                })),
-                        )
-                        .child(chip(
-                            || format!("{} folders", app().with(|s| s.folders.len())),
-                            colors::INSET,
-                            colors::MUTED,
-                        )),
-                )
-                .child(media_status())
-                .child(
-                    when(
-                        || app().with(|s| s.scanning),
-                        || danger_button("Stop", actions::stop_scan).w_full(),
+            ))
+            .child(
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .child(
+                        text(shown)
+                            .truncate()
+                            .text_size(px(text::BODY))
+                            .text_color(colors::TEXT),
                     )
-                    .otherwise(|| primary_button(scan_label, actions::start_scan).w_full()),
-                ),
-        )
-}
-
-fn scan_label() -> &'static str {
-    if ui_helpers::find_mode(app().with(|s| s.find_index)) == cli::FindMode::Duplicates {
-        "Scan for duplicates"
-    } else {
-        "Run cleanup scan"
-    }
-}
-
-/// ffmpeg/ffprobe availability, shown above the Scan button.
-fn media_status() -> impl IntoElement {
-    dynamic(|| {
-        let (checked, ffmpeg, ffprobe) =
-            app().with(|s| (s.media_checked, s.ffmpeg_ok, s.ffprobe_ok));
-        if !checked {
-            return chip("Checking for ffmpeg...", colors::INSET, colors::MUTED);
-        }
-        match (ffmpeg, ffprobe) {
-            (true, true) => chip("ffmpeg ready", colors::ACCENT_WASH_STRONG, colors::ACCENT),
-            (false, true) => chip(
-                "ffmpeg missing - video compare off",
-                colors::INSET,
-                colors::MUTED,
-            ),
-            (true, false) => chip(
-                "ffprobe missing - media details off",
-                colors::INSET,
-                colors::MUTED,
-            ),
-            (false, false) => chip(
-                "ffmpeg missing - video compare + details off",
-                colors::INSET,
-                colors::MUTED,
-            ),
-        }
+                    .tooltip(hint(path.clone())),
+            )
+            .child(row_ghost(
+                icons::LOCK,
+                if reference {
+                    "Unprotect folder"
+                } else {
+                    "Protect folder"
+                },
+                if reference {
+                    colors::ACCENT
+                } else {
+                    colors::MUTED
+                },
+                {
+                    let path = path.clone();
+                    move || actions::toggle_reference_path(&path)
+                },
+            ))
+            .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+                let path = path.clone();
+                move || actions::remove_folder_path(&path)
+            }))
     })
+}
+
+/// A small borderless icon action for a folder row.
+fn row_ghost(
+    markup: &'static str,
+    label: &'static str,
+    tint: AdaptiveColor,
+    on_press: impl Fn() + 'static,
+) -> View {
+    view()
+        .flex_shrink_0()
+        .child(
+            button()
+                .on_press(on_press)
+                .accessibility_label(label)
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .w(px(26.0))
+                .h(px(24.0))
+                .rounded(px(radius::CONTROL))
+                .transition_colors()
+                .duration(motion(150.0))
+                .ease_out()
+                .hover(|s| s.bg(colors::ELEVATED))
+                .child(icon(markup, 14.0, tint)),
+        )
+        .tooltip(hint(label))
+}
+
+/// The sponsored-card slot at the bottom: what protection does and where to
+/// manage it.
+fn tip_card() -> impl IntoElement {
+    view().px(px(space::MD)).pb(px(space::MD)).child(
+        card()
+            .gap(px(space::XS))
+            .p(px(space::MD))
+            .child(section_kicker("TIP"))
+            .child(
+                text("Protect the originals")
+                    .text_size(px(text::BODY))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(colors::TEXT),
+            )
+            .child(caption("Protected folders are never touched by a delete."))
+            .child(divider())
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(space::XS))
+                            .child(icon(icons::LOCK, 14.0, colors::MUTED))
+                            .child(caption("Protection")),
+                    )
+                    .child(
+                        view()
+                            .flex_col()
+                            .child(
+                                button()
+                                    .on_press(actions::open_settings)
+                                    .accessibility_label("Open settings")
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_center()
+                                    .w(px(26.0))
+                                    .h(px(24.0))
+                                    .bg(colors::PANE)
+                                    .rounded_full()
+                                    .transition_colors()
+                                    .duration(motion(150.0))
+                                    .ease_out()
+                                    .hover(|s| s.bg(colors::ELEVATED))
+                                    .child(icon(icons::ARROW_UP_RIGHT, 13.0, colors::TEXT)),
+                            )
+                            .tooltip(hint("Open settings")),
+                    ),
+            ),
+    )
 }
