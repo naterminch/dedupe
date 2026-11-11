@@ -26,6 +26,7 @@ pub fn DedupeApp() -> impl IntoElement {
         KeyOptions {
             when: When::Always,
             repeat: false,
+            pass_through: false,
         },
         |_| dismiss_keyboard(),
     );
@@ -34,6 +35,7 @@ pub fn DedupeApp() -> impl IntoElement {
         KeyOptions {
             when: When::NotEditing,
             repeat: false,
+            pass_through: false,
         },
         |_| actions::escape_leaves_settings(),
     );
