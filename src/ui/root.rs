@@ -10,7 +10,7 @@ use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
-use crate::ui::state::{AppView, app};
+use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{caption, icon, icon_ghost_button, icons, motion};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
@@ -60,8 +60,10 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(dynamic(|| {
             // Only the confirmation opening rebuilds it: a scan tick would
             // replace the dialog's buttons between press and release.
-            let open = computed(|| app().with(|s| s.confirm_delete));
-            if open.get() {
+            // The plan follows the ticked duplicates too: ticking one in the
+            // dialog rebuilds it, a scan tick does not.
+            let open = computed(|| app().with(|s| (s.confirm_delete, s.selected.len())));
+            if open.get().0 {
                 results::delete_confirm()
             } else {
                 view()
@@ -184,7 +186,17 @@ fn status_bar() -> impl IntoElement {
         .bg(colors::CARD)
         .border_t_1()
         .border_color(colors::BORDER)
-        .child(caption(|| app().with(|s| s.status.clone())))
+        .child(caption(|| {
+            // A running scan's phase is what the line reports. It lives in the
+            // scan signal, so the status line follows a tick without the app
+            // signal changing under every other pane.
+            let phase = scan_status().with(|p| p.phase.clone());
+            if app().with(|s| s.scanning) && !phase.is_empty() {
+                phase
+            } else {
+                app().with(|s| s.status.clone())
+            }
+        }))
         .child(caption(|| {
             let state = app();
             let files = state.with(|s| s.files_scanned);

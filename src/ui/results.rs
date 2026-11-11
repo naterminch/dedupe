@@ -19,7 +19,7 @@ use crate::media;
 use crate::modes::{ModeResult, mode_title};
 use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
-use crate::ui::state::{Layout, app};
+use crate::ui::state::{Layout, app, scan_status};
 use crate::ui::widgets::{
     caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
     icon_button, icon_chip, icon_ghost_button, icons, motion, primary_button, secondary_button,
@@ -703,8 +703,10 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
 }
 
 fn progress_card() -> View {
-    let (done, total, determinate) =
-        app().with(|s| (s.scan_done, s.scan_total, s.scan_determinate));
+    // Progress has a signal of its own: reading it here subscribes this card
+    // alone, so a tick never rebuilds the rest of the window.
+    let (done, total, determinate, phase) =
+        scan_status().with(|p| (p.done, p.total, p.determinate, p.phase.clone()));
     let fraction = if determinate && total > 0 {
         (done as f32 / total as f32).clamp(0.0, 1.0)
     } else {
@@ -717,7 +719,7 @@ fn progress_card() -> View {
     let label = if determinate && total > 0 {
         format!("{done} of {total}")
     } else {
-        app().with(|s| s.status.clone())
+        phase.clone()
     };
     card()
         .gap(px(space::SM))
@@ -728,7 +730,7 @@ fn progress_card() -> View {
                 .items_center()
                 .justify_between()
                 .gap(px(12.0))
-                .child(kicker(|| app().with(|s| s.scan_phase.clone())))
+                .child(kicker(phase))
                 .child(
                     view()
                         .flex_row()

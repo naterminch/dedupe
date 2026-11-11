@@ -13,7 +13,9 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
-use crate::ui::state::{AppState, AppView, FolderEntry, ReportSnapshot, SettingsTab, app};
+use crate::ui::state::{
+    AppState, AppView, FolderEntry, ReportSnapshot, ScanStatus, SettingsTab, app, scan_status,
+};
 use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, find_mode, image_hash_algo, is_no_limit, match_mode};
 use crate::{cli, hashing, media, pipeline, poster, prefs, similar, util};
@@ -486,10 +488,6 @@ pub(crate) fn start_scan() {
         s.scanning = true;
         s.scan_gen += 1;
         s.scan_cancel.reset();
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
-        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         s.has_scanned = false;
         s.groups.clear();
         s.mode_result = None;
@@ -497,6 +495,14 @@ pub(crate) fn start_scan() {
         s.collapsed.clear();
         s.playing = None;
         s.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
+    });
+    // Fresh progress for this run, in its own signal: the app signal must not
+    // change on a tick, or every pane that reads it is rebuilt mid-scan.
+    scan_status().update(|p| {
+        *p = ScanStatus {
+            phase: pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string(),
+            ..ScanStatus::default()
+        };
     });
     let generation = state.with_untracked(|s| s.scan_gen);
     let cancel = state.with_untracked(|s| s.scan_cancel.clone());
@@ -554,28 +560,24 @@ pub(crate) fn start_scan() {
                 .lock()
                 .map(|s| *s)
                 .unwrap_or(pipeline::ScanPhase::Scanning);
-            let (label, done, total, determinate) = match ph {
-                pipeline::ScanPhase::Scanning => {
-                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
-                }
+            let (done, total, determinate) = match ph {
+                pipeline::ScanPhase::Scanning | pipeline::ScanPhase::Finishing => (0, 0, false),
                 pipeline::ScanPhase::Hashing => {
                     let (d, t) = bar_pos(&hash_bar_poll);
-                    (format!("Hashing {d} of {t}"), d, t, true)
+                    (d, t, true)
                 }
                 pipeline::ScanPhase::ComparingMedia => {
                     let (d, t) = bar_pos(&sim_bar_poll);
-                    (format!("Comparing media {d} of {t}"), d, t, true)
-                }
-                pipeline::ScanPhase::Finishing => {
-                    (pipeline::phase_label(ph).to_string(), 0, 0, false)
+                    (d, t, true)
                 }
             };
-            app().update(|s| {
-                s.status = label;
-                s.scan_phase = pipeline::phase_label(ph).to_string();
-                s.scan_done = done;
-                s.scan_total = total;
-                s.scan_determinate = determinate && total > 0;
+            scan_status().update(|p| {
+                *p = ScanStatus {
+                    phase: pipeline::phase_label(ph).to_string(),
+                    done,
+                    total,
+                    determinate: determinate && total > 0,
+                };
             });
         }
     });
@@ -586,13 +588,11 @@ pub(crate) fn start_scan() {
 /// finishes hashing. The pipeline winds down in the background and its late
 /// output is discarded by the generation guard.
 pub(crate) fn stop_scan() {
+    scan_status().update(|p| *p = ScanStatus::default());
     app().update(|s| {
         s.scan_cancel.cancel();
         s.scan_gen += 1;
         s.scanning = false;
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
         s.has_scanned = false;
         s.groups.clear();
         s.mode_result = None;
@@ -610,12 +610,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
     if !is_current_scan(generation) {
         return;
     }
+    scan_status().update(|p| *p = ScanStatus::default());
     state.update(|s| {
         s.scanning = false;
-        s.scan_done = 0;
-        s.scan_total = 0;
-        s.scan_determinate = false;
-        s.scan_phase = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
         // A cancelled scan carries no groups by design: reset to the
         // pre-scan state (the walk cleared the pane at start anyway) and
         // report the stop. `has_scanned` stays false so the 3-step empty
