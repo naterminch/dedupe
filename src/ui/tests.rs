@@ -21,7 +21,7 @@ use crate::media::MediaKind;
 use crate::prefs::ENV_LOCK;
 use crate::ui::actions;
 use crate::ui::root::DedupeApp;
-use crate::ui::state::AppState;
+use crate::ui::state::{AppState, FolderEntry};
 
 /// One headless engine on a temp prefs file, holding [`ENV_LOCK`] for the
 /// whole test (bootstrap loads prefs on mount).
@@ -93,7 +93,7 @@ fn shell_shows_the_core_controls() {
         app.screen().count("label:Settings").unwrap_or(0) > 0,
         "settings button"
     );
-    assert!(app.shows("Source folders"), "sidebar heading");
+    assert!(app.shows("Folders"), "sidebar heading");
 }
 
 #[test]
@@ -101,9 +101,8 @@ fn settings_page_opens_and_closes() {
     let (mut app, _guard) = start();
     app.wait_for("label:Settings").expect("settings button");
     app.press("label:Settings").expect("open settings");
-    app.wait_for("label:Back to results").expect("back button");
     app.wait_for("text:Preferences").expect("settings nav");
-    app.press("label:Back to results").expect("close settings");
+    app.press("label:Scan workspace").expect("close settings");
     app.wait_for("text:Scan for duplicates")
         .expect("main flow returns");
 }
@@ -121,17 +120,69 @@ fn scan_without_folders_explains_what_is_missing() {
 #[test]
 fn adding_a_folder_updates_the_sidebar() {
     let (mut app, _guard) = start();
-    app.wait_for("text:Folder path").expect("folder input");
+    app.wait_for("text:Scan a folder").expect("folder input");
     // Paste is one edit (a single change event): typing a path one key at a
     // time loses the keys after the first, because the placeholder's
     // removal shifts the node ids the harness cached for the input.
     let mut pasted = nsh_core::PasteEvent::default();
     pasted.text = r"C:\media".to_owned();
-    app.paste("text:Folder path", &pasted)
+    app.paste("text:Scan a folder", &pasted)
         .expect("paste the path");
     app.press("label:Add folder").expect("press add");
     app.wait_for(r"text:C:\media").expect("folder row appears");
     app.wait_for("label:Remove folder").expect("row controls");
+}
+
+/// Reset puts every persisted setting back to its shipped default.
+#[test]
+fn resetting_settings_restores_the_defaults() {
+    let mut s = AppState {
+        types_input: "png".to_string(),
+        min_size_input: "10MB".to_string(),
+        exact: true,
+        no_cache: true,
+        trash: false,
+        remember_folders: false,
+        sort_biggest: true,
+        find_index: Some(3),
+        match_index: Some(2),
+        image_hash_index: Some(4),
+        hash_index: Some(2),
+        keep_index: Some(3),
+        partial_clips: true,
+        music_by_content: true,
+        ..AppState::default()
+    };
+    s.apply_prefs(&crate::prefs::GuiPrefs::default());
+    assert_eq!(s.types_input, "");
+    assert_eq!(s.min_size_input, crate::ui_helpers::NO_LIMIT_LABEL);
+    assert!(s.trash, "trash is the default");
+    assert!(s.remember_folders, "remembering folders is the default");
+    assert_eq!(s.find_index, Some(0));
+    assert_eq!(s.match_index, Some(0));
+    assert_eq!(s.image_hash_index, Some(0));
+    assert_eq!(s.hash_index, Some(0));
+    assert_eq!(s.keep_index, Some(0));
+    assert!(!s.exact);
+    assert!(!s.no_cache);
+    assert!(!s.partial_clips);
+    assert!(!s.music_by_content);
+    assert!(!s.sort_biggest);
+}
+
+/// A settings reset is not a session reset: the live folder list survives.
+#[test]
+fn resetting_settings_keeps_the_live_folder_list() {
+    let mut s = AppState {
+        folders: vec![FolderEntry {
+            path: r"C:\media".to_string(),
+            reference: true,
+        }],
+        ..AppState::default()
+    };
+    s.apply_prefs(&crate::prefs::GuiPrefs::default());
+    assert_eq!(s.folders.len(), 1);
+    assert!(s.folders[0].reference);
 }
 
 #[test]
@@ -334,10 +385,10 @@ fn delete_asks_for_confirmation_before_removing_anything() {
         std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
     }
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -397,10 +448,10 @@ fn scan_reports_the_duplicate_groups_it_found() {
     std::fs::write(dir.join("unique.txt"), b"different bytes entirely").expect("unique file");
     // Paste is one edit (same reason as the folder-add test above).
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -438,10 +489,10 @@ fn scan_renders_media_groups_and_their_thumbnails() {
     std::fs::write(dir.join("one.mp4"), vec![7u8; 4096]).expect("fixture video");
     std::fs::copy(dir.join("one.mp4"), dir.join("two.mp4")).expect("copy fixture video");
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -476,10 +527,10 @@ fn every_group_starts_expanded() {
         std::fs::write(dir.join(name), vec![byte; 4096]).expect("fixture file");
     }
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -509,10 +560,10 @@ fn video_preview_plays_and_stops() {
     std::fs::write(dir.join("one.mp4"), vec![7u8; 4096]).expect("fixture video");
     std::fs::copy(dir.join("one.mp4"), dir.join("two.mp4")).expect("copy fixture video");
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -553,10 +604,10 @@ fn image_cards_have_no_play_button() {
     std::fs::write(dir.join("one.png"), vec![1u8; 4096]).expect("fixture image");
     std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
@@ -592,10 +643,10 @@ fn layout_switch_keeps_the_results_listed() {
     std::fs::write(dir.join("one.png"), vec![2u8; 4096]).expect("fixture image");
     std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
     let result = (|| {
-        app.wait_for("text:Folder path")?;
+        app.wait_for("text:Scan a folder")?;
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
-        app.paste("text:Folder path", &pasted)?;
+        app.paste("text:Scan a folder", &pasted)?;
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;

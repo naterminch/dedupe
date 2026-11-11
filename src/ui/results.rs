@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
 use nsh_core::AccessibilityState;
-use nsh_core::element::{BorderCurve, video};
+use nsh_core::element::{BorderCurve, input, video};
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
@@ -18,8 +18,9 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app};
 use crate::ui::widgets::{
-    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint,
-    icon_button, icon_chip, icon_ghost_button, icons, motion, secondary_button,
+    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
+    icon_button, icon_chip, icon_ghost_button, icons, motion, pill, primary_button,
+    secondary_button, selection,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -129,7 +130,7 @@ fn kicker(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::CAPTION))
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors::ACCENT)
+        .text_color(colors::MUTED)
 }
 
 fn title(label: impl IntoReactive<SharedString>) -> Text {
@@ -146,9 +147,22 @@ fn duplicate_workspace() -> View {
         .h_full()
         .gap(px(space::LG))
         .p(px(space::XL))
-        .child(header_row())
-        .child(selection_row())
-        .child(action_row())
+        // Before the first scan the workspace is a centered hero: mascot,
+        // question, option pills and the scan composer. Once a scan runs the
+        // toolbar takes over and the hero never returns.
+        .child(dynamic(|| {
+            let (scanning, has_scanned) = app().with(|s| (s.scanning, s.has_scanned));
+            if scanning || has_scanned {
+                view()
+                    .flex_col()
+                    .gap(px(space::LG))
+                    .child(header_row())
+                    .child(selection_row())
+                    .child(action_row())
+            } else {
+                view()
+            }
+        }))
         // Rebuild only when the results change shape: a scan, a threshold, a
         // delete, a consolidate, a re-sort, Show more. Keeper picks and ticks
         // update their own cards, so pressing Keep never rebuilds (or
@@ -315,6 +329,7 @@ fn keep_modes() -> View {
 }
 
 fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElement {
+    let (fill, border, content) = selection(active);
     radio()
         .checked(active)
         .on_change(move |_: &bool| actions::apply_keep_mode(index))
@@ -322,26 +337,18 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded_full()
-        .bg(if active {
-            colors::ACCENT_WASH_STRONG
-        } else {
-            colors::INSET
-        })
+        .bg(fill)
         .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
+        .border_color(border)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if active {
-                    colors::ACCENT
+                .font_weight(if active {
+                    FontWeight::SEMIBOLD
                 } else {
-                    colors::MUTED
-                }),
+                    FontWeight::MEDIUM
+                })
+                .text_color(content),
         )
 }
 
@@ -361,15 +368,16 @@ fn sort_toggle() -> impl IntoElement {
             .transition_colors()
             .duration(150.0)
             .hover(|s| s.bg(colors::INSET))
-            .pressed_style(|s| {
-                s.bg(colors::ACCENT_WASH_STRONG)
-                    .border_color(colors::ACCENT)
-            })
+            .pressed_style(|s| s.bg(colors::ACCENT))
             .child(
                 text(if biggest { "Biggest" } else { "Path" })
                     .text_size(px(text::BODY))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors::ACCENT),
+                    .text_color(if biggest {
+                        colors::ON_ACCENT
+                    } else {
+                        colors::TEXT
+                    }),
             )
     })
 }
@@ -522,8 +530,6 @@ pub(crate) fn delete_confirm() -> View {
         .flex_shrink_0()
         .gap(px(space::SM))
         .p(px(space::LG))
-        .shadow_lg()
-        .shadow_color(colors::SHADOW)
         .child(
             text(format!("Delete {count} file(s)?"))
                 .text_size(px(text::BODY))
@@ -595,7 +601,7 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
         list = list.child(dynamic(progress_card));
     }
     if !has_scanned && !scanning {
-        list = list.child(dynamic(empty_state));
+        list = list.child(dynamic(hero));
     }
     if has_scanned && total > 0 {
         list = list.child(dynamic(stat_chips));
@@ -651,7 +657,14 @@ fn progress_card() -> View {
                 .justify_between()
                 .gap(px(12.0))
                 .child(kicker(|| app().with(|s| s.scan_phase.clone())))
-                .child(caption(label)),
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(space::MD))
+                        .child(caption(label))
+                        .child(danger_button("Stop", actions::stop_scan)),
+                ),
         )
         .child(
             progress()
@@ -674,124 +687,234 @@ fn progress_card() -> View {
         )
 }
 
-fn empty_state() -> View {
-    let duplicates = crate::ui_helpers::find_mode(app().with(|s| s.find_index))
-        == crate::cli::FindMode::Duplicates;
-    let folders = app().with(|s| s.folders.len());
-    let trash = app().with(|s| s.trash);
-    // Not a card: the preview panel and the three steps are cards, and a card
-    // around them would nest surfaces two deep.
+/// The first-run page, restyled as a centered hero: the mascot, the
+/// question, the option pills, a tip card and the scan composer.
+fn hero() -> View {
     view()
         .flex_col()
+        .items_center()
         .w_full()
-        .max_w(px(980.0))
         .gap(px(space::XL))
-        .self_center()
+        .pt(px(space::XXL))
+        .pb(px(space::XL))
+        .child(icon(icons::MASCOT, 96.0, colors::ACCENT))
         .child(
-            view()
-                .flex_row()
-                .flex_wrap()
-                .items_center()
-                .gap(px(space::XL))
-                .child(
-                    view()
-                        .flex_1()
-                        .min_w(px(280.0))
-                        .gap(px(12.0))
-                        .child(kicker(if duplicates {
-                            "Duplicate scanning"
-                        } else {
-                            "Cleanup scanning"
-                        }))
-                        .child(title(if duplicates {
-                            "Find every copy. Keep the one you want."
-                        } else {
-                            "Put every stray file back in its place."
-                        })),
-                )
-                .child(
-                    card()
-                        .w(px(250.0))
-                        .flex_shrink_0()
-                        .gap(px(space::SM))
-                        .p(px(space::LG))
-                        .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    text("Scan preview")
-                                        .text_size(px(text::BODY))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(colors::TEXT),
-                                )
-                                .child(chip("Ready", colors::ACCENT_WASH_STRONG, colors::ACCENT)),
-                        )
-                        .child(preview_row("Folders", format!("{folders} queued")))
-                        .child(preview_row(
-                            "Mode",
-                            if duplicates {
-                                "Duplicate scan".to_string()
-                            } else {
-                                "Cleanup scan".to_string()
-                            },
-                        ))
-                        .child(preview_row(
-                            "Delete",
-                            if trash {
-                                "To trash".to_string()
-                            } else {
-                                "Permanently".to_string()
-                            },
-                        )),
-                ),
+            text("What can I dedupe?")
+                .text_size(px(text::PAGE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors::TEXT),
         )
-        .child(
-            view()
-                .flex_row()
-                .flex_wrap()
-                .items_stretch()
-                .gap(px(space::MD))
-                .child(step_card("01", "Add folders"))
-                .child(step_card("02", "Run a scan"))
-                .child(step_card("03", "Review results")),
-        )
+        .child(pill_row())
+        .child(tip_card())
+        .child(composer())
 }
 
-fn preview_row(label: &'static str, value: String) -> View {
+/// The three dropdown pills under the question: where to scan, what to look
+/// for, and where deletes land. Each one carries a live action.
+fn pill_row() -> View {
     view()
-        .flex_col()
-        .gap(px(space::XXS))
-        .child(caption(label))
-        .child(
-            text(value)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors::TEXT),
-        )
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .justify_center()
+        .gap(px(space::SM))
+        .child(pill(
+            icons::FOLDER,
+            folder_pill_label,
+            actions::browse_folder,
+        ))
+        .child(pill(icons::SEARCH, mode_pill_label, cycle_find_mode))
+        .child(view().child(dynamic(|| {
+            let trash = app().with(|s| s.trash);
+            pill(
+                icons::TRASH,
+                if trash { "To trash" } else { "Permanently" },
+                toggle_trash,
+            )
+        })))
 }
 
-fn step_card(step: &'static str, heading: &'static str) -> View {
+fn folder_pill_label() -> SharedString {
+    app().with(|s| match s.folders.len() {
+        0 => SharedString::from("Add a folder"),
+        1 => SharedString::from(short_name(&s.folders[0].path)),
+        n => SharedString::from(format!("{n} folders")),
+    })
+}
+
+fn short_name(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+fn mode_pill_label() -> SharedString {
+    let index = app().with(|s| s.find_index.unwrap_or(0));
+    SharedString::from(crate::ui::settings::FIND_LABELS[index.min(10)])
+}
+
+fn cycle_find_mode() {
+    app().update(|s| {
+        let index = s.find_index.unwrap_or(0);
+        s.find_index = Some((index + 1) % crate::ui::settings::FIND_LABELS.len());
+    });
+    actions::save_prefs();
+}
+
+fn toggle_trash() {
+    app().update(|s| s.trash = !s.trash);
+    actions::save_prefs();
+}
+
+/// The ad-banner slot: what the app wants from you next, with the orange
+/// call to action on the right.
+fn tip_card() -> View {
+    card().w_full().max_w(px(860.0)).p(px(space::LG)).child(
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(space::MD))
+            .child(
+                view()
+                    .w(px(40.0))
+                    .h(px(40.0))
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .bg(colors::INSET)
+                    .rounded(px(radius::CONTROL))
+                    .child(icon(icons::FOLDER, 18.0, colors::MUTED)),
+            )
+            .child(
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex_col()
+                    .gap(px(space::XXS))
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(space::SM))
+                            .child(
+                                text("Drop folders to scan")
+                                    .text_size(px(text::BODY))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colors::TEXT),
+                            )
+                            .child(caption("Tip")),
+                    )
+                    .child(caption(
+                        "Drop folders from Explorer, browse, or type a path in the composer.",
+                    )),
+            )
+            .child(secondary_button(
+                "Browse for a folder",
+                actions::browse_folder,
+            )),
+    )
+}
+
+/// The scan composer: a big input over a control row, like the reference's
+/// prompt card. The + button adds the typed path, the pills pick the keeper
+/// default, the pill on the right sets the similarity floor, and the orange
+/// button starts the scan.
+fn composer() -> View {
     card()
-        .flex_1()
-        .min_w(px(220.0))
-        .gap(px(space::SM))
-        .p(px(space::MD))
+        .w_full()
+        .max_w(px(860.0))
+        .gap(px(space::MD))
+        .p(px(space::LG))
+        .child(
+            input()
+                .value(|| app().with(|s| s.folder_input.clone()))
+                .on_change(|value: &str| app().update(|s| s.folder_input = value.to_owned()))
+                .placeholder("Scan a folder")
+                .placeholder_color(|| color(colors::MUTED))
+                .caret_color(|| color(colors::ACCENT))
+                .selection_color(|| color(colors::ACCENT))
+                .w_full()
+                .h(px(space::XXL))
+                .px(px(space::SM))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT),
+        )
+        .child(divider())
         .child(
             view()
                 .flex_row()
                 .items_center()
-                .justify_between()
-                .child(chip(step, colors::ACCENT_WASH, colors::ACCENT))
-                .child(caption("Step")),
+                .gap(px(space::SM))
+                .w_full()
+                .child(icon_button(
+                    icons::PLUS,
+                    "Add folder",
+                    actions::add_from_input,
+                ))
+                .child(keep_modes())
+                .child(view().flex_1())
+                .child(media_status())
+                .child(sim_pill())
+                .child(primary_button(scan_label, actions::start_scan)),
         )
-        .child(
-            text(heading)
-                .text_size(px(text::BODY))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(colors::TEXT),
-        )
+}
+
+/// The similarity floor as a pill: click cycles 100 / 97 / 95 / 90 / 85.
+fn sim_pill() -> View {
+    pill(
+        icons::SLIDERS,
+        || {
+            let value = app()
+                .with(|s| s.min_sim_input.trim().parse::<f64>().ok())
+                .unwrap_or(97.0);
+            SharedString::from(format!("{}%", value as i64))
+        },
+        cycle_similarity,
+    )
+}
+
+fn cycle_similarity() {
+    let steps = [100.0, 97.0, 95.0, 90.0, 85.0];
+    let current = app()
+        .with_untracked(|s| s.min_sim_input.trim().parse::<f64>().ok())
+        .unwrap_or(97.0);
+    let next = match steps.iter().position(|step| (*step - current).abs() < 0.5) {
+        Some(index) => steps[(index + 1) % steps.len()],
+        None => 97.0,
+    };
+    let text = format!("{}", next as i64);
+    app().update(|s| s.min_sim_input = text.clone());
+    actions::apply_sim_input(&text);
+}
+
+/// The scan button's label, per scan type. Read inside the hero's dynamic
+/// region, so cycling the mode pill relabels it without a rebuild.
+fn scan_label() -> &'static str {
+    if crate::ui_helpers::find_mode(app().with(|s| s.find_index))
+        == crate::cli::FindMode::Duplicates
+    {
+        "Scan for duplicates"
+    } else {
+        "Run cleanup scan"
+    }
+}
+
+/// ffmpeg/ffprobe availability as one compact chip in the composer row:
+/// media comparison and metadata quietly depend on them.
+fn media_status() -> impl IntoElement {
+    dynamic(|| {
+        let (checked, ffmpeg, ffprobe) =
+            app().with(|s| (s.media_checked, s.ffmpeg_ok, s.ffprobe_ok));
+        if !checked {
+            return chip("Checking ffmpeg…", colors::INSET, colors::MUTED);
+        }
+        match (ffmpeg, ffprobe) {
+            (true, true) => chip("ffmpeg ready", colors::ACCENT_WASH_STRONG, colors::ACCENT),
+            (true, false) => chip("No ffprobe", colors::INSET, colors::MUTED),
+            (false, _) => chip("No ffmpeg", colors::INSET, colors::MUTED),
+        }
+    })
 }
 
 fn note_card(message: &'static str) -> View {

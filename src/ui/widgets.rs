@@ -19,23 +19,29 @@ pub(crate) fn motion(ms: f32) -> f32 {
     if reduce_motion() { 0.0 } else { ms }
 }
 
-/// A raised surface for panels, cards and dialogs.
+/// A card surface for panels, cards and dialogs.
 pub(crate) fn card() -> View {
     view()
         .flex_col()
-        .bg(colors::GLASS)
+        .bg(colors::CARD)
         .border_1()
         .border_color(colors::BORDER)
         .rounded(px(radius::CARD))
         .border_curve(BorderCurve::Continuous)
-        .shadow_sm()
-        .shadow_color(colors::SHADOW)
 }
 
 /// Page-level heading ("dedupe", "Settings").
 pub(crate) fn heading(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::HEADING))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(colors::TEXT)
+}
+
+/// Page title ("General", "Preferences"), one step above [`heading`].
+pub(crate) fn page_heading(label: impl IntoReactive<SharedString>) -> Text {
+    text(label)
+        .text_size(px(text::PAGE))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(colors::TEXT)
 }
@@ -78,8 +84,6 @@ pub(crate) fn primary_button(
             .py(px(space::SM))
             .bg(colors::ACCENT)
             .rounded_full()
-            .shadow_xs()
-            .shadow_color(colors::SHADOW)
             .transition_colors()
             .duration(motion(180.0))
             .ease_out()
@@ -113,7 +117,7 @@ pub(crate) fn secondary_button(
             .transition_colors()
             .duration(motion(180.0))
             .ease_out()
-            .hover(|s| s.bg(colors::ACCENT_WASH))
+            .hover(|s| s.bg(colors::ELEVATED))
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -186,8 +190,6 @@ pub(crate) fn danger_button(
             .py(px(space::SM))
             .bg(colors::DANGER)
             .rounded_full()
-            .shadow_xs()
-            .shadow_color(colors::SHADOW)
             .transition_colors()
             .duration(motion(180.0))
             .ease_out()
@@ -213,8 +215,8 @@ pub(crate) fn toggle_switch(
         .on_change(move |_: &bool| on_press())
         .accessibility_label(label)
         .track_style(|s| {
-            s.w(px(32.0))
-                .h(px(20.0))
+            s.w(px(40.0))
+                .h(px(22.0))
                 .flex_row()
                 .items_center()
                 .p(px(space::XXS))
@@ -231,13 +233,8 @@ pub(crate) fn toggle_switch(
                     colors::BORDER
                 })
         })
-        .thumb_style(|s| {
-            s.w(px(16.0))
-                .h(px(16.0))
-                .rounded_full()
-                .bg(colors::BACKGROUND)
-        })
-        .thumb_class("transition-transform checked:translate-x-3")
+        .thumb_style(|s| s.w(px(16.0)).h(px(16.0)).rounded_full().bg(colors::TEXT))
+        .thumb_class("transition-transform checked:translate-x-5")
 }
 
 /// A small rounded tag (KEEP, REF, DUP, a file extension…).
@@ -307,6 +304,7 @@ pub(crate) fn field(
 /// They are decorative. Every control that shows one owns the accessible name
 /// (and the tooltip), which is what the tests press by (`label:...`).
 pub(crate) mod icons {
+    pub(crate) const HOME: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 10.5 12 3l9 7.5\"/><path d=\"M5 9.5V21h14V9.5\"/></svg>";
     pub(crate) const GRID: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"3\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/></svg>";
     pub(crate) const LIST: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 6h13M8 12h13M8 18h13\"/><path d=\"M3.5 6h.01M3.5 12h.01M3.5 18h.01\" stroke-width=\"2.6\"/></svg>";
     pub(crate) const EXPAND: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 10 6-6 6 6\"/><path d=\"m6 14 6 6 6-6\"/></svg>";
@@ -322,9 +320,15 @@ pub(crate) mod icons {
     pub(crate) const FOLDER: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4l2 2.2h7.6A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z\"/></svg>";
     pub(crate) const FOLDER_MOVE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4l2 2.2h4\"/><path d=\"M3 17.5V7.5\"/><path d=\"M13 18h8\"/><path d=\"m18 15 3 3-3 3\"/><path d=\"M3 20h7\"/></svg>";
     pub(crate) const SLIDERS: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3\"/><path d=\"M14 2v4M8 10v4M16 18v4\"/></svg>";
-    pub(crate) const BACK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 12H4\"/><path d=\"m10 6-6 6 6 6\"/></svg>";
     pub(crate) const SUN: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8\"/></svg>";
     pub(crate) const MOON: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a6.8 6.8 0 0 0 11 11z\"/></svg>";
+    pub(crate) const SEARCH: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20.5 20.5-4.2-4.2\"/></svg>";
+    pub(crate) const TRASH: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 7h16\"/><path d=\"M9 7V5h6v2\"/><path d=\"m6 7 1 13h10l1-13\"/><path d=\"M10 11v6\"/><path d=\"M14 11v6\"/></svg>";
+    pub(crate) const LOCK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5\" y=\"11\" width=\"14\" height=\"9\" rx=\"2\"/><path d=\"M8 11V8a4 4 0 0 1 8 0v3\"/></svg>";
+    pub(crate) const CHEVRON_DOWN: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 9 6 6 6-6\"/></svg>";
+    pub(crate) const HELP: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M9.6 9.2a2.4 2.4 0 1 1 3.6 2.1c-.8.5-1.2.9-1.2 1.7\"/><path d=\"M12 16.5h.01\" stroke-width=\"2.6\"/></svg>";
+    pub(crate) const ARROW_UP_RIGHT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M7 17 17 7\"/><path d=\"M8 7h9v9\"/></svg>";
+    pub(crate) const MASCOT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"4.5\" y=\"7\" width=\"15\" height=\"12.5\" rx=\"4\"/><path d=\"M9 3.5h6\"/><path d=\"M12 3.5V7\"/><circle cx=\"9.4\" cy=\"12\" r=\"0.7\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"14.6\" cy=\"12\" r=\"0.7\" fill=\"currentColor\" stroke=\"none\"/><path d=\"M9.5 15.3c.8.8 1.6 1.2 2.5 1.2s1.7-.4 2.5-1.2\"/></svg>";
 }
 
 /// A tinted icon in the theme's own colours.
@@ -360,7 +364,7 @@ pub(crate) fn icon_button(
                 .transition_colors()
                 .duration(motion(180.0))
                 .ease_out()
-                .hover(|s| s.bg(colors::ACCENT_WASH))
+                .hover(|s| s.bg(colors::ELEVATED))
                 .child(icon(markup, 15.0, colors::TEXT)),
         )
         .tooltip(hint(label))
@@ -393,6 +397,19 @@ pub(crate) fn icon_ghost_button(
         .tooltip(hint(label))
 }
 
+/// Fill, border and content colours for a selected or idle option.
+///
+/// Every selectable control — settings chips, keep-mode chips, the layout
+/// toggle — shares this one decision, so "this one is chosen" reads the same
+/// everywhere and a theme change lands in one place.
+pub(crate) fn selection(active: bool) -> (AdaptiveColor, AdaptiveColor, AdaptiveColor) {
+    if active {
+        (colors::ACCENT, colors::ACCENT, colors::ON_ACCENT)
+    } else {
+        (colors::INSET, colors::BORDER, colors::MUTED)
+    }
+}
+
 /// An icon radio chip: the Grid/List switch and anything else that picks one
 /// of a small set of views.
 pub(crate) fn icon_chip(
@@ -401,6 +418,7 @@ pub(crate) fn icon_chip(
     active: bool,
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let (fill, border, content) = selection(active);
     radio()
         .checked(active)
         .on_change(move |_: &bool| on_press())
@@ -411,26 +429,10 @@ pub(crate) fn icon_chip(
         .w(px(30.0))
         .h(px(26.0))
         .rounded(px(radius::CONTROL))
-        .bg(if active {
-            colors::ACCENT_WASH_STRONG
-        } else {
-            colors::INSET
-        })
+        .bg(fill)
         .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
-        .child(icon(
-            markup,
-            14.0,
-            if active {
-                colors::ACCENT
-            } else {
-                colors::MUTED
-            },
-        ))
+        .border_color(border)
+        .child(icon(markup, 14.0, content))
 }
 
 /// An info bubble for `.tooltip(..)`: dark in light theme, light in dark
@@ -447,4 +449,48 @@ pub(crate) fn hint(label: impl IntoReactive<SharedString>) -> impl IntoTooltip {
                 .text_size(px(text::CAPTION))
                 .text_color(colors::BACKGROUND),
         )
+}
+
+/// A dropdown-style pill: icon, label and a chevron, as one button. Used for
+/// the hero option row and the composer's inline pickers.
+pub(crate) fn pill(
+    markup: &'static str,
+    label: impl IntoReactive<SharedString>,
+    on_press: impl Fn() + 'static,
+) -> View {
+    view().flex_col().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .gap(px(space::XS))
+            .px(px(space::MD))
+            .py(px(space::XS))
+            .bg(colors::INSET)
+            .border_1()
+            .border_color(colors::BORDER)
+            .rounded(px(radius::CONTROL))
+            .transition_colors()
+            .duration(motion(180.0))
+            .ease_out()
+            .hover(|s| s.bg(colors::ELEVATED))
+            .child(icon(markup, 14.0, colors::MUTED))
+            .child(
+                text(label)
+                    .text_size(px(text::CAPTION))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::TEXT),
+            )
+            .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED)),
+    )
+}
+
+/// A muted question mark with the row's explanation in its tooltip: the
+/// settings rows keep the reference's clean single line, and the copy moves
+/// into the hover.
+pub(crate) fn help_dot(tip: impl IntoReactive<SharedString>) -> impl IntoElement {
+    view()
+        .flex_shrink_0()
+        .child(icon(icons::HELP, 14.0, colors::MUTED))
+        .tooltip(hint(tip))
 }

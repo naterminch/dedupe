@@ -4,10 +4,12 @@
 //! drives the same [`crate::pipeline::run_scan`] as the CLI, so results are
 //! identical; only the presentation differs.
 //!
-//! Layout: a side nav (folders + per-run scope + Scan), a main results
-//! pane with one collapsible section per duplicate group, a Settings page
-//! for global defaults (matching + system), and a status bar. Pure helpers
-//! live in `crate::ui_helpers`; every state transition lives in `actions`.
+//! Layout: an icon rail (workspace + settings), a sidebar with the wordmark,
+//! quick actions and the folder list, and a main pane that opens on a centered
+//! hero (mascot, option pills, scan composer) before a run and then shows one
+//! collapsible card per duplicate group, plus a Settings page for global
+//! defaults and a status bar. Pure helpers live in `crate::ui_helpers`; every
+//! state transition lives in `actions`.
 //!
 //! Native-feel boundaries (do not reimplement inside the view layer):
 //! folder picking and report saving go through native `rfd` dialogs off the

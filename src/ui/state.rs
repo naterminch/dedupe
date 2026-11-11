@@ -73,6 +73,7 @@ pub(crate) struct AppState {
     pub(crate) view: AppView,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) folder_input: String,
+    pub(crate) folder_filter: Option<String>,
     pub(crate) folders: Vec<FolderEntry>,
     pub(crate) types_input: String,
     pub(crate) min_size_input: String,
@@ -190,6 +191,7 @@ impl Default for AppState {
             view: AppView::Main,
             settings_tab: SettingsTab::General,
             folder_input: String::new(),
+            folder_filter: None,
             folders: Vec::new(),
             types_input: String::new(),
             min_size_input: NO_LIMIT_LABEL.to_string(),
@@ -283,41 +285,50 @@ impl AppState {
             },
             ..Self::default()
         };
-        state.types_input = saved.types.clone();
+        state.apply_prefs(saved);
+        state
+    }
+
+    /// Copy the persisted preferences onto this state.
+    ///
+    /// Only settings are touched: the live folder list, results, selection,
+    /// scan progress and status are session data, so the Settings page can
+    /// reset preferences in place without discarding what is on screen.
+    pub(crate) fn apply_prefs(&mut self, saved: &GuiPrefs) {
+        self.types_input = saved.types.clone();
         // Legacy prefs stored a blank box for "no limit"; display the
         // explicit `unlimited` label instead so the box never looks broken.
-        state.min_size_input = if saved.min_size.trim().is_empty() {
+        self.min_size_input = if saved.min_size.trim().is_empty() {
             NO_LIMIT_LABEL.to_string()
         } else {
             saved.min_size.clone()
         };
-        state.max_size_input = if saved.max_size.trim().is_empty() {
+        self.max_size_input = if saved.max_size.trim().is_empty() {
             NO_LIMIT_LABEL.to_string()
         } else {
             saved.max_size.clone()
         };
-        state.max_depth_input = saved.max_depth.clone();
-        state.exclude_dir_input = saved.exclude_dir.clone();
-        state.exclude_path_input = saved.exclude_path.clone();
-        state.similarity_input = saved.similarity.clone();
-        state.partial_similarity_input = saved.partial_similarity.clone();
-        state.fuzzy_threshold_input = saved.fuzzy_threshold.clone();
-        state.top_input = saved.top.clone();
-        state.ignore_input = saved.ignore.clone();
-        state.jobs_input = saved.jobs.clone();
-        state.hash_index = Some(saved.hash_index.min(2));
-        state.keep_index = Some(saved.keep_index.min(4));
-        state.find_index = Some(saved.find_index.min(10));
-        state.match_index = Some(saved.match_index.min(3));
-        state.image_hash_index = Some(saved.image_hash_index.min(4));
-        state.partial_clips = saved.partial_clips;
-        state.music_by_content = saved.music_by_content;
-        state.exact = saved.exact;
-        state.no_cache = saved.no_cache;
-        state.trash = saved.trash;
-        state.sort_biggest = saved.sort_biggest;
-        state.remember_folders = saved.remember_folders;
-        state
+        self.max_depth_input = saved.max_depth.clone();
+        self.exclude_dir_input = saved.exclude_dir.clone();
+        self.exclude_path_input = saved.exclude_path.clone();
+        self.similarity_input = saved.similarity.clone();
+        self.partial_similarity_input = saved.partial_similarity.clone();
+        self.fuzzy_threshold_input = saved.fuzzy_threshold.clone();
+        self.top_input = saved.top.clone();
+        self.ignore_input = saved.ignore.clone();
+        self.jobs_input = saved.jobs.clone();
+        self.hash_index = Some(saved.hash_index.min(2));
+        self.keep_index = Some(saved.keep_index.min(4));
+        self.find_index = Some(saved.find_index.min(10));
+        self.match_index = Some(saved.match_index.min(3));
+        self.image_hash_index = Some(saved.image_hash_index.min(4));
+        self.partial_clips = saved.partial_clips;
+        self.music_by_content = saved.music_by_content;
+        self.exact = saved.exact;
+        self.no_cache = saved.no_cache;
+        self.trash = saved.trash;
+        self.sort_biggest = saved.sort_biggest;
+        self.remember_folders = saved.remember_folders;
     }
 }
 
