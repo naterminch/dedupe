@@ -20,7 +20,7 @@ use crate::ui::state::{Layout, app};
 use crate::ui::widgets::{
     caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
     icon_button, icon_chip, icon_ghost_button, icons, motion, pill, primary_button,
-    secondary_button,
+    secondary_button, selection,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -329,6 +329,7 @@ fn keep_modes() -> View {
 }
 
 fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElement {
+    let (fill, border, content) = selection(active);
     radio()
         .checked(active)
         .on_change(move |_: &bool| actions::apply_keep_mode(index))
@@ -336,17 +337,9 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded_full()
-        .bg(if active {
-            colors::ACCENT
-        } else {
-            colors::INSET
-        })
+        .bg(fill)
         .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
+        .border_color(border)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -355,11 +348,7 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
                 } else {
                     FontWeight::MEDIUM
                 })
-                .text_color(if active {
-                    colors::ON_ACCENT
-                } else {
-                    colors::MUTED
-                }),
+                .text_color(content),
         )
 }
 

@@ -397,6 +397,19 @@ pub(crate) fn icon_ghost_button(
         .tooltip(hint(label))
 }
 
+/// Fill, border and content colours for a selected or idle option.
+///
+/// Every selectable control — settings chips, keep-mode chips, the layout
+/// toggle — shares this one decision, so "this one is chosen" reads the same
+/// everywhere and a theme change lands in one place.
+pub(crate) fn selection(active: bool) -> (AdaptiveColor, AdaptiveColor, AdaptiveColor) {
+    if active {
+        (colors::ACCENT, colors::ACCENT, colors::ON_ACCENT)
+    } else {
+        (colors::INSET, colors::BORDER, colors::MUTED)
+    }
+}
+
 /// An icon radio chip: the Grid/List switch and anything else that picks one
 /// of a small set of views.
 pub(crate) fn icon_chip(
@@ -405,6 +418,7 @@ pub(crate) fn icon_chip(
     active: bool,
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let (fill, border, content) = selection(active);
     radio()
         .checked(active)
         .on_change(move |_: &bool| on_press())
@@ -415,26 +429,10 @@ pub(crate) fn icon_chip(
         .w(px(30.0))
         .h(px(26.0))
         .rounded(px(radius::CONTROL))
-        .bg(if active {
-            colors::ACCENT
-        } else {
-            colors::INSET
-        })
+        .bg(fill)
         .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
-        .child(icon(
-            markup,
-            14.0,
-            if active {
-                colors::ON_ACCENT
-            } else {
-                colors::MUTED
-            },
-        ))
+        .border_color(border)
+        .child(icon(markup, 14.0, content))
 }
 
 /// An info bubble for `.tooltip(..)`: dark in light theme, light in dark

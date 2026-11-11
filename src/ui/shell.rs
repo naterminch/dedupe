@@ -111,7 +111,7 @@ fn quick_actions() -> impl IntoElement {
             icons::FOLDER,
             "Browse for a folder",
             None,
-            true,
+            RowState::Ready,
             actions::browse_folder,
         ))
         // A run is a single background job: starting a second one while the
@@ -123,7 +123,11 @@ fn quick_actions() -> impl IntoElement {
                 icons::PLAY,
                 "Scan now",
                 None,
-                !scanning,
+                if scanning {
+                    RowState::Disabled
+                } else {
+                    RowState::Ready
+                },
                 actions::start_scan,
             )
         })))
@@ -141,7 +145,7 @@ fn quick_actions() -> impl IntoElement {
                     },
                     if trash { colors::ACCENT } else { colors::MUTED },
                 ))),
-                true,
+                RowState::Ready,
                 toggle_trash,
             )
         })))
@@ -152,16 +156,31 @@ fn toggle_trash() {
     actions::save_prefs();
 }
 
+/// Whether a sidebar row can be pressed right now.
+///
+/// Two variants instead of a bare `bool`: `RowState::Disabled` names the state
+/// the argument means, so `side_row(..)` call sites stay readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    Ready,
+    Disabled,
+}
+
+/// One quiet sidebar action: icon, label and an optional trailing badge.
+///
+/// A [`RowState::Disabled`] row is dimmed, loses its hover and refuses
+/// presses; its accessible name stays either way.
 fn side_row(
     markup: &'static str,
     label: &'static str,
     trailing: Option<View>,
-    enabled: bool,
+    state: RowState,
     on_press: impl Fn() + 'static,
 ) -> View {
+    let ready = state == RowState::Ready;
     let mut row = button()
         .on_press(on_press)
-        .disabled(!enabled)
+        .disabled(!ready)
         .accessibility_label(label)
         .flex_row()
         .items_center()
@@ -170,11 +189,11 @@ fn side_row(
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
-        .opacity(if enabled { 1.0 } else { 0.45 })
+        .opacity(if ready { 1.0 } else { 0.45 })
         .transition_colors()
         .duration(motion(150.0))
         .ease_out()
-        .hover(move |s| if enabled { s.bg(colors::PANE) } else { s })
+        .hover(move |s| if ready { s.bg(colors::PANE) } else { s })
         .child(icon(markup, 16.0, colors::MUTED))
         .child(
             text(label)

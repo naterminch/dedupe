@@ -133,10 +133,9 @@ fn adding_a_folder_updates_the_sidebar() {
     app.wait_for("label:Remove folder").expect("row controls");
 }
 
-/// Reset puts every persisted setting back to its shipped default and leaves
-/// the live session — here the folder list — untouched.
+/// Reset puts every persisted setting back to its shipped default.
 #[test]
-fn resetting_settings_restores_the_defaults_and_keeps_the_session() {
+fn resetting_settings_restores_the_defaults() {
     let mut s = AppState {
         types_input: "png".to_string(),
         min_size_input: "10MB".to_string(),
@@ -152,10 +151,6 @@ fn resetting_settings_restores_the_defaults_and_keeps_the_session() {
         keep_index: Some(3),
         partial_clips: true,
         music_by_content: true,
-        folders: vec![FolderEntry {
-            path: r"C:\media".to_string(),
-            reference: true,
-        }],
         ..AppState::default()
     };
     s.apply_prefs(&crate::prefs::GuiPrefs::default());
@@ -173,7 +168,20 @@ fn resetting_settings_restores_the_defaults_and_keeps_the_session() {
     assert!(!s.partial_clips);
     assert!(!s.music_by_content);
     assert!(!s.sort_biggest);
-    assert_eq!(s.folders.len(), 1, "the live folder list survives a reset");
+}
+
+/// A settings reset is not a session reset: the live folder list survives.
+#[test]
+fn resetting_settings_keeps_the_live_folder_list() {
+    let mut s = AppState {
+        folders: vec![FolderEntry {
+            path: r"C:\media".to_string(),
+            reference: true,
+        }],
+        ..AppState::default()
+    };
+    s.apply_prefs(&crate::prefs::GuiPrefs::default());
+    assert_eq!(s.folders.len(), 1);
     assert!(s.folders[0].reference);
 }
 

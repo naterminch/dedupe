@@ -14,7 +14,7 @@ use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
     caption, card, divider, heading, help_dot, page_heading, panel_title, secondary_button,
-    toggle_switch,
+    selection, toggle_switch,
 };
 use crate::ui_helpers::{find_mode_caption, hash_caption};
 use crate::util;
@@ -175,6 +175,7 @@ fn choice_chip(
     active: bool,
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
+    let (fill, border, content) = selection(active);
     radio()
         .checked(active)
         .on_change(move |_: &bool| on_press())
@@ -182,17 +183,9 @@ fn choice_chip(
         .px(px(space::SM))
         .py(px(space::XS))
         .rounded(px(radius::CONTROL))
-        .bg(if active {
-            colors::ACCENT
-        } else {
-            colors::INSET
-        })
+        .bg(fill)
         .border_1()
-        .border_color(if active {
-            colors::ACCENT
-        } else {
-            colors::BORDER
-        })
+        .border_color(border)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -201,11 +194,7 @@ fn choice_chip(
                 } else {
                     FontWeight::MEDIUM
                 })
-                .text_color(if active {
-                    colors::ON_ACCENT
-                } else {
-                    colors::MUTED
-                }),
+                .text_color(content),
         )
 }
 
