@@ -1697,6 +1697,10 @@ fn member_actions(
                 })
                 .indicator(
                     text(if active { "✓" } else { "" })
+                        // Below the caption step on purpose: the glyph sits in
+                        // a 12pt box, so the token size would overflow the
+                        // control it marks. It still scales with the user's
+                        // text size, like every other string here.
                         .text_size(px(9.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(colors::ON_ACCENT),
