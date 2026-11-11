@@ -100,7 +100,7 @@ fn header() -> impl IntoElement {
                     if app().with(|s| s.view) == AppView::Settings {
                         icon_button(icons::BACK, "Back to results", actions::leave_settings)
                     } else {
-                        icon_button(icons::GEAR, "Settings", actions::open_settings)
+                        icon_button(icons::SLIDERS, "Settings", actions::open_settings)
                     }
                 })),
         )
