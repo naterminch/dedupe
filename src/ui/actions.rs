@@ -799,13 +799,17 @@ impl Drop for PosterSlot {
 /// Waiting is a task, not a thread: the queue costs nothing while it waits
 /// and never holds up the UI thread.
 async fn poster_slot() -> PosterSlot {
+    use std::sync::atomic::Ordering;
     loop {
-        let free = POSTERS_RUNNING.fetch_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |running| (running < POSTER_EXTRACTIONS).then_some(running + 1),
-        );
-        if free.is_ok() {
+        // A compare-exchange loop rather than `fetch_update`: that method is
+        // deprecated in current stable (it became `try_update`), and a plain
+        // compare-exchange compiles unchanged on every toolchain.
+        let running = POSTERS_RUNNING.load(Ordering::SeqCst);
+        if running < POSTER_EXTRACTIONS
+            && POSTERS_RUNNING
+                .compare_exchange_weak(running, running + 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        {
             return PosterSlot;
         }
         timer(Duration::from_millis(50)).await;
