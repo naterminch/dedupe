@@ -4,8 +4,8 @@
 //! so panes compose widgets instead of repeating colours, radii and paddings.
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
-use nsh_base::{button, switch, toggle, tooltip};
-use nsh_core::element::{BorderCurve, ImageSrc, input, svg};
+use nsh_base::{ButtonElement, button, switch, toggle, tooltip};
+use nsh_core::element::{BorderCurve, ImageSrc, StyleRefinement, input, svg};
 use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, radius, space, text};
@@ -15,8 +15,34 @@ use crate::ui::palette::{colors, radius, space, text};
 /// The platform's reduce-motion preference collapses it to zero: the same end
 /// state arrives, without the animation. Reads the environment reactively, so
 /// turning the setting off is picked up on the next frame.
-pub(crate) fn motion(ms: f32) -> f32 {
-    if reduce_motion() { 0.0 } else { ms }
+pub(crate) fn motion(ms: f32) -> impl Fn() -> f32 + Copy + 'static {
+    move || if reduce_motion() { 0.0 } else { ms }
+}
+
+/// The keyboard's focus ring, shared by every control.
+///
+/// `focus_visible` draws it only when the keyboard moved the focus, never
+/// after a click or a tap, so pointer users keep the quiet look while the
+/// keyboard always shows where it is.
+pub(crate) fn focus_ring(s: StyleRefinement) -> StyleRefinement {
+    s.outline(px(2.0)).outline_color(colors::ACCENT)
+}
+
+/// The states every control needs: a press that reads as pressed, the
+/// keyboard's ring, and a disabled look for controls that can be blocked.
+///
+/// `nsh_base` draws none of these by itself, so a button without them looks
+/// inert on press and hides the keyboard's focus entirely.
+trait ControlStates: Sized {
+    fn control_states(self) -> Self;
+}
+
+impl ControlStates for ButtonElement {
+    fn control_states(self) -> Self {
+        self.active(|s| s.opacity(0.9))
+            .focus_visible(focus_ring)
+            .disabled_style(|s| s.opacity(0.45))
+    }
 }
 
 /// A card surface for panels, cards and dialogs.
@@ -88,6 +114,7 @@ pub(crate) fn primary_button(
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.opacity(0.92))
+            .control_states()
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -118,6 +145,7 @@ pub(crate) fn secondary_button(
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::ELEVATED))
+            .control_states()
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -145,6 +173,7 @@ pub(crate) fn ghost_button(
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::ACCENT_WASH))
+            .control_states()
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -194,6 +223,7 @@ pub(crate) fn danger_button(
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.opacity(0.92))
+            .control_states()
             .child(
                 text(label)
                     .text_size(px(text::BODY))
@@ -365,6 +395,8 @@ pub(crate) fn icon_button(
                 .duration(motion(180.0))
                 .ease_out()
                 .hover(|s| s.bg(colors::ELEVATED))
+                .control_states()
+                .hit_slop(EdgeInsets::all(px(4.0)))
                 .child(icon(markup, 15.0, colors::TEXT)),
         )
         .tooltip(hint(label))
@@ -392,6 +424,8 @@ pub(crate) fn icon_ghost_button(
                 .duration(motion(180.0))
                 .ease_out()
                 .hover(|s| s.bg(colors::ACCENT_WASH))
+                .control_states()
+                .hit_slop(EdgeInsets::all(px(4.0)))
                 .child(icon(markup, 15.0, colors::ACCENT)),
         )
         .tooltip(hint(label))
@@ -437,6 +471,9 @@ pub(crate) fn icon_chip(
         .bg(fill)
         .border_1()
         .border_color(border)
+        .active(|s| s.opacity(0.9))
+        .focus_visible(focus_ring)
+        .disabled_style(|s| s.opacity(0.45))
         .child(icon(markup, 14.0, content))
 }
 

@@ -12,7 +12,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, divider, field, heading, hint, icon, icon_ghost_button, icons, motion,
+    caption, card, chip, divider, field, focus_ring, heading, hint, icon, icon_ghost_button, icons,
+    motion,
 };
 use crate::ui_helpers::fit_text;
 
@@ -200,6 +201,8 @@ fn side_row(
         .duration(motion(150.0))
         .ease_out()
         .hover(move |s| if ready { s.bg(colors::PANE) } else { s })
+        .active(|s| s.bg(colors::ELEVATED))
+        .focus_visible(focus_ring)
         .child(icon(markup, 16.0, colors::MUTED))
         .child(
             text(label)
@@ -348,6 +351,9 @@ fn row_ghost(
                 .duration(motion(150.0))
                 .ease_out()
                 .hover(|s| s.bg(colors::ELEVATED))
+                .active(|s| s.opacity(0.9))
+                .focus_visible(focus_ring)
+                .hit_slop(EdgeInsets::all(px(4.0)))
                 .child(icon(markup, 14.0, tint)),
         )
         .tooltip(hint(label))
@@ -400,6 +406,9 @@ fn tip_card() -> impl IntoElement {
                                     .duration(motion(150.0))
                                     .ease_out()
                                     .hover(|s| s.bg(colors::ELEVATED))
+                                    .active(|s| s.opacity(0.9))
+                                    .focus_visible(focus_ring)
+                                    .hit_slop(EdgeInsets::all(px(4.0)))
                                     .child(icon(icons::ARROW_UP_RIGHT, 13.0, colors::TEXT)),
                             )
                             .tooltip(hint("Open settings")),

@@ -11,7 +11,7 @@ use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app, scan_status};
-use crate::ui::widgets::{caption, icon, icon_ghost_button, icons, motion};
+use crate::ui::widgets::{caption, focus_ring, icon, icon_ghost_button, icons, motion};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
@@ -138,6 +138,10 @@ fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: 
             .duration(motion(180.0))
             .ease_out()
             .hover(|s| s.bg(colors::PANE))
+            .active(|s| s.bg(colors::ELEVATED))
+            .focus_visible(focus_ring)
+            .disabled_style(|s| s.opacity(0.45))
+            .hit_slop(EdgeInsets::all(px(4.0)))
             .child(icon(
                 markup,
                 20.0,
