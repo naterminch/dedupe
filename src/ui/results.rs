@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nsh_base::{checkbox, collapsible, number_input, progress, radio, radio_group, toggle};
+use nsh_base::{checkbox, collapsible, dialog, number_input, progress, radio, radio_group, toggle};
 use nsh_core::AccessibilityState;
 use nsh_core::element::{BorderCurve, input, video};
 use nsh_core::prelude::*;
@@ -549,27 +549,33 @@ pub(crate) fn delete_confirm() -> View {
                     danger_button(format!("Delete {count}"), actions::confirm_delete)
                 })),
         );
-    // Two layers, as a sheet is built: the scrim takes the presses that miss
-    // the panel and Escape, the panel is transparent to them (box-none) so
-    // only its card is hit.
-    view()
-        .child(
-            overlay()
-                .inset_0()
-                .bg(colors::SCRIM)
-                .on_press(actions::cancel_delete)
-                .on_cancel(actions::cancel_delete),
-        )
-        .child(
-            overlay()
-                .inset_0()
-                .pointer_events(PointerEvents::BoxNone)
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .p(px(space::XL))
-                .child(panel),
-        )
+    // nsh's dialog owns the modal layer: the focus moves into it, Escape and
+    // the back button arrive as `on_cancel`, and screen readers hear an alert
+    // dialog named by its title. The look is the app's: a scrim below the
+    // panel that takes the presses which miss it, and a transparent
+    // centering layer (box-none) so only the card is hit.
+    view().child(
+        dialog()
+            .role(AccessibilityRole::AlertDialog)
+            .label(format!("Delete {count} file(s)?"))
+            .on_cancel(actions::cancel_delete)
+            .child(
+                overlay()
+                    .inset_0()
+                    .bg(colors::SCRIM)
+                    .on_press(actions::cancel_delete),
+            )
+            .child(
+                overlay()
+                    .inset_0()
+                    .pointer_events(PointerEvents::BoxNone)
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .p(px(space::XL))
+                    .child(panel),
+            ),
+    )
 }
 
 fn consolidate_button() -> View {
