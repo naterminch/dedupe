@@ -6,7 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nsh_base::{checkbox, collapsible, dialog, number_input, progress, radio, radio_group, toggle};
+use nsh_base::{
+    SelectItem, checkbox, collapsible, dialog, number_input, progress, radio, radio_group, select,
+    toggle,
+};
 use nsh_core::AccessibilityState;
 use nsh_core::element::{BorderCurve, input, video};
 use nsh_core::prelude::*;
@@ -715,8 +718,10 @@ fn hero() -> View {
         .child(composer())
 }
 
-/// The three dropdown pills under the question: where to scan, what to look
-/// for, and where deletes land. Each one carries a live action.
+/// The two dropdowns under the question: what to look for, and where
+/// deletes land. One choice each: a press opens nsh's Select list with the
+/// chosen item ticked, and the keys drive it like a native select. Where to
+/// scan lives in the sidebar and the composer, so it is not repeated here.
 fn pill_row() -> View {
     view()
         .flex_row()
@@ -724,53 +729,99 @@ fn pill_row() -> View {
         .items_center()
         .justify_center()
         .gap(px(space::SM))
-        .child(pill(
-            icons::FOLDER,
-            folder_pill_label,
-            actions::browse_folder,
-        ))
-        .child(pill(icons::SEARCH, mode_pill_label, cycle_find_mode))
-        .child(view().child(dynamic(|| {
-            let trash = app().with(|s| s.trash);
-            pill(
-                icons::TRASH,
-                if trash { "To trash" } else { "Permanently" },
-                toggle_trash,
-            )
-        })))
+        .child(find_select())
+        .child(trash_select())
 }
 
-fn folder_pill_label() -> SharedString {
-    app().with(|s| match s.folders.len() {
-        0 => SharedString::from("Add a folder"),
-        1 => SharedString::from(short_name(&s.folders[0].path)),
-        n => SharedString::from(format!("{n} folders")),
-    })
+/// What the next scan looks for, as one choice out of the scan modes.
+fn find_select() -> impl IntoElement {
+    let items: Vec<SelectItem> = crate::ui::settings::FIND_LABELS
+        .iter()
+        .map(|label| SelectItem::new(*label, *label))
+        .collect();
+    select()
+        .items(items)
+        .value(|| Some(find_label()))
+        .accessibility_label("What to find")
+        .item_class("px-3 py-1.5")
+        .on_change(|picked: &Option<SharedString>| {
+            let Some(picked) = picked.as_deref() else {
+                return;
+            };
+            if let Some(index) = crate::ui::settings::FIND_LABELS
+                .iter()
+                .position(|label| *label == picked)
+            {
+                app().update(|s| s.find_index = Some(index));
+                actions::save_prefs();
+            }
+        })
+        .trigger(dropdown_trigger(icons::SEARCH, find_label))
 }
 
-fn short_name(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string())
+/// Where a delete puts the files, as one choice of two.
+fn trash_select() -> impl IntoElement {
+    select()
+        .items(vec![
+            SelectItem::new("trash", "Move to trash"),
+            SelectItem::new("delete", "Delete permanently"),
+        ])
+        .value(|| {
+            Some(SharedString::from(if app().with(|s| s.trash) {
+                "trash"
+            } else {
+                "delete"
+            }))
+        })
+        .accessibility_label("Where deleted files go")
+        .item_class("px-3 py-1.5")
+        .on_change(|picked: &Option<SharedString>| {
+            app().update(|s| s.trash = matches!(picked.as_deref(), Some("trash")));
+            actions::save_prefs();
+        })
+        .trigger(dropdown_trigger(icons::TRASH, || {
+            SharedString::from(trash_label(app().with(|s| s.trash)))
+        }))
 }
 
-fn mode_pill_label() -> SharedString {
+fn find_label() -> SharedString {
     let index = app().with(|s| s.find_index.unwrap_or(0));
     SharedString::from(crate::ui::settings::FIND_LABELS[index.min(10)])
 }
 
-fn cycle_find_mode() {
-    app().update(|s| {
-        let index = s.find_index.unwrap_or(0);
-        s.find_index = Some((index + 1) % crate::ui::settings::FIND_LABELS.len());
-    });
-    actions::save_prefs();
+fn trash_label(trash: bool) -> &'static str {
+    if trash {
+        "Move to trash"
+    } else {
+        "Delete permanently"
+    }
 }
 
-fn toggle_trash() {
-    app().update(|s| s.trash = !s.trash);
-    actions::save_prefs();
+/// The trigger a Select opens from: the pill's look (icon, current choice, a
+/// chevron) as the combobox that takes the press.
+fn dropdown_trigger(markup: &'static str, label: impl Fn() -> SharedString + 'static) -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(space::XS))
+        .px(px(space::MD))
+        .py(px(space::XS))
+        .bg(colors::INSET)
+        .border_1()
+        .border_color(colors::BORDER)
+        .rounded(px(radius::CONTROL))
+        .transition_colors()
+        .duration(motion(180.0))
+        .ease_out()
+        .hover(|s| s.bg(colors::ELEVATED))
+        .child(icon(markup, 14.0, colors::MUTED))
+        .child(
+            text(label)
+                .text_size(px(text::CAPTION))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(colors::TEXT),
+        )
+        .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED))
 }
 
 /// The ad-banner slot: what the app wants from you next, with the orange

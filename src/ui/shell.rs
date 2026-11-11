@@ -114,21 +114,19 @@ fn quick_actions() -> impl IntoElement {
             RowState::Ready,
             actions::browse_folder,
         ))
-        // A run is a single background job: starting a second one while the
-        // first is in flight would only be thrown away, so the row goes
-        // quiet until this scan finishes (or is stopped).
+        // Clearing the list only means something while it has folders.
         .child(view().child(dynamic(|| {
-            let scanning = app().with(|s| s.scanning);
+            let any = !app().with(|s| s.folders.is_empty());
             side_row(
-                icons::PLAY,
-                "Scan now",
+                icons::CLEAR,
+                "Remove all folders",
                 None,
-                if scanning {
-                    RowState::Disabled
-                } else {
+                if any {
                     RowState::Ready
+                } else {
+                    RowState::Disabled
                 },
-                actions::start_scan,
+                actions::remove_all_folders,
             )
         })))
         .child(view().child(dynamic(|| {

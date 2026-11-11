@@ -192,6 +192,16 @@ pub(crate) fn remove_folder_path(path: &str) {
     }
 }
 
+/// Empty the folder list in one go: after a batch of added or dropped
+/// folders, starting over should not mean removing them one by one.
+pub(crate) fn remove_all_folders() {
+    app().update(|s| {
+        s.folders.clear();
+        s.folder_filter = None;
+    });
+    save_prefs();
+}
+
 pub(crate) fn toggle_reference_path(path: &str) {
     if let Some(index) = folder_index(path) {
         toggle_reference(index);
