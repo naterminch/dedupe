@@ -4,7 +4,7 @@
 //! so panes compose widgets instead of repeating colours, radii and paddings.
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
-use nsh_base::{button, radio, switch, tooltip};
+use nsh_base::{button, switch, toggle, tooltip};
 use nsh_core::element::{BorderCurve, ImageSrc, input, svg};
 use nsh_core::prelude::*;
 
@@ -410,8 +410,9 @@ pub(crate) fn selection(active: bool) -> (AdaptiveColor, AdaptiveColor, Adaptive
     }
 }
 
-/// An icon radio chip: the Grid/List switch and anything else that picks one
-/// of a small set of views.
+/// An icon toggle: the Grid/List switcher and anything else that picks one
+/// of a small set of views. `on_press` runs on the press that takes it, not
+/// on one that would release it.
 pub(crate) fn icon_chip(
     markup: &'static str,
     label: &'static str,
@@ -419,9 +420,13 @@ pub(crate) fn icon_chip(
     on_press: impl Fn() + 'static,
 ) -> impl IntoElement {
     let (fill, border, content) = selection(active);
-    radio()
-        .checked(active)
-        .on_change(move |_: &bool| on_press())
+    toggle()
+        .pressed(active)
+        .on_change(move |next: &bool| {
+            if *next {
+                on_press();
+            }
+        })
         .accessibility_label(label)
         .flex_row()
         .items_center()
@@ -449,40 +454,6 @@ pub(crate) fn hint(label: impl IntoReactive<SharedString>) -> impl IntoTooltip {
                 .text_size(px(text::CAPTION))
                 .text_color(colors::BACKGROUND),
         )
-}
-
-/// A dropdown-style pill: icon, label and a chevron, as one button. Used for
-/// the hero option row and the composer's inline pickers.
-pub(crate) fn pill(
-    markup: &'static str,
-    label: impl IntoReactive<SharedString>,
-    on_press: impl Fn() + 'static,
-) -> View {
-    view().flex_col().child(
-        button()
-            .on_press(on_press)
-            .flex_row()
-            .items_center()
-            .gap(px(space::XS))
-            .px(px(space::MD))
-            .py(px(space::XS))
-            .bg(colors::INSET)
-            .border_1()
-            .border_color(colors::BORDER)
-            .rounded(px(radius::CONTROL))
-            .transition_colors()
-            .duration(motion(180.0))
-            .ease_out()
-            .hover(|s| s.bg(colors::ELEVATED))
-            .child(icon(markup, 14.0, colors::MUTED))
-            .child(
-                text(label)
-                    .text_size(px(text::CAPTION))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors::TEXT),
-            )
-            .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED)),
-    )
 }
 
 /// A muted question mark with the row's explanation in its tooltip: the

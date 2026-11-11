@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use nsh_base::{
-    SelectItem, checkbox, collapsible, dialog, number_input, progress, radio, radio_group, select,
-    toggle,
+    SelectItem, checkbox, collapsible, dialog, number_input, progress, select, toggle,
+    toggle_group, toolbar, toolbar_group, toolbar_separator,
 };
 use nsh_core::AccessibilityState;
 use nsh_core::element::{BorderCurve, input, video};
@@ -22,8 +22,8 @@ use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app};
 use crate::ui::widgets::{
     caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
-    icon_button, icon_chip, icon_ghost_button, icons, motion, pill, primary_button,
-    secondary_button, selection,
+    icon_button, icon_chip, icon_ghost_button, icons, motion, primary_button, secondary_button,
+    selection,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -261,23 +261,57 @@ fn selection_row() -> View {
         )
 }
 
-fn action_row() -> View {
-    view()
+/// The action bar: nsh's toolbar gives the controls one roving keyboard stop
+/// and a toolbar's semantics, its groups mark which decisions belong
+/// together, and the separators split the groups.
+fn action_row() -> impl IntoElement {
+    toolbar()
+        .accessibility_label("Results actions")
         .flex_row()
         .flex_wrap()
         .items_center()
         .gap(px(8.0))
-        .child(sim_filter())
-        .child(keep_modes())
-        .child(sort_toggle())
-        .child(layout_toggle())
-        .child(delete_bar())
-        .child(consolidate_button())
-        .child(icon_ghost_button(
-            icons::EXPORT,
-            "Export JSON report",
-            actions::save_report,
-        ))
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(sim_filter())
+                .child(keep_modes()),
+        )
+        .child(
+            toolbar_separator()
+                .h(px(20.0))
+                .w(px(1.0))
+                .bg(colors::BORDER),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(sort_toggle())
+                .child(layout_toggle()),
+        )
+        .child(
+            toolbar_separator()
+                .h(px(20.0))
+                .w(px(1.0))
+                .bg(colors::BORDER),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(delete_bar())
+                .child(consolidate_button())
+                .child(icon_ghost_button(
+                    icons::EXPORT,
+                    "Export JSON report",
+                    actions::save_report,
+                )),
+        )
 }
 
 fn sim_filter() -> impl IntoElement {
@@ -320,6 +354,8 @@ fn sim_filter() -> impl IntoElement {
         }))
 }
 
+/// One keeper rule at a time: nsh's toggle group is the view switcher here
+/// (a press releases the others and takes the new rule).
 fn keep_modes() -> View {
     view().child(dynamic(|| {
         let current = app().with(|s| s.keep_index.unwrap_or(0));
@@ -327,15 +363,21 @@ fn keep_modes() -> View {
         for (index, label) in KEEP_MODES.iter().enumerate() {
             row = row.child(keep_chip(label, index, current == index));
         }
-        radio_group().child(row)
+        toggle_group().child(row)
     }))
 }
 
 fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElement {
     let (fill, border, content) = selection(active);
-    radio()
-        .checked(active)
-        .on_change(move |_: &bool| actions::apply_keep_mode(index))
+    toggle()
+        .pressed(active)
+        // Only the press that takes this rule counts: releasing it would
+        // leave the set with nothing chosen.
+        .on_change(move |next: &bool| {
+            if *next {
+                actions::apply_keep_mode(index);
+            }
+        })
         .accessibility_label(label)
         .px(px(space::SM))
         .py(px(space::XS))
@@ -399,7 +441,7 @@ fn layout_toggle() -> View {
                 actions::set_layout(layout)
             }));
         }
-        radio_group().child(row)
+        toggle_group().child(row)
     }))
 }
 
@@ -743,7 +785,24 @@ fn find_select() -> impl IntoElement {
         .items(items)
         .value(|| Some(find_label()))
         .accessibility_label("What to find")
-        .item_class("px-3 py-1.5")
+        .w(px(220.0))
+        // The app supplies the look: without a surface the rows draw as bare
+        // text over the page.
+        .popup_style(|s| {
+            s.min_w(px(220.0))
+                .p(px(space::XS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+        })
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .rounded(px(radius::CONTROL))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
         .on_change(|picked: &Option<SharedString>| {
             let Some(picked) = picked.as_deref() else {
                 return;
@@ -774,7 +833,22 @@ fn trash_select() -> impl IntoElement {
             }))
         })
         .accessibility_label("Where deleted files go")
-        .item_class("px-3 py-1.5")
+        .w(px(220.0))
+        .popup_style(|s| {
+            s.min_w(px(220.0))
+                .p(px(space::XS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+        })
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .rounded(px(radius::CONTROL))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
         .on_change(|picked: &Option<SharedString>| {
             app().update(|s| s.trash = matches!(picked.as_deref(), Some("trash")));
             actions::save_prefs();
@@ -917,32 +991,58 @@ fn composer() -> View {
         )
 }
 
-/// The similarity floor as a pill: click cycles 100 / 97 / 95 / 90 / 85.
-fn sim_pill() -> View {
-    pill(
-        icons::SLIDERS,
-        || {
-            let value = app()
-                .with(|s| s.min_sim_input.trim().parse::<f64>().ok())
-                .unwrap_or(97.0);
-            SharedString::from(format!("{}%", value as i64))
-        },
-        cycle_similarity,
-    )
+/// The similarity floor of a run: one value out of the five offered, as a
+/// dropdown like the hero's.
+fn sim_pill() -> impl IntoElement {
+    let items: Vec<SelectItem> = SIM_STEPS
+        .iter()
+        .map(|step| SelectItem::new(step.to_string(), format!("{step}%")))
+        .collect();
+    select()
+        .items(items)
+        .value(|| {
+            Some(SharedString::from(format!(
+                "{}",
+                current_similarity() as i64
+            )))
+        })
+        .accessibility_label("Similarity floor")
+        .w(px(150.0))
+        .popup_style(|s| {
+            s.min_w(px(150.0))
+                .p(px(space::XS))
+                .bg(colors::CARD)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded(px(radius::CARD))
+        })
+        .item_style(|s| {
+            s.px(px(space::SM))
+                .py(px(space::XS))
+                .rounded(px(radius::CONTROL))
+                .text_size(px(text::BODY))
+                .text_color(colors::TEXT)
+        })
+        .on_change(|picked: &Option<SharedString>| {
+            let Some(picked) = picked else {
+                return;
+            };
+            let text = picked.to_string();
+            app().update(|s| s.min_sim_input = text.clone());
+            actions::apply_sim_input(&text);
+        })
+        .trigger(dropdown_trigger(icons::SLIDERS, || {
+            SharedString::from(format!("{}%", current_similarity() as i64))
+        }))
 }
 
-fn cycle_similarity() {
-    let steps = [100.0, 97.0, 95.0, 90.0, 85.0];
-    let current = app()
-        .with_untracked(|s| s.min_sim_input.trim().parse::<f64>().ok())
-        .unwrap_or(97.0);
-    let next = match steps.iter().position(|step| (*step - current).abs() < 0.5) {
-        Some(index) => steps[(index + 1) % steps.len()],
-        None => 97.0,
-    };
-    let text = format!("{}", next as i64);
-    app().update(|s| s.min_sim_input = text.clone());
-    actions::apply_sim_input(&text);
+/// The similarity steps the composer offers, loosest last.
+const SIM_STEPS: [f64; 5] = [100.0, 97.0, 95.0, 90.0, 85.0];
+
+fn current_similarity() -> f64 {
+    app()
+        .with(|s| s.min_sim_input.trim().parse::<f64>().ok())
+        .unwrap_or(97.0)
 }
 
 /// The scan button's label, per scan type. Read inside the hero's dynamic
