@@ -41,6 +41,15 @@ pub(crate) enum AppView {
     Settings,
 }
 
+/// How the duplicate groups are laid out: the original two-column preview
+/// cards for media groups, or one compact row list for everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Layout {
+    #[default]
+    Grid,
+    List,
+}
+
 /// Active tab inside the Settings page side nav.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SettingsTab {
@@ -123,6 +132,11 @@ pub(crate) struct AppState {
     pub(crate) has_scanned: bool,
     pub(crate) ffprobe_note: bool,
     pub(crate) groups: Vec<Group>,
+    /// Bumped whenever the shape of `groups` changes (a scan, a threshold, a
+    /// delete, a consolidate, a re-sort). The results list keys its rebuilds
+    /// on it, so keeper picks and ticks — which change no structure — never
+    /// rebuild or reorder the list.
+    pub(crate) results_rev: u64,
     /// Non-duplicate cleanup scan output (`--find` modes). Mutually
     /// exclusive with `groups`: a mode scan never fills the duplicate list.
     pub(crate) mode_result: Option<ModeResult>,
@@ -139,7 +153,16 @@ pub(crate) struct AppState {
     /// button so huge result sets stay navigable (and fast).
     pub(crate) group_limit: usize,
     pub(crate) last_hash: HashAlgo,
-    pub(crate) expanded: HashSet<usize>,
+    /// Groups the user closed; every other group is open. Storing the closed
+    /// ones instead of the open ones is what makes expansion the default: a
+    /// scan, a re-threshold, a delete and "Show more" all start fully open
+    /// without having to list every group.
+    pub(crate) collapsed: HashSet<usize>,
+    /// The video playing in its card's preview, if any. One at a time: media
+    /// engines and audio are heavy, and a click elsewhere stops this one.
+    pub(crate) playing: Option<PathBuf>,
+    /// Results layout picked in the toolbar.
+    pub(crate) layout: Layout,
     pub(crate) selected: HashSet<PathBuf>,
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
@@ -149,6 +172,9 @@ pub(crate) struct AppState {
     /// second click moves. Disarmed by any keeper/group change, since the
     /// previewed paths would be stale.
     pub(crate) consolidate_dest: Option<PathBuf>,
+    /// The delete confirmation dialog is open: the ticked duplicates are
+    /// shown as a dry run and nothing is removed until it is confirmed.
+    pub(crate) confirm_delete: bool,
     /// Cooperative cancellation for the running scan; Stop sets it and the
     /// pipeline polls it at phase boundaries.
     pub(crate) scan_cancel: CancelToken,
@@ -216,16 +242,20 @@ impl Default for AppState {
             has_scanned: false,
             ffprobe_note: false,
             groups: Vec::new(),
+            results_rev: 0,
             mode_result: None,
             base_groups: Vec::new(),
             scan_similarity: similarity,
             min_sim: similarity,
             group_limit: GROUP_PAGE,
             last_hash: HashAlgo::Blake3,
-            expanded: HashSet::new(),
+            collapsed: HashSet::new(),
+            playing: None,
+            layout: Layout::Grid,
             selected: HashSet::new(),
             last_trashed: Vec::new(),
             consolidate_dest: None,
+            confirm_delete: false,
             scan_cancel: CancelToken::new(),
             scan_gen: 0,
         }

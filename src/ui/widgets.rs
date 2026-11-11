@@ -4,7 +4,7 @@
 //! so panes compose widgets instead of repeating colours, radii and paddings.
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
-use nsh_base::{button, switch, tooltip};
+use nsh_base::{button, radio, switch, tooltip};
 use nsh_core::element::{BorderCurve, ImageSrc, input, svg};
 use nsh_core::prelude::*;
 
@@ -299,6 +299,138 @@ pub(crate) fn field(
         .rounded(px(radius::CONTROL))
         .transition_colors()
         .duration(motion(180.0))
+}
+
+/// Icons, as inline SVG stroked with `currentColor`: one markup works in both
+/// appearances, at any size, and follows whatever tint the control gives it.
+///
+/// They are decorative. Every control that shows one owns the accessible name
+/// (and the tooltip), which is what the tests press by (`label:...`).
+pub(crate) mod icons {
+    pub(crate) const GRID: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"3\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/></svg>";
+    pub(crate) const LIST: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 6h13M8 12h13M8 18h13\"/><path d=\"M3.5 6h.01M3.5 12h.01M3.5 18h.01\" stroke-width=\"2.6\"/></svg>";
+    pub(crate) const EXPAND: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 10 6-6 6 6\"/><path d=\"m6 14 6 6 6-6\"/></svg>";
+    pub(crate) const COLLAPSE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 4 6 6 6-6\"/><path d=\"m6 20 6-6 6 6\"/></svg>";
+    pub(crate) const SELECT_ALL: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m2 13 4 4 8-9\"/><path d=\"m12 17 2 2 8-9\"/></svg>";
+    pub(crate) const CLEAR: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 6l12 12M18 6 6 18\"/></svg>";
+    pub(crate) const EXPORT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3v11\"/><path d=\"m7 9 5 5 5-5\"/><path d=\"M4 20h16\"/></svg>";
+    pub(crate) const UNDO: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 11h10a5 5 0 0 1 0 10h-6\"/><path d=\"m8 7-4 4 4 4\"/></svg>";
+    pub(crate) const CHECK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m5 13 4 4L19 7\"/></svg>";
+    pub(crate) const PLAY: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 5.5v13l11-6.5z\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+    pub(crate) const STOP: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"6.5\" y=\"6.5\" width=\"11\" height=\"11\" rx=\"2\" fill=\"currentColor\" stroke=\"none\"/></svg>";
+    pub(crate) const PLUS: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg>";
+    pub(crate) const FOLDER: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4l2 2.2h7.6A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z\"/></svg>";
+    pub(crate) const FOLDER_MOVE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 7.5A2.5 2.5 0 0 1 5.5 5h3.4l2 2.2h4\"/><path d=\"M3 17.5V7.5\"/><path d=\"M13 18h8\"/><path d=\"m18 15 3 3-3 3\"/><path d=\"M3 20h7\"/></svg>";
+    pub(crate) const GEAR: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"3.2\"/><path d=\"M12 2.6v2.5M12 18.9v2.5M4.3 4.3l1.8 1.8M17.9 17.9l1.8 1.8M2.6 12h2.5M18.9 12h2.5M4.3 19.7l1.8-1.8M17.9 6.1l1.8-1.8\"/></svg>";
+    pub(crate) const BACK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 12H4\"/><path d=\"m10 6-6 6 6 6\"/></svg>";
+    pub(crate) const SUN: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.6 4.6l1.8 1.8M17.6 17.6l1.8 1.8M4.6 19.4l1.8-1.8M17.6 6.4l1.8-1.8\"/></svg>";
+    pub(crate) const MOON: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20.5 14.5A8.5 8.5 0 1 1 9.5 3.5a6.8 6.8 0 0 0 11 11z\"/></svg>";
+}
+
+/// A tinted icon in the theme's own colours.
+pub(crate) fn icon(markup: &'static str, size: f32, tint: AdaptiveColor) -> impl IntoElement {
+    svg(ImageSrc::svg_markup(markup))
+        .size(px(size))
+        .flex_shrink_0()
+        .text_color(tint)
+}
+
+/// A square icon-only button for toolbars and dense rows. Its name lives in
+/// the accessibility tree and the tooltip; nothing on screen spells it out.
+pub(crate) fn icon_button(
+    markup: &'static str,
+    label: &'static str,
+    on_press: impl Fn() + 'static,
+) -> View {
+    view()
+        .flex_col()
+        .child(
+            button()
+                .on_press(on_press)
+                .accessibility_label(label)
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .w(px(30.0))
+                .h(px(30.0))
+                .bg(colors::INSET)
+                .border_1()
+                .border_color(colors::BORDER)
+                .rounded_full()
+                .transition_colors()
+                .duration(motion(180.0))
+                .ease_out()
+                .hover(|s| s.bg(colors::ACCENT_WASH))
+                .child(icon(markup, 15.0, colors::TEXT)),
+        )
+        .tooltip(hint(label))
+}
+
+/// A borderless icon action, for the secondary controls of a row.
+pub(crate) fn icon_ghost_button(
+    markup: &'static str,
+    label: &'static str,
+    on_press: impl Fn() + 'static,
+) -> View {
+    view()
+        .flex_col()
+        .child(
+            button()
+                .on_press(on_press)
+                .accessibility_label(label)
+                .flex_row()
+                .items_center()
+                .justify_center()
+                .w(px(28.0))
+                .h(px(26.0))
+                .rounded_full()
+                .transition_colors()
+                .duration(motion(180.0))
+                .ease_out()
+                .hover(|s| s.bg(colors::ACCENT_WASH))
+                .child(icon(markup, 15.0, colors::ACCENT)),
+        )
+        .tooltip(hint(label))
+}
+
+/// An icon radio chip: the Grid/List switch and anything else that picks one
+/// of a small set of views.
+pub(crate) fn icon_chip(
+    markup: &'static str,
+    label: &'static str,
+    active: bool,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    radio()
+        .checked(active)
+        .on_change(move |_: &bool| on_press())
+        .accessibility_label(label)
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .w(px(30.0))
+        .h(px(26.0))
+        .rounded(px(radius::CONTROL))
+        .bg(if active {
+            colors::ACCENT_WASH_STRONG
+        } else {
+            colors::INSET
+        })
+        .border_1()
+        .border_color(if active {
+            colors::ACCENT
+        } else {
+            colors::BORDER
+        })
+        .child(icon(
+            markup,
+            14.0,
+            if active {
+                colors::ACCENT
+            } else {
+                colors::MUTED
+            },
+        ))
 }
 
 /// An info bubble for `.tooltip(..)`: dark in light theme, light in dark

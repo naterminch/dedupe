@@ -7,7 +7,7 @@
 //! is process-global), so nothing here touches the real
 //! `~/.dedupe/dedupe.json`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
 
 use nsh_core::Size;
@@ -89,18 +89,21 @@ fn shell_shows_the_core_controls() {
     app.wait_for("text:dedupe").expect("header title");
     app.wait_for("text:Scan for duplicates")
         .expect("scan button");
-    assert!(app.shows("Settings"), "settings button");
+    assert!(
+        app.screen().count("label:Settings").unwrap_or(0) > 0,
+        "settings button"
+    );
     assert!(app.shows("Source folders"), "sidebar heading");
 }
 
 #[test]
 fn settings_page_opens_and_closes() {
     let (mut app, _guard) = start();
-    app.wait_for("text:Settings").expect("settings button");
-    app.press("text:Settings").expect("open settings");
-    app.wait_for("text:Back").expect("back button");
+    app.wait_for("label:Settings").expect("settings button");
+    app.press("label:Settings").expect("open settings");
+    app.wait_for("label:Back to results").expect("back button");
     app.wait_for("text:Preferences").expect("settings nav");
-    app.press("text:Back").expect("close settings");
+    app.press("label:Back to results").expect("close settings");
     app.wait_for("text:Scan for duplicates")
         .expect("main flow returns");
 }
@@ -126,9 +129,9 @@ fn adding_a_folder_updates_the_sidebar() {
     pasted.text = r"C:\media".to_owned();
     app.paste("text:Folder path", &pasted)
         .expect("paste the path");
-    app.press("text:Add").expect("press add");
+    app.press("label:Add folder").expect("press add");
     app.wait_for(r"text:C:\media").expect("folder row appears");
-    app.wait_for("text:Remove").expect("row controls");
+    app.wait_for("label:Remove folder").expect("row controls");
 }
 
 #[test]
@@ -240,6 +243,132 @@ fn pending_targets_are_selected_duplicates_only() {
     assert_eq!(targets[0].path, PathBuf::from("dup"));
 }
 
+/// A keeper pick is a per-group decision: it moves the highlight, keeps the
+/// member order, and leaves the other groups' ticks alone.
+#[test]
+fn keeper_picks_move_only_the_highlight() {
+    let mut s = AppState {
+        groups: vec![
+            group(
+                1,
+                vec![
+                    member("a", 10, true, None),
+                    member("b", 10, false, None),
+                    member("c", 10, false, None),
+                ],
+            ),
+            group(
+                2,
+                vec![member("d", 10, true, None), member("e", 10, false, None)],
+            ),
+        ],
+        selected: [PathBuf::from("b"), PathBuf::from("e")]
+            .into_iter()
+            .collect(),
+        ..AppState::default()
+    };
+    let order: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
+    actions::set_keeper_in(&mut s, 1, Path::new("c"));
+    let after: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
+    assert_eq!(order, after, "members keep their order");
+    assert!(
+        s.groups[0]
+            .members
+            .iter()
+            .any(|m| m.path == Path::new("c") && m.keep),
+        "the picked file becomes the keeper"
+    );
+    assert!(
+        s.groups[0]
+            .members
+            .iter()
+            .all(|m| m.path == Path::new("c") || !m.keep),
+        "only one keeper per group"
+    );
+    // The retiring keeper becomes a ticked duplicate; the other group is
+    // untouched, so a pick never re-ticks the whole list.
+    assert!(s.selected.contains(Path::new("b")));
+    assert!(!s.selected.contains(Path::new("c")));
+    assert!(s.selected.contains(Path::new("e")));
+}
+
+#[test]
+fn confirm_plan_caps_rows_but_keeps_its_counts_exact() {
+    let mut members = vec![member("keep.txt", 10, true, None)];
+    for i in 0..8 {
+        members.push(member(&format!("dup-{i}.txt"), 10, false, None));
+    }
+    let s = AppState {
+        groups: vec![group(1, members.clone())],
+        selected: members
+            .iter()
+            .filter(|m| !m.keep)
+            .map(|m| m.path.clone())
+            .collect(),
+        ..AppState::default()
+    };
+    let (groups, hidden_groups) = actions::confirm_groups(&s);
+    assert_eq!(hidden_groups, 0);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].keeper, "keep.txt");
+    assert_eq!(groups[0].rows.len(), actions::CONFIRM_ROWS);
+    assert_eq!(groups[0].hidden_rows, 8 - actions::CONFIRM_ROWS);
+    assert_eq!(groups[0].bytes, 80);
+}
+
+/// The Delete button asks first: the confirmation names the keeper and the
+/// file that would go, and Cancel leaves every file in place.
+#[test]
+fn delete_asks_for_confirmation_before_removing_anything() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-confirm-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // Both copies are 4096 bytes, so the button names its exact count.
+        app.wait_for("text:Delete 1 (4.10 KB)")?;
+        app.press("text:Delete 1 (4.10 KB)")?;
+        app.wait_for("text:Delete 1 file(s)?")?;
+        app.wait_for(r"text:/keeps (one|two)\.txt/")?;
+        app.press("text:Cancel")?;
+        // Cancel dismisses it without touching the files.
+        let mut closed = false;
+        for _ in 0..40 {
+            if !app.shows("Delete 1 file(s)?") {
+                closed = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        if !closed {
+            return Err("Cancel did not dismiss the confirmation".to_string());
+        }
+        if !(dir.join("one.txt").is_file() && dir.join("two.txt").is_file()) {
+            return Err("nothing may be removed before the delete is confirmed".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("the delete confirmation asks first and cancels cleanly");
+}
+
 #[test]
 fn scanning_without_folders_is_refused_with_a_helpful_message() {
     let s = AppState::default();
@@ -272,8 +401,8 @@ fn scan_reports_the_duplicate_groups_it_found() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         // The scan pumps on the wall clock (200 ms timer loop), so poll the
         // rendered summary for up to a minute of real time.
@@ -313,8 +442,8 @@ fn scan_renders_media_groups_and_their_thumbnails() {
         let mut pasted = nsh_core::PasteEvent::default();
         pasted.text = dir.display().to_string();
         app.paste("text:Folder path", &pasted)?;
-        app.press("text:Add")?;
-        app.wait_for("text:Remove")?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
         app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
         // The member rows themselves, not just the summary chip.
@@ -322,4 +451,163 @@ fn scan_renders_media_groups_and_their_thumbnails() {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("media groups render with their rows");
+}
+
+/// Every duplicate group starts expanded: after a scan both groups' members
+/// are on screen without pressing Expand first.
+#[test]
+fn every_group_starts_expanded() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-expanded-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for (name, byte) in [
+        ("a1.txt", b'a'),
+        ("a2.txt", b'a'),
+        ("b1.txt", b'b'),
+        ("b2.txt", b'b'),
+    ] {
+        std::fs::write(dir.join(name), vec![byte; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/2 group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // Both groups' rows render with no Expand press in between.
+        app.wait_for("text:/a1\\.txt/")?;
+        app.wait_for("text:/b1\\.txt/")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("every group renders expanded after a scan");
+}
+
+/// A video preview plays in place and stops again: the card swaps in the
+/// muted player and the Stop pill puts it back, without leaving the list.
+#[test]
+fn video_preview_plays_and_stops() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-video-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.mp4"), vec![7u8; 4096]).expect("fixture video");
+    std::fs::copy(dir.join("one.mp4"), dir.join("two.mp4")).expect("copy fixture video");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        // A video group offers the inline player: both cards have one, and
+        // pressing either starts that card's clip.
+        app.wait_for("label:Play video")?;
+        app.press("label:Play video >> nth=0")?;
+        app.wait_for("label:Stop video")?;
+        app.press("label:Stop video >> nth=0")?;
+        // Stopping returns the card to its poster/placeholder state.
+        for _ in 0..60 {
+            if app.screen().count("label:Stop video").unwrap_or(0) == 0 {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err("Stop left the preview playing".to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("video previews play and stop in place");
+}
+
+/// Photos carry no player: the Play/Stop control and the play glyph belong to
+/// videos, so an image card never offers an action with nothing behind it.
+#[test]
+fn image_cards_have_no_play_button() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-image-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.png"), vec![1u8; 4096]).expect("fixture image");
+    std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for("text:/one\\.png/")?;
+        // Let a wrongly offered control show up before asserting it is absent.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let players = app.screen().count("label:Play video").unwrap_or(0)
+            + app.screen().count("label:Stop video").unwrap_or(0);
+        if players > 0 {
+            return Err("an image card offers a play control".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("image cards render without play controls");
+}
+
+/// Grid is the original layout, List is the opt-in compact one: switching
+/// re-lays the same results and keeps the group open and its members listed.
+#[test]
+fn layout_switch_keeps_the_results_listed() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-layout-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    std::fs::write(dir.join("one.png"), vec![2u8; 4096]).expect("fixture image");
+    std::fs::copy(dir.join("one.png"), dir.join("two.png")).expect("copy fixture image");
+    let result = (|| {
+        app.wait_for("text:Folder path")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Folder path", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for("text:/one\\.png/")?;
+        // List, then back to Grid: the same two members stay listed.
+        app.press("label:List layout")?;
+        app.wait_for("text:/one\\.png/")?;
+        app.wait_for("text:/two\\.png/")?;
+        app.press("label:Grid layout")?;
+        app.wait_for("text:/two\\.png/")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("the layout switch keeps the results listed");
 }

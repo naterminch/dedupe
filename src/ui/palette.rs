@@ -56,12 +56,31 @@ pub(crate) mod colors {
         tone(veil(0x00, 0x71, 0xe3, 20), veil(0x0a, 0x84, 0xff, 38));
     pub(crate) const ACCENT_WASH_STRONG: AdaptiveColor =
         tone(veil(0x00, 0x71, 0xe3, 36), veil(0x0a, 0x84, 0xff, 64));
+    /// The keeper of a group. Green, deliberately not the accent blue used
+    /// for primary actions, so "this copy is kept" can never be confused
+    /// with "this copy is ticked for deletion".
+    pub(crate) const KEEP: AdaptiveColor =
+        tone(veil(0x1d, 0x9a, 0x4a, 255), veil(0x32, 0xd7, 0x4b, 255));
+    pub(crate) const KEEP_WASH: AdaptiveColor =
+        tone(veil(0x1d, 0x9a, 0x4a, 22), veil(0x32, 0xd7, 0x4b, 40));
+    pub(crate) const KEEP_WASH_STRONG: AdaptiveColor =
+        tone(veil(0x1d, 0x9a, 0x4a, 44), veil(0x32, 0xd7, 0x4b, 72));
+    /// A copy ticked for deletion. Amber: a second decision, a second hue.
+    pub(crate) const SELECT: AdaptiveColor =
+        tone(veil(0xc2, 0x75, 0x00, 255), veil(0xff, 0x9f, 0x0a, 255));
+    pub(crate) const SELECT_WASH: AdaptiveColor =
+        tone(veil(0xff, 0x95, 0x00, 26), veil(0xff, 0x9f, 0x0a, 44));
+    pub(crate) const SELECT_WASH_STRONG: AdaptiveColor =
+        tone(veil(0xff, 0x95, 0x00, 50), veil(0xff, 0x9f, 0x0a, 76));
     pub(crate) const DANGER: AdaptiveColor =
         tone(veil(0xff, 0x3b, 0x30, 255), veil(0xff, 0x45, 0x3a, 255));
     /// Ambient light under raised surfaces. Translucent, so a shadow never
     /// turns into a dark smear on the glass.
     pub(crate) const SHADOW: AdaptiveColor =
         tone(veil(0x00, 0x00, 0x00, 40), veil(0x00, 0x00, 0x00, 150));
+    /// The veil behind a dialog: dims the app without hiding it.
+    pub(crate) const SCRIM: AdaptiveColor =
+        tone(veil(0x00, 0x00, 0x00, 64), veil(0x00, 0x00, 0x00, 150));
 }
 
 pub(crate) mod text {

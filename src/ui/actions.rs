@@ -127,10 +127,13 @@ pub(crate) fn drop_folders(uris: &[String]) {
     add_folder_paths(folders);
 }
 
-/// Escape outside a text input: leave the Settings page when it is open.
+/// Escape outside a text input: close the delete confirmation when it is
+/// open, otherwise leave the Settings page when it is open.
 pub(crate) fn escape_leaves_settings() {
     app().update(|s| {
-        if s.view == AppView::Settings {
+        if s.confirm_delete {
+            s.confirm_delete = false;
+        } else if s.view == AppView::Settings {
             s.view = AppView::Main;
         }
     });
@@ -435,7 +438,8 @@ pub(crate) fn start_scan() {
         s.groups.clear();
         s.mode_result = None;
         s.selected.clear();
-        s.expanded.clear();
+        s.collapsed.clear();
+        s.playing = None;
         s.status = pipeline::phase_label(pipeline::ScanPhase::Scanning).to_string();
     });
     let generation = state.with_untracked(|s| s.scan_gen);
@@ -538,7 +542,8 @@ pub(crate) fn stop_scan() {
         s.mode_result = None;
         s.base_groups.clear();
         s.selected.clear();
-        s.expanded.clear();
+        s.collapsed.clear();
+        s.playing = None;
         s.last_stats = None;
         s.status = "Scan cancelled.".to_string();
     });
@@ -564,7 +569,8 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.mode_result = None;
             s.base_groups.clear();
             s.selected.clear();
-            s.expanded.clear();
+            s.collapsed.clear();
+            s.playing = None;
             s.has_scanned = false;
             s.files_scanned = out.stats.files_scanned;
             s.bytes_scanned = out.stats.bytes_scanned;
@@ -594,7 +600,8 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.groups.clear();
             s.base_groups.clear();
             s.selected.clear();
-            s.expanded.clear();
+            s.collapsed.clear();
+            s.playing = None;
             s.consolidate_dest = None;
             s.group_limit = crate::ui::state::GROUP_PAGE;
             s.dup_files = findings as u64;
@@ -627,8 +634,10 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         // Pristine copy for live re-thresholding; the floor starts at the
         // scan threshold (everything qualifies).
         s.base_groups = s.groups.clone();
-        // Fresh results: disarm any pending consolidate from last scan.
+        // Fresh results: disarm any pending consolidate from last scan and
+        // drop a confirmation that previewed those paths.
         s.consolidate_dest = None;
+        s.confirm_delete = false;
         s.min_sim = s.scan_similarity;
         s.group_limit = crate::ui::state::GROUP_PAGE;
         // One display ordering for the whole scan (honors the sort toggle).
@@ -643,8 +652,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             .map(|m| m.path.clone())
             .collect();
         // Every group is open by default: the results are readable without
-        // a click, and Collapse all is one press away.
-        s.expanded = s.groups.iter().map(|g| g.index).collect();
+        // a click, and Collapse all is one press away. Nothing is remembered
+        // as closed, so a later re-threshold or "Show more" opens too.
+        s.collapsed.clear();
         recount(s);
         if s.groups.is_empty() {
             s.status = format!(
@@ -732,7 +742,7 @@ pub(crate) fn request_group_posters(group_index: usize) {
     }
 }
 
-/// Ask for the posters of every expanded group on the rendered page.
+/// Ask for the posters of every open group on the rendered page.
 ///
 /// Expansion is the default now, so the bound is the page (`group_limit`),
 /// not the expansion set: a scan that finds thousands of groups must not
@@ -742,7 +752,7 @@ fn request_expanded_posters() {
         s.groups
             .iter()
             .take(s.group_limit)
-            .filter(|group| s.expanded.contains(&group.index))
+            .filter(|group| !s.collapsed.contains(&group.index))
             .map(|group| group.index)
             .collect()
     });
@@ -784,6 +794,8 @@ pub(crate) fn recount(s: &mut AppState) {
 /// similarity filter, global keep mode) — never on keeper picks or renders,
 /// so clicking a card cannot reshuffle the list underneath.
 pub(crate) fn sort_groups(s: &mut AppState) {
+    // A new order is a new list: the cards must be rebuilt in it.
+    s.results_rev += 1;
     if s.sort_biggest {
         s.groups.sort_by_key(|b| std::cmp::Reverse(b.dup_bytes()));
     } else {
@@ -892,22 +904,42 @@ pub(crate) fn apply_sim_input(raw: &str) {
 }
 
 /// Promote one member to keeper of its group (per-group decision).
+///
 /// Member order never changes here: the grid keeps every card in place and
-/// only the highlight (KEEP/DUP badge + border) moves.
+/// only the highlight (KEEP/DUP badge + border) moves. Ticks outside the
+/// group are left alone too — a keeper pick says nothing about the other
+/// groups' selections, and re-ticking them all would churn the whole list.
 pub(crate) fn set_keeper(group_index: usize, path: &Path) {
-    app().update(|s| {
-        if let Some(g) = s.groups.iter_mut().find(|g| g.index == group_index) {
-            for m in g.members.iter_mut() {
-                m.keep = m.path == path;
-            }
+    app().update(|s| set_keeper_in(s, group_index, path));
+}
+
+/// [`set_keeper`] on plain state, so the decision can be tested without the
+/// app's signal.
+pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
+    let Some(group) = s.groups.iter_mut().find(|g| g.index == group_index) else {
+        return;
+    };
+    if group.members.iter().any(|m| m.keep && m.path == path) {
+        // Already the keeper: nothing moves, nothing re-renders.
+        return;
+    }
+    for member in group.members.iter_mut() {
+        if member.keep {
+            // The retiring keeper is a duplicate again, ticked like every
+            // other duplicate in its group.
+            member.keep = false;
+            s.selected.insert(member.path.clone());
         }
-        reselect_all_dups(s);
-        sync_keep_to_base(s);
-        // Keeper swap changes which bytes count as reclaimable.
-        recount(s);
-        // Keeper change: disarm a pending consolidate (stale paths).
-        s.consolidate_dest = None;
-    });
+        if member.path == path {
+            member.keep = true;
+            s.selected.remove(&member.path);
+        }
+    }
+    sync_keep_to_base(s);
+    // Keeper swap changes which bytes count as reclaimable.
+    recount(s);
+    // Keeper change: disarm a pending consolidate (stale paths).
+    s.consolidate_dest = None;
 }
 
 /// Apply a new global keep mode to the current results (no rescan).
@@ -938,6 +970,30 @@ pub(crate) fn apply_keep_mode(index: usize) {
         sort_groups(s);
     });
     save_prefs();
+}
+
+/// Switch the results layout. The list's structure changes, so it is rebuilt
+/// (that is what the revision is for) and any inline player stops: the card
+/// or row it lived in no longer exists.
+pub(crate) fn set_layout(layout: crate::ui::state::Layout) {
+    app().update(|s| {
+        if s.layout != layout {
+            s.layout = layout;
+            s.playing = None;
+            s.results_rev += 1;
+        }
+    });
+}
+
+/// Play a video in its card's preview, or stop the one already playing.
+///
+/// One at a time: starting another replaces it. The player is muted, so a
+/// click never starts sound the user did not ask for.
+pub(crate) fn toggle_play(path: &Path) {
+    app().update(|s| {
+        let same = s.playing.as_deref() == Some(path);
+        s.playing = if same { None } else { Some(path.to_path_buf()) };
+    });
 }
 
 /// Flip one duplicate's tick (KEEP members are never selectable).
@@ -975,9 +1031,11 @@ pub(crate) fn show_more_groups() {
 pub(crate) fn toggle_expanded(index: usize) {
     let mut opened = false;
     app().update(|s| {
-        if !s.expanded.remove(&index) {
-            s.expanded.insert(index);
+        // Groups start open: the set holds only the ones the user closed.
+        if s.collapsed.remove(&index) {
             opened = true;
+        } else {
+            s.collapsed.insert(index);
         }
     });
     if opened {
@@ -988,9 +1046,11 @@ pub(crate) fn toggle_expanded(index: usize) {
 /// Open or close every group currently rendered.
 pub(crate) fn set_all_expanded(open: bool) {
     app().update(|s| {
-        s.expanded.clear();
-        if open {
-            s.expanded
+        s.collapsed.clear();
+        if !open {
+            // Only the rendered page is closed; a later page opens with the
+            // rest when "Show more" reveals it.
+            s.collapsed
                 .extend(s.groups.iter().take(s.group_limit).map(|g| g.index));
         }
     });
@@ -1022,6 +1082,98 @@ pub(crate) fn pending_targets(s: &AppState) -> Vec<file_actions::DeleteTarget> {
         }
     }
     out
+}
+
+/// Groups drawn in the delete confirmation before it summarises the rest.
+pub(crate) const CONFIRM_GROUPS: usize = 6;
+/// Files drawn per group in the delete confirmation.
+pub(crate) const CONFIRM_ROWS: usize = 4;
+
+/// One group's line in the delete confirmation: the keeper that stays, the
+/// ticked duplicates that go and the group's total bytes.
+pub(crate) struct ConfirmGroup {
+    pub(crate) index: usize,
+    pub(crate) keeper: String,
+    pub(crate) rows: Vec<PathBuf>,
+    pub(crate) hidden_rows: usize,
+    pub(crate) bytes: u64,
+}
+
+/// Per-group dry run behind the delete confirmation, in display order, plus
+/// the number of further groups with ticked files beyond [`CONFIRM_GROUPS`].
+///
+/// The dialog caps what it lists so a huge selection stays readable; the
+/// counts it shows stay exact (`rows + hidden_rows`).
+pub(crate) fn confirm_groups(s: &AppState) -> (Vec<ConfirmGroup>, usize) {
+    let mut groups = Vec::new();
+    let mut qualifying = 0usize;
+    for g in &s.groups {
+        let mut rows = Vec::new();
+        let mut count = 0usize;
+        let mut bytes = 0u64;
+        for m in &g.members {
+            if m.keep || !s.selected.contains(&m.path) {
+                continue;
+            }
+            count += 1;
+            bytes += m.size;
+            if count <= CONFIRM_ROWS {
+                rows.push(m.path.clone());
+            }
+        }
+        if count == 0 {
+            continue;
+        }
+        qualifying += 1;
+        if groups.len() >= CONFIRM_GROUPS {
+            continue;
+        }
+        let keeper = g
+            .members
+            .iter()
+            .find(|m| m.keep)
+            .map(|m| {
+                m.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| m.path.display().to_string())
+            })
+            .unwrap_or_else(|| "—".to_string());
+        groups.push(ConfirmGroup {
+            index: g.index,
+            keeper,
+            rows,
+            hidden_rows: count.saturating_sub(CONFIRM_ROWS),
+            bytes,
+        });
+    }
+    let hidden_groups = qualifying.saturating_sub(groups.len());
+    (groups, hidden_groups)
+}
+
+/// The Delete button's job: open the confirmation for the ticked duplicates.
+/// Nothing is removed until it is confirmed.
+pub(crate) fn request_delete() {
+    let state = app();
+    if state.with_untracked(|s| pending_targets(s).is_empty()) {
+        state.update(|s| {
+            s.status = "Tick the duplicate copies you want deleted first.".to_string();
+        });
+        return;
+    }
+    state.update(|s| s.confirm_delete = true);
+}
+
+/// Dismiss the confirmation without removing anything.
+pub(crate) fn cancel_delete() {
+    app().update(|s| s.confirm_delete = false);
+}
+
+/// Run the delete once it is confirmed. The dialog closes first, so its rows
+/// are gone before the files are.
+pub(crate) fn confirm_delete() {
+    app().update(|s| s.confirm_delete = false);
+    perform_delete();
 }
 
 pub(crate) fn perform_delete() {
@@ -1063,6 +1215,9 @@ pub(crate) fn perform_delete() {
                 g.members.retain(|m| !gone.contains(&m.path));
             }
             s.base_groups.retain(|g| g.members.len() >= 2);
+            // Members are gone: the list's cards are stale now.
+            s.results_rev += 1;
+            s.playing = None;
             for p in &outcome.deleted {
                 s.selected.remove(p);
             }
@@ -1260,6 +1415,9 @@ pub(crate) fn perform_consolidate() {
                     s.selected.insert(to.clone());
                 }
             }
+            // Member paths moved: rebuild the list against the new ones.
+            s.results_rev += 1;
+            s.playing = None;
             s.consolidate_dest = None;
             s.status = format!(
                 "Consolidated {} keeper(s) ({}) into {}; {} skipped.",

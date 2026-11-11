@@ -9,7 +9,7 @@ use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app};
-use crate::ui::widgets::{caption, ghost_button, heading, secondary_button};
+use crate::ui::widgets::{caption, heading, icon_button, icon_ghost_button, icons};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
@@ -46,6 +46,14 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(body())
         .child(status_bar())
         .child(toast::toast_layer())
+        // Above the panes and the toasts: a confirmation must not be buried.
+        .child(dynamic(|| {
+            if app().with(|s| s.confirm_delete) {
+                results::delete_confirm()
+            } else {
+                view()
+            }
+        }))
 }
 
 fn header() -> impl IntoElement {
@@ -74,14 +82,25 @@ fn header() -> impl IntoElement {
                 .items_center()
                 .gap(px(8.0))
                 .child(dynamic(|| {
-                    let label = if dark() { "Light" } else { "Dark" };
-                    ghost_button(label, actions::toggle_theme)
+                    if dark() {
+                        icon_ghost_button(
+                            icons::SUN,
+                            "Switch to light theme",
+                            actions::toggle_theme,
+                        )
+                    } else {
+                        icon_ghost_button(
+                            icons::MOON,
+                            "Switch to dark theme",
+                            actions::toggle_theme,
+                        )
+                    }
                 }))
                 .child(dynamic(|| {
                     if app().with(|s| s.view) == AppView::Settings {
-                        secondary_button("Back", actions::leave_settings)
+                        icon_button(icons::BACK, "Back to results", actions::leave_settings)
                     } else {
-                        secondary_button("Settings", actions::open_settings)
+                        icon_button(icons::GEAR, "Settings", actions::open_settings)
                     }
                 })),
         )
@@ -94,7 +113,11 @@ fn body() -> impl IntoElement {
         .min_h(px(0.0))
         .overflow_hidden()
         .child(dynamic(|| {
-            if app().with(|s| s.view) == AppView::Settings {
+            // The body owns the results pane's scroll container, so it may
+            // only rebuild when the page actually changes: rebuilding it on a
+            // keeper pick or a tick would jump the list back to the top.
+            let page = computed(|| app().with(|s| s.view));
+            if page.get() == AppView::Settings {
                 view()
                     .flex_1()
                     .h_full()

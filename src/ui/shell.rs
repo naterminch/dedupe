@@ -10,8 +10,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, danger_button, field, field_label, ghost_button, primary_button,
-    secondary_button, toggle_switch,
+    caption, card, chip, danger_button, field, field_label, icon_button, icon_ghost_button, icons,
+    primary_button, toggle_switch,
 };
 use crate::ui_helpers::{self, fit_text};
 
@@ -141,9 +141,13 @@ fn folder_row(folder: ReadSignal<FolderEntry>, index: ReadSignal<usize>) -> impl
                     .items_center()
                     .justify_between()
                     .child(protect_chip(reference, index))
-                    .child(ghost_button("Remove", move || {
-                        actions::remove_folder(index.get());
-                    })),
+                    .child(icon_ghost_button(
+                        icons::CLEAR,
+                        "Remove folder",
+                        move || {
+                            actions::remove_folder(index.get());
+                        },
+                    )),
             )
     })
 }
@@ -196,8 +200,16 @@ fn add_row() -> impl IntoElement {
                 app().update(|s| s.folder_input = v);
             },
         ))
-        .child(secondary_button("Add", actions::add_from_input))
-        .child(secondary_button("Browse", actions::browse_folder))
+        .child(icon_button(
+            icons::PLUS,
+            "Add folder",
+            actions::add_from_input,
+        ))
+        .child(icon_button(
+            icons::FOLDER,
+            "Browse for a folder",
+            actions::browse_folder,
+        ))
 }
 
 fn scope_card() -> impl IntoElement {
