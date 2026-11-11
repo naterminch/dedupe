@@ -58,7 +58,10 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(toast::toast_layer())
         // Above the panes and the toasts: a confirmation must not be buried.
         .child(dynamic(|| {
-            if app().with(|s| s.confirm_delete) {
+            // Only the confirmation opening rebuilds it: a scan tick would
+            // replace the dialog's buttons between press and release.
+            let open = computed(|| app().with(|s| s.confirm_delete));
+            if open.get() {
                 results::delete_confirm()
             } else {
                 view()

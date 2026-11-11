@@ -217,24 +217,29 @@ fn side_row(
 /// narrows the list by path; rows address the live list by path so a
 /// filtered view never removes the wrong folder.
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(2.0)).child(
-        when(
-            || filtered_folders().is_empty(),
-            || {
-                view()
-                    .px(px(space::SM))
-                    .py(px(space::SM))
-                    .child(caption("No folders yet"))
-            },
-        )
-        .otherwise(|| {
-            each(
-                filtered_folders,
-                |f: &FolderEntry| f.path.clone(),
-                folder_row,
+    view().flex_col().gap(px(2.0)).child(dynamic(|| {
+        // The list and the filter rebuild the rows; a scan tick must not,
+        // or the Protect and Remove buttons under the pointer restart their
+        // hover and never report a press.
+        let rows = computed(|| {
+            filtered_folders()
+                .into_iter()
+                .map(|folder| (folder.path, folder.reference))
+                .collect::<Vec<_>>()
+        });
+        let rows = rows.get();
+        if rows.is_empty() {
+            view()
+                .px(px(space::SM))
+                .py(px(space::SM))
+                .child(caption("No folders yet"))
+        } else {
+            view().flex_col().gap(px(2.0)).children(
+                rows.into_iter()
+                    .map(|(path, reference)| folder_row(path, reference)),
             )
-        }),
-    )
+        }
+    }))
 }
 
 fn filtered_folders() -> Vec<FolderEntry> {
@@ -257,69 +262,67 @@ fn filtered_folders() -> Vec<FolderEntry> {
     })
 }
 
-fn folder_row(folder: ReadSignal<FolderEntry>, _index: ReadSignal<usize>) -> impl IntoElement {
-    dynamic(move || {
-        let path = folder.with(|f| f.path.clone());
-        let reference = folder.with(|f| f.reference);
-        let shown = fit_text(&path, 42);
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(space::XS))
-            .px(px(space::SM))
-            .py(px(space::XXS))
-            .rounded(px(radius::CONTROL))
-            .bg(if reference {
-                colors::PANE
+/// One folder row. It takes the row's values rather than a live signal: the
+/// list rebuilds when a folder changes, never on a scan tick.
+fn folder_row(path: String, reference: bool) -> View {
+    let shown = fit_text(&path, 42);
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(space::XS))
+        .px(px(space::SM))
+        .py(px(space::XXS))
+        .rounded(px(radius::CONTROL))
+        .bg(if reference {
+            colors::PANE
+        } else {
+            colors::SIDEBAR
+        })
+        .transition_colors()
+        .duration(motion(150.0))
+        .hover(|s| s.bg(colors::PANE))
+        .child(icon(
+            icons::FOLDER,
+            15.0,
+            if reference {
+                colors::ACCENT
             } else {
-                colors::SIDEBAR
-            })
-            .transition_colors()
-            .duration(motion(150.0))
-            .hover(|s| s.bg(colors::PANE))
-            .child(icon(
-                icons::FOLDER,
-                15.0,
-                if reference {
-                    colors::ACCENT
-                } else {
-                    colors::MUTED
-                },
-            ))
-            .child(
-                view()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(
-                        text(shown)
-                            .truncate()
-                            .text_size(px(text::BODY))
-                            .text_color(colors::TEXT),
-                    )
-                    .tooltip(hint(path.clone())),
-            )
-            .child(row_ghost(
-                icons::LOCK,
-                if reference {
-                    "Unprotect folder"
-                } else {
-                    "Protect folder"
-                },
-                if reference {
-                    colors::ACCENT
-                } else {
-                    colors::MUTED
-                },
-                {
-                    let path = path.clone();
-                    move || actions::toggle_reference_path(&path)
-                },
-            ))
-            .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+                colors::MUTED
+            },
+        ))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    text(shown)
+                        .truncate()
+                        .text_size(px(text::BODY))
+                        .text_color(colors::TEXT),
+                )
+                .tooltip(hint(path.clone())),
+        )
+        .child(row_ghost(
+            icons::LOCK,
+            if reference {
+                "Unprotect folder"
+            } else {
+                "Protect folder"
+            },
+            if reference {
+                colors::ACCENT
+            } else {
+                colors::MUTED
+            },
+            {
                 let path = path.clone();
-                move || actions::remove_folder_path(&path)
-            }))
-    })
+                move || actions::toggle_reference_path(&path)
+            },
+        ))
+        .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+            let path = path.clone();
+            move || actions::remove_folder_path(&path)
+        }))
 }
 
 /// A small borderless icon action for a folder row.

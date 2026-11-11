@@ -73,7 +73,10 @@ fn nav() -> View {
         .child(heading("Settings"))
         .gap(px(2.0))
         .child(view().child(dynamic(|| {
-            let tab = app().with(|s| s.settings_tab);
+            // The chosen tab alone rebuilds these; a scan tick while Settings
+            // is open would restart their hover and swallow presses.
+            let tab = computed(|| app().with(|s| s.settings_tab));
+            let tab = tab.get();
             tabs()
                 .w_full()
                 .gap(px(2.0))

@@ -123,10 +123,16 @@ pub(crate) fn results() -> View {
         .min_w(px(0.0))
         .overflow_hidden()
         .bg(colors::BACKGROUND)
-        .child(
-            when(|| app().with(|s| s.mode_result.is_some()), mode_workspace)
-                .otherwise(duplicate_workspace),
-        )
+        .child(dynamic(|| {
+            // Which workspace is up, not its progress: a scan tick must not
+            // swap these panes out from under a press.
+            let mode = computed(|| app().with(|s| s.mode_result.is_some()));
+            if mode.get() {
+                mode_workspace()
+            } else {
+                duplicate_workspace()
+            }
+        }))
 }
 
 fn kicker(label: impl IntoReactive<SharedString>) -> Text {
@@ -362,7 +368,10 @@ fn sim_filter() -> impl IntoElement {
 /// (a press releases the others and takes the new rule).
 fn keep_modes() -> View {
     view().child(dynamic(|| {
-        let current = app().with(|s| s.keep_index.unwrap_or(0));
+        // The rule alone rebuilds these chips; a scan tick would restart
+        // their hover and drop a press mid-flight.
+        let current = computed(|| app().with(|s| s.keep_index.unwrap_or(0)));
+        let current = current.get();
         let mut row = view().flex_row().gap(px(2.0));
         for (index, label) in KEEP_MODES.iter().enumerate() {
             row = row.child(keep_chip(label, index, current == index));
@@ -403,7 +412,8 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
 
 fn sort_toggle() -> impl IntoElement {
     dynamic(|| {
-        let biggest = app().with(|s| s.sort_biggest);
+        let biggest = computed(|| app().with(|s| s.sort_biggest));
+        let biggest = biggest.get();
         toggle()
             .pressed(biggest)
             .on_change(move |_: &bool| actions::toggle_sort_biggest())
@@ -435,7 +445,8 @@ fn sort_toggle() -> impl IntoElement {
 /// list. It is a structural choice, so switching rebuilds the list.
 fn layout_toggle() -> View {
     view().child(dynamic(|| {
-        let current = app().with(|s| s.layout);
+        let current = computed(|| app().with(|s| s.layout));
+        let current = current.get();
         let mut row = view().flex_row().gap(px(2.0));
         for (layout, markup, label) in [
             (Layout::Grid, icons::GRID, "Grid layout"),
@@ -451,15 +462,20 @@ fn layout_toggle() -> View {
 
 fn delete_bar() -> View {
     view().child(dynamic(|| {
-        let (count, bytes, can_undo, trash) = app().with(|s| {
-            let targets = actions::pending_targets(s);
-            (
-                targets.len(),
-                targets.iter().map(|t| t.size).sum::<u64>(),
-                !s.last_trashed.is_empty(),
-                s.trash,
-            )
+        // The selection and the trash switch decide this bar. A scan tick
+        // rebuilding it replaced the Delete button under the pointer.
+        let targets = computed(|| {
+            app().with(|s| {
+                let targets = actions::pending_targets(s);
+                (
+                    targets.len(),
+                    targets.iter().map(|t| t.size).sum::<u64>(),
+                    !s.last_trashed.is_empty(),
+                    s.trash,
+                )
+            })
         });
+        let (count, bytes, can_undo, trash) = targets.get();
         let mut row = view().flex_row().gap(px(4.0)).items_center();
         if count > 0 {
             let label = format!("Delete {count} ({})", util::human_bytes(bytes));
@@ -629,7 +645,8 @@ pub(crate) fn delete_confirm() -> View {
 
 fn consolidate_button() -> View {
     view().child(dynamic(|| {
-        if app().with(|s| s.consolidate_dest.is_some()) {
+        let dest = computed(|| app().with(|s| s.consolidate_dest.is_some()));
+        if dest.get() {
             icon_button(
                 icons::FOLDER_MOVE,
                 "Move keepers into the chosen folder",
