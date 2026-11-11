@@ -67,7 +67,11 @@ fn header_block() -> impl IntoElement {
                 ))),
         )
         .child(view().child(dynamic(|| {
-            if app().with(|s| s.folder_filter.is_some()) {
+            // Only the filter opening rebuilds this: reading the app signal
+            // directly rebuilt it on every scan tick, replacing the field
+            // under the pointer.
+            let open = computed(|| app().with(|s| s.folder_filter.is_some()));
+            if open.get() {
                 view().child(filter_field())
             } else {
                 view()
@@ -116,12 +120,14 @@ fn quick_actions() -> impl IntoElement {
         ))
         // Clearing the list only means something while it has folders.
         .child(view().child(dynamic(|| {
-            let any = !app().with(|s| s.folders.is_empty());
+            // Folder changes alone flip this row: a scan tick must not rebuild
+            // it under the pointer, or its hover restarts and its press drops.
+            let any = computed(|| app().with(|s| !s.folders.is_empty()));
             side_row(
                 icons::CLEAR,
                 "Remove all folders",
                 None,
-                if any {
+                if any.get() {
                     RowState::Ready
                 } else {
                     RowState::Disabled
@@ -130,7 +136,9 @@ fn quick_actions() -> impl IntoElement {
             )
         })))
         .child(view().child(dynamic(|| {
-            let trash = app().with(|s| s.trash);
+            // The switch alone rebuilds this row, not the scan's progress.
+            let trash = computed(|| app().with(|s| s.trash));
+            let trash = trash.get();
             side_row(
                 icons::TRASH,
                 "Trash deletes",

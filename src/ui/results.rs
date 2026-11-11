@@ -154,7 +154,11 @@ fn duplicate_workspace() -> View {
         // question, option pills and the scan composer. Once a scan runs the
         // toolbar takes over and the hero never returns.
         .child(dynamic(|| {
-            let (scanning, has_scanned) = app().with(|s| (s.scanning, s.has_scanned));
+            // The toolbar follows the page's shape, not its progress: reading
+            // the app signal directly rebuilt these buttons on every scan tick,
+            // which restarted their hover and dropped presses.
+            let shape = computed(|| app().with(|s| (s.scanning, s.has_scanned)));
+            let (scanning, has_scanned) = shape.get();
             if scanning || has_scanned {
                 view()
                     .flex_col()

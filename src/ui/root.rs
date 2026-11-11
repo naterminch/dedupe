@@ -72,7 +72,12 @@ pub fn DedupeApp() -> impl IntoElement {
 /// of the body.
 fn nav_rail() -> View {
     view().child(dynamic(|| {
-        let view_now = app().with(|s| s.view);
+        // Rebuild only when the page changes. Reading the app signal here
+        // directly rebuilt the rail on every scan tick (five a second), which
+        // restarted the buttons' hover fade and dropped presses: a button
+        // replaced between press and release never reports one.
+        let page = computed(|| app().with(|s| s.view));
+        let view_now = page.get();
         view()
             .flex_col()
             .items_center()
