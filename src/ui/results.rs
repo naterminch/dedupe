@@ -459,7 +459,7 @@ pub(crate) fn delete_confirm() -> View {
         let mut section = view().flex_col().gap(px(space::XS)).child(
             text(format!(
                 "Group #{} - keeps {} - deletes {} ({})",
-                group.index + 1,
+                group.index,
                 group.keeper,
                 group.rows.len() + group.hidden_rows,
                 util::human_bytes(group.bytes),
@@ -839,7 +839,7 @@ fn group_header(group: &Group) -> String {
         .unwrap_or_default();
     format!(
         "#{} - {} files - {}{similarity}",
-        group.index + 1,
+        group.index,
         group.members.len(),
         util::human_bytes(group.members.first().map(|m| m.size).unwrap_or(0)),
     )
