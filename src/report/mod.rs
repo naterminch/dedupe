@@ -31,6 +31,8 @@ pub struct ScanStats {
     pub dir_read_errors: Vec<String>,
 }
 
+/// Word a report uses for a group's media kind: `"image"`, `"video"` or
+/// `"file"`.
 #[must_use]
 pub fn group_kind_name(kind: MediaKind) -> &'static str {
     match kind {
@@ -40,6 +42,8 @@ pub fn group_kind_name(kind: MediaKind) -> &'static str {
     }
 }
 
+/// How many files could be deleted without losing content: every group member
+/// that is not a keeper.
 #[must_use]
 pub fn dup_file_count(groups: &[Group]) -> u64 {
     groups
@@ -48,6 +52,7 @@ pub fn dup_file_count(groups: &[Group]) -> u64 {
         .sum()
 }
 
+/// Bytes freed by deleting every non-keeper member of every group.
 pub fn reclaimable_bytes(groups: &[Group]) -> u64 {
     groups.iter().map(Group::dup_bytes).sum()
 }

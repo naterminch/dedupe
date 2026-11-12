@@ -9,6 +9,12 @@ pub struct MatchBucket {
     pub entries: Vec<FileEntry>,
 }
 
+/// Group entries by equal size, equal normalized name or similar names,
+/// returning only buckets with two or more entries.
+///
+/// `fuzzy_threshold` is a percentage and is ignored unless `mode` is
+/// [`MatchMode::Fuzzy`]. Content matching is handled by the hashing pipeline,
+/// so [`MatchMode::Content`] returns nothing here.
 #[must_use]
 pub fn match_entries(
     entries: &[FileEntry],

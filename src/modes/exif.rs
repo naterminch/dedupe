@@ -14,6 +14,12 @@ pub struct ExifReport {
     pub applied: bool,
 }
 
+/// Strip EXIF and XMP metadata from the JPEG and PNG files under the scan
+/// roots.
+///
+/// Writes only when `--yes` is passed and `--dry-run` is not, and rewrites
+/// through a temporary file plus backup so an interrupted write cannot leave a
+/// half-written image.
 #[must_use]
 pub fn strip_exif(cli: &Cli, cancel: &CancelToken) -> ExifReport {
     let tree = walk_tree(cli, cancel);

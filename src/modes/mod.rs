@@ -78,11 +78,14 @@ pub struct ModeResult {
 }
 
 impl ModeResult {
+    /// Number of individual findings, not counting group members.
     #[must_use]
     pub fn finding_count(&self) -> usize {
         self.findings.len()
     }
 
+    /// Bytes freed if every finding and every non-keeper group member were
+    /// removed; folders contribute nothing.
     #[must_use]
     pub fn reclaimable(&self) -> u64 {
         self.findings
@@ -93,6 +96,7 @@ impl ModeResult {
             + self.groups.iter().map(|g| g.reclaimable).sum::<u64>()
     }
 
+    /// True when the mode found nothing at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.findings.is_empty() && self.groups.is_empty()
@@ -166,6 +170,8 @@ fn still_same_size(path: &Path, expected: u64) -> bool {
     }
 }
 
+/// Stable machine name for a mode (`empty-files`), used in JSON and in the
+/// report's mode column.
 #[must_use]
 pub fn mode_name(mode: FindMode) -> &'static str {
     match mode {
@@ -183,6 +189,7 @@ pub fn mode_name(mode: FindMode) -> &'static str {
     }
 }
 
+/// Human title for a mode, used as the report heading and window title.
 #[must_use]
 pub fn mode_title(mode: FindMode) -> &'static str {
     match mode {
@@ -200,6 +207,10 @@ pub fn mode_title(mode: FindMode) -> &'static str {
     }
 }
 
+/// Walk the scan roots and run the cleanup mode `cli.find` selects.
+///
+/// Stops early when `cancel` fires, returning what had been collected; the
+/// caller can tell by [`ModeResult::cancelled`].
 #[must_use]
 pub fn run_mode(cli: &Cli, cancel: &CancelToken) -> ModeResult {
     let tree = walk_tree(cli, cancel);
