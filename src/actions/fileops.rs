@@ -46,14 +46,21 @@ pub(super) fn move_file(from: &Path, to: &Path) -> Result<(), ActionError> {
     }
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
-        Err(rename) => fs::copy(from, to)
-            .and_then(|_| fs::remove_file(from))
-            .map_err(|copy| ActionError::Move {
+        Err(rename) => match fs::copy(from, to) {
+            // The copy landed, so both paths now hold the file; a failed
+            // cleanup of the original is its own kind of failure.
+            Ok(_) => fs::remove_file(from).map_err(|source| ActionError::CopiedButKept {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+                source,
+            }),
+            Err(copy) => Err(ActionError::Move {
                 from: from.to_path_buf(),
                 to: to.to_path_buf(),
                 rename,
                 copy,
             }),
+        },
     }
 }
 

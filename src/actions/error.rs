@@ -44,6 +44,20 @@ pub enum ActionError {
         source: trash::Error,
     },
 
+    /// The file was copied into place but the original could not be removed,
+    /// so both paths now hold a copy.
+    #[error(
+        "copied {} to {} but could not remove the original: {source}",
+        from.display(),
+        to.display()
+    )]
+    CopiedButKept {
+        from: PathBuf,
+        to: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
     /// Neither the atomic rename nor the copy fallback worked.
     #[error(
         "could not move {} to {}: rename failed ({rename}); copy fallback failed ({copy})",
@@ -60,7 +74,10 @@ pub enum ActionError {
 }
 
 impl ActionError {
-    /// The file the failure is about.
+    /// The path the failure names.
+    ///
+    /// For [`ActionError::Destination`] that is the destination *directory*
+    /// that could not be created; every other variant names the file.
     #[must_use]
     pub fn path(&self) -> &std::path::Path {
         match self {
@@ -68,7 +85,7 @@ impl ActionError {
             | Self::Read { path, .. }
             | Self::Remove { path, .. }
             | Self::Trash { path, .. } => path,
-            Self::Move { from, .. } => from,
+            Self::CopiedButKept { from, .. } | Self::Move { from, .. } => from,
         }
     }
 }

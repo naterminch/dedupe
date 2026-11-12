@@ -229,6 +229,7 @@ pub fn delete_findings(
                     style(err.to_string()).dim()
                 );
                 stats.skipped += 1;
+                stats.failures.push((finding.path.clone(), err));
             }
         }
     }
@@ -325,6 +326,7 @@ pub fn delete_finding_groups(
                         style(err.to_string()).dim()
                     );
                     stats.skipped += 1;
+                    stats.failures.push((path.clone(), err));
                 }
             }
         }

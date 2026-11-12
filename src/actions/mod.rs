@@ -98,6 +98,8 @@ pub struct FindingDeleteStats {
     pub deleted: u64,
     pub bytes_freed: u64,
     pub skipped: u64,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[derive(Debug, Default)]
