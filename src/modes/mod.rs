@@ -34,8 +34,8 @@ pub struct Finding {
     pub detail: String,
     pub is_dir: bool,
     /// Content hash recorded when the scan ran, so a deletion can prove the
-    /// file has not changed since. `None` for directories, symlinks and
-    /// anything that could not be read.
+    /// file has not changed since. `None` when the content could not be read,
+    /// which deletion treats as unverified and keeps.
     pub hash: Option<String>,
 }
 
@@ -89,9 +89,6 @@ impl ModeResult {
     }
 }
 
-/// Record the content of every deletable item, so deletion can re-hash it and
-/// skip the ones that changed in between.
-///
 /// What a candidate holds: file bytes, or a symlink's target so a broken link
 /// can still be verified before it is unlinked. `None` for directories and for
 /// anything unreadable, which deletion treats as "cannot prove it unchanged"
@@ -108,6 +105,9 @@ pub fn content_hash(path: &Path, engine: &HashEngine) -> Option<String> {
     }
 }
 
+/// Record the content of every deletable item, so deletion can re-hash it and
+/// skip the ones that changed in between.
+///
 /// Only a run that is about to delete pays for this: hashing is per finding,
 /// and a report-only scan (or `--dry-run`) must not read the files it merely
 /// lists. A cancelled scan stops early, leaving the rest unhashed so they are
