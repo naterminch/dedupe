@@ -52,6 +52,15 @@ const HASH_BITS: f64 = 256.0;
 /// separate ffmpeg spawns for clips up to a minute or so.
 const SEEK_THRESHOLD_MS: u64 = 90_000;
 
+/// Estimated bitrate above which even a short video must be sampled with
+/// keyframe seeks instead of the full-decode pass.
+///
+/// The full pass decodes every frame of the stream, so its cost scales with
+/// bytes, not duration: a 70-second 4K clip at ~100 Mbps (~900 MB) grinds for
+/// minutes single-threaded while 8 keyframe seeks finish in seconds. Roughly
+/// 1080p-streaming bitrates and below keep the fast one-pass path.
+const FULL_PASS_MAX_MBPS: f64 = 25.0;
+
 /// One frame fingerprint: 256-bit difference hash.
 pub type FrameHash = [u64; 4];
 
