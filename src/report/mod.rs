@@ -11,11 +11,17 @@ pub use html::write_html;
 pub use human::{print_human, print_mode_human};
 pub use json::{print_json, print_mode_json, to_json, to_mode_json};
 
+/// What every report format needs to know about the run itself.
 #[derive(Debug)]
 pub struct ReportContext<'a> {
+    /// The scan roots as the user passed them, for the report header.
     pub paths: &'a [String],
+    /// Algorithm name shown alongside hashes.
     pub hash_algo: &'a str,
+    /// Include per-member detail that the compact forms leave out.
     pub verbose: bool,
+    /// Whether media probing ran, so the report can say why metadata is
+    /// missing rather than implying there was none.
     pub ffprobe_used: bool,
 }
 
@@ -23,11 +29,17 @@ pub struct ReportContext<'a> {
 /// consumed by the hashing pipeline).
 #[derive(Debug, Clone)]
 pub struct ScanStats {
+    /// Regular files the walker handed to hashing.
     pub files_scanned: usize,
+    /// Total size of those files.
     pub bytes_scanned: u64,
+    /// Directories skipped by depth, exclusion or ignore rules.
     pub dirs_skipped: u64,
+    /// Files skipped by size, type or ignore rules.
     pub files_skipped: u64,
+    /// Hardlink twins counted once, so their space is not reported twice.
     pub hardlinks_skipped: u64,
+    /// Directories that could not be read, with the reason.
     pub dir_read_errors: Vec<String>,
 }
 

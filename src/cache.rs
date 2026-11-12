@@ -41,17 +41,26 @@ pub const HASH_CACHE_MIN_SIZE: u64 = 256 * 1024;
 /// switching `--image-hash` never reuses a hash of a different family.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheFp {
+    /// A single still-image fingerprint.
     Image {
+        /// Width the image was decoded at.
         w: u32,
+        /// Height the image was decoded at.
         h: u32,
+        /// Four 64-bit halves of the 256-bit perceptual hash.
         hash: [u64; 4],
         /// 0 = dHash, 1 = pHash, 2 = aHash, 3 = color hash.
         algo: u8,
     },
+    /// A video fingerprint, one hash per sampled frame.
     Video {
+        /// Width the frames were decoded at.
         w: u32,
+        /// Height the frames were decoded at.
         h: u32,
+        /// Clip length, part of the validity check against re-probing.
         duration_ms: u64,
+        /// Frame hashes in sample order.
         frames: Vec<[u64; 4]>,
     },
 }
@@ -60,17 +69,24 @@ pub enum CacheFp {
 /// are the validity check against the current state of the file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
+    /// File size when the fingerprint was taken.
     pub size: u64,
+    /// Modification time in seconds since the Unix epoch.
     pub mtime_secs: i64,
+    /// The fingerprint itself.
     pub fp: CacheFp,
 }
 
 /// A fingerprint computed during this run, to be stored when the run ends.
 #[derive(Debug, Clone)]
 pub struct CacheWrite {
+    /// The file the fingerprint belongs to.
     pub path: PathBuf,
+    /// Its size, so the entry self-invalidates when the file changes.
     pub size: u64,
+    /// Its modification time in seconds since the Unix epoch.
     pub mtime_secs: i64,
+    /// The fingerprint to store.
     pub fp: CacheFp,
 }
 
@@ -200,10 +216,15 @@ pub fn default_cache_path() -> PathBuf {
 /// A cached content hash (partial and/or full), mirroring `hashing`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashCacheEntry {
+    /// File size when the hash was taken.
     pub size: u64,
+    /// Modification time in seconds since the Unix epoch.
     pub mtime_secs: i64,
+    /// Algorithm name, so switching `--hash` never reuses another family.
     pub algo: String,
+    /// Hash of the leading chunk, when one was computed.
     pub partial: Option<String>,
+    /// Hash of the whole file, when one was computed.
     pub full: Option<String>,
 }
 
@@ -233,6 +254,7 @@ impl HashCache {
         Self::load_from(&default_hash_cache_path())
     }
 
+    /// Load from an explicit path (also used by tests).
     #[must_use]
     pub fn load_from(path: &Path) -> Self {
         let map = fs::read(path).map_or_else(

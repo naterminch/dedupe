@@ -4,13 +4,20 @@ use crate::cli::Cli;
 use std::fs;
 use std::path::Path;
 
+/// What a metadata-stripping pass found and did.
 #[derive(Debug, Default)]
 pub struct ExifReport {
+    /// JPEG and PNG files the pass looked at.
     pub images_scanned: u64,
+    /// Of those, the ones carrying EXIF or XMP metadata.
     pub images_with_metadata: u64,
+    /// Images actually rewritten (always 0 on a dry run).
     pub rewritten: u64,
+    /// Bytes the rewrites removed, or would remove on a dry run.
     pub bytes_saved: u64,
+    /// Images left alone because reading or rewriting them failed.
     pub skipped: u64,
+    /// Whether this run was allowed to write to disk.
     pub applied: bool,
 }
 
