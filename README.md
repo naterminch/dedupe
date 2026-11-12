@@ -14,9 +14,13 @@ terminal.
 | --- | --- |
 | ![The first-run page in light mode](docs/gui-home-light.png) | ![The first-run page in dark mode](docs/gui-home-dark.png) |
 
-| Results, light | Results, dark | Before deleting |
-| --- | --- | --- |
-| ![Duplicate groups in light mode](docs/gui-light.png) | ![Duplicate groups in dark mode](docs/gui-dark.png) | ![The delete confirmation dialog](docs/gui-delete-confirm.png) |
+| Results, light | Results, dark |
+| --- | --- |
+| ![Duplicate groups in light mode](docs/gui-light.png) | ![Duplicate groups in dark mode](docs/gui-dark.png) |
+
+| Before deleting, light | Before deleting, dark |
+| --- | --- |
+| ![The delete confirmation dialog in light mode](docs/gui-delete-confirm-light.png) | ![The delete confirmation dialog in dark mode](docs/gui-delete-confirm-dark.png) |
 
 ## What it finds
 
