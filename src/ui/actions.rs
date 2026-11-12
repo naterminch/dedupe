@@ -1409,13 +1409,17 @@ pub(crate) fn perform_delete() {
                 s.last_trashed.clear();
             }
             recount(s);
+            let failed = match outcome.failures.first() {
+                Some((_, err)) => format!(", {} failed ({err})", outcome.failures.len()),
+                None => String::new(),
+            };
             s.status = format!(
-                "{verb} {} file(s) ({} freed); {} skipped.",
+                "{verb} {} file(s) ({} freed); {} skipped{failed}.",
                 outcome.deleted.len(),
                 util::human_bytes(outcome.bytes_freed),
                 outcome.skipped.len()
             );
-            crate::ui::toast::notify(s.status.clone(), false);
+            crate::ui::toast::notify(s.status.clone(), !outcome.failures.is_empty());
         });
     });
 }
@@ -1596,8 +1600,12 @@ pub(crate) fn perform_consolidate() {
             s.results_rev += 1;
             s.playing = None;
             s.consolidate_dest = None;
+            let failed = match outcome.failures.first() {
+                Some((_, err)) => format!(", {} failed ({err})", outcome.failures.len()),
+                None => String::new(),
+            };
             s.status = format!(
-                "Consolidated {} keeper(s) ({}) into {}; {} skipped.",
+                "Consolidated {} keeper(s) ({}) into {}; {} skipped{failed}.",
                 outcome.moved.len(),
                 util::human_bytes(outcome.bytes_moved),
                 dest.display(),

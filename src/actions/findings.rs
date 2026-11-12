@@ -1,11 +1,10 @@
 use super::guard::prompt;
-use super::{Disposition, FindingDeleteStats};
+use super::{ActionError, Disposition, FindingDeleteStats};
 use crate::hashing::HashEngine;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
 use crate::modes::content_hash;
 use crate::util::human_bytes;
-use anyhow::Result;
 use console::style;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -71,7 +70,7 @@ enum Removal {
     /// Type, size or content no longer match the scan, so the item survives.
     Changed,
     /// The check passed but the file could not be removed.
-    Failed(String),
+    Failed(ActionError),
 }
 
 /// Prove the candidate is unchanged and remove it in the same call, so no
@@ -128,16 +127,24 @@ fn finding_still_valid(finding: &Finding) -> bool {
     }
 }
 
-fn remove_finding_path(finding: &Finding, disposition: Disposition) -> Result<(), String> {
+fn remove_finding_path(finding: &Finding, disposition: Disposition) -> Result<(), ActionError> {
+    let path = &finding.path;
+    let failed = |source| ActionError::Remove {
+        path: path.clone(),
+        source,
+    };
     match disposition {
-        Disposition::Trash => trash::delete(&finding.path).map_err(|e| e.to_string()),
+        Disposition::Trash => trash::delete(path).map_err(|source| ActionError::Trash {
+            path: path.clone(),
+            source,
+        }),
         Disposition::Permanent => {
             if finding.is_dir || finding.kind == "empty-dir" {
-                fs::remove_dir(&finding.path).map_err(|e| e.to_string())
+                fs::remove_dir(path).map_err(failed)
             } else {
-                fs::remove_file(&finding.path)
-                    .or_else(|_| fs::remove_dir(&finding.path))
-                    .map_err(|e| e.to_string())
+                fs::remove_file(path)
+                    .or_else(|_| fs::remove_dir(path))
+                    .map_err(failed)
             }
         }
     }
@@ -219,7 +226,7 @@ pub fn delete_findings(
                     "{} {}: {}",
                     style("⚠").yellow(),
                     style("cannot remove").yellow().bold(),
-                    style(format!("{} ({err})", finding.path.display())).dim()
+                    style(err.to_string()).dim()
                 );
                 stats.skipped += 1;
             }
@@ -315,7 +322,7 @@ pub fn delete_finding_groups(
                         "{} {}: {}",
                         style("⚠").yellow(),
                         style("cannot remove").yellow().bold(),
-                        style(format!("{} ({err})", path.display())).dim()
+                        style(err.to_string()).dim()
                     );
                     stats.skipped += 1;
                 }

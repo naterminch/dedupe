@@ -406,6 +406,29 @@ fn finding_for(path: &PathBuf, kind: &'static str) -> Finding {
 }
 
 #[test]
+fn delete_targets_reports_a_missing_file_as_a_read_failure() {
+    let dir = tmpdir("err-read");
+    let missing = dir.join("gone.bin");
+    let target = DeleteTarget {
+        path: missing.clone(),
+        expected_hash: "deadbeef".to_string(),
+        size: 3,
+    };
+
+    let outcome = delete_targets(&[target], &engine(), Disposition::Permanent);
+
+    assert!(
+        matches!(
+            outcome.failures.as_slice(),
+            [(path, ActionError::Read { .. })] if path == &missing
+        ),
+        "expected one Read failure, got {:?}",
+        outcome.failures
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn relative_path_without_working_directory_counts_as_protected() {
     let protected = vec![std::env::temp_dir().join("backup")];
 

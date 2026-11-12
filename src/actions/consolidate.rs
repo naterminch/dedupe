@@ -84,19 +84,15 @@ pub fn consolidate_targets(targets: &[MoveTarget], engine: &HashEngine) -> Conso
                     outcome.moved.push((target.from.clone(), target.to.clone()));
                     outcome.bytes_moved += target.size;
                 }
-                Err(e) => {
+                Err(err) => {
                     eprintln!(
                         "{} {}: {}",
                         style("⚠").yellow(),
                         style("cannot move").yellow().bold(),
-                        style(format!(
-                            "{} -> {} ({e})",
-                            target.from.display(),
-                            target.to.display()
-                        ))
-                        .dim()
+                        style(err.to_string()).dim()
                     );
                     outcome.skipped.push(target.from.clone());
+                    outcome.failures.push((target.from.clone(), err));
                 }
             },
             Ok(false) => {
@@ -110,14 +106,15 @@ pub fn consolidate_targets(targets: &[MoveTarget], engine: &HashEngine) -> Conso
                 );
                 outcome.skipped.push(target.from.clone());
             }
-            Err(e) => {
+            Err(err) => {
                 eprintln!(
                     "{} {}: {}",
                     style("⚠").yellow(),
                     style("cannot verify, skipping").yellow().bold(),
-                    style(format!("{} ({e})", target.from.display())).dim()
+                    style(err.to_string()).dim()
                 );
                 outcome.skipped.push(target.from.clone());
+                outcome.failures.push((target.from.clone(), err));
             }
         }
     }

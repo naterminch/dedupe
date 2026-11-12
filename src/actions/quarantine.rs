@@ -1,3 +1,4 @@
+use super::ActionError;
 use super::MoveDuplicateStats;
 use super::fileops::free_dest_path;
 use super::fileops::move_file;
@@ -6,7 +7,6 @@ use super::guard::verify_expected;
 use crate::hashing::HashEngine;
 use crate::matching::{self, Group};
 use crate::util::human_bytes;
-use anyhow::Result;
 use console::style;
 use std::collections::HashSet;
 use std::fs;
@@ -17,8 +17,11 @@ pub fn move_duplicates(
     dest: &Path,
     engine: &HashEngine,
     yes: bool,
-) -> Result<MoveDuplicateStats> {
-    fs::create_dir_all(dest)?;
+) -> Result<MoveDuplicateStats, ActionError> {
+    fs::create_dir_all(dest).map_err(|source| ActionError::Destination {
+        path: dest.to_path_buf(),
+        source,
+    })?;
     let mut stats = MoveDuplicateStats::default();
     let mut assume_yes = yes;
     let mut claimed: HashSet<PathBuf> = HashSet::new();
@@ -65,14 +68,15 @@ pub fn move_duplicates(
                     stats.files_skipped += 1;
                     continue;
                 }
-                Err(e) => {
+                Err(err) => {
                     eprintln!(
                         "{} {}: {}",
                         style("⚠").yellow(),
                         style("cannot verify, skipping").yellow().bold(),
-                        style(format!("{} ({e})", member.path.display())).dim()
+                        style(err.to_string()).dim()
                     );
                     stats.files_skipped += 1;
+                    stats.failures.push((member.path.clone(), err));
                     continue;
                 }
             }
@@ -87,19 +91,15 @@ pub fn move_duplicates(
                     stats.files_moved += 1;
                     stats.bytes_moved += member.size;
                 }
-                Err(e) => {
+                Err(err) => {
                     eprintln!(
                         "{} {}: {}",
                         style("⚠").yellow(),
                         style("cannot move").yellow().bold(),
-                        style(format!(
-                            "{} -> {} ({e})",
-                            member.path.display(),
-                            to.display()
-                        ))
-                        .dim()
+                        style(err.to_string()).dim()
                     );
                     stats.files_skipped += 1;
+                    stats.failures.push((member.path.clone(), err));
                 }
             }
         }

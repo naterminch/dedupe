@@ -46,6 +46,7 @@ sha2 = "0.11.1"
 same-file = "1.0.6"
 trash = "5.2.9"
 walkdir = "2.5.0"
+thiserror = "2"
 
 # nsh runs on the OS's own backend, so the platform crate is picked per
 # target. `default-features = false` drops the embedded JS runtime (`js`):
