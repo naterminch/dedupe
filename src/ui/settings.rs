@@ -171,7 +171,7 @@ fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> im
                     FontWeight::NORMAL
                 })
                 .text_color(if active {
-                    colors::ACCENT
+                    colors::ACCENT_INK
                 } else {
                     colors::MUTED
                 }),

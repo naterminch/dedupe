@@ -160,7 +160,11 @@ fn quick_actions() -> impl IntoElement {
                     } else {
                         colors::INSET
                     },
-                    if trash { colors::ACCENT } else { colors::MUTED },
+                    if trash {
+                        colors::ACCENT_INK
+                    } else {
+                        colors::MUTED
+                    },
                 ))),
                 RowState::Ready,
                 toggle_trash,

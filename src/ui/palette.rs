@@ -72,7 +72,13 @@ pub(crate) mod colors {
     pub(crate) const ACCENT_WASH: AdaptiveColor =
         tone(veil(0xb4, 0x55, 0x0f, 20), veil(0xf2, 0xa6, 0x5f, 38));
     pub(crate) const ACCENT_WASH_STRONG: AdaptiveColor =
-        tone(veil(0xb4, 0x55, 0x0f, 36), veil(0xf2, 0xa6, 0x5f, 64));
+        tone(veil(0xb4, 0x55, 0x0f, 36), veil(0xf2, 0xa6, 0x5f, 32));
+    /// Text and glyphs on an accent tint. `ACCENT` itself only works on a
+    /// plain surface (2.0:1 on the dark tint, 2.9:1 on the light one), so a
+    /// status pill or an active tab uses this instead: a deeper amber in
+    /// light, a pale one in dark, both past 4.5:1 on `ACCENT_WASH_STRONG`.
+    pub(crate) const ACCENT_INK: AdaptiveColor =
+        tone(veil(0x7a, 0x3a, 0x08, 255), veil(0xff, 0xd9, 0xb4, 255));
     /// The keeper of a group. Green, deliberately not the accent amber used
     /// for primary actions, so "this copy is kept" can never be confused
     /// with "this copy is ticked for deletion".

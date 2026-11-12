@@ -1218,7 +1218,11 @@ fn media_status() -> impl IntoElement {
             return chip("Checking ffmpeg…", colors::INSET, colors::MUTED);
         }
         match (ffmpeg, ffprobe) {
-            (true, true) => chip("ffmpeg ready", colors::ACCENT_WASH_STRONG, colors::ACCENT),
+            (true, true) => chip(
+                "ffmpeg ready",
+                colors::ACCENT_WASH_STRONG,
+                colors::ACCENT_INK,
+            ),
             (true, false) => chip("No ffprobe", colors::INSET, colors::MUTED),
             (false, _) => chip("No ffmpeg", colors::INSET, colors::MUTED),
         }
