@@ -23,3 +23,4 @@ pub mod similar;
 pub mod ui;
 pub mod ui_helpers;
 pub mod util;
+pub mod walk;
