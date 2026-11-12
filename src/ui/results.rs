@@ -873,7 +873,7 @@ fn hero() -> View {
         .gap(px(space::XL))
         .pt(px(space::XXL))
         .pb(px(space::XL))
-        .child(hero_logo())
+        .child(logo_plinth())
         .child(
             text("What can I dedupe?")
                 .text_size(px(text::PAGE))
@@ -884,6 +884,23 @@ fn hero() -> View {
         .child(tip_card())
         .child(composer())
         .bind_motion(&enter)
+}
+
+/// The hero's mark, seated on its own plinth. The artwork is a white tile, so
+/// dropped straight onto the page it reads as a bright block in the dark
+/// appearance and as nothing at all on the light one. The tray-and-core bezel
+/// frames it instead: the same machined nesting every card in the app uses,
+/// with the tile in the middle, so it looks placed rather than pasted.
+fn logo_plinth() -> View {
+    bezel().flex_shrink_0().child(
+        bezel_core()
+            .w(px(112.0))
+            .h(px(112.0))
+            .items_center()
+            .justify_center()
+            .bg(colors::PANE)
+            .child(hero_logo()),
+    )
 }
 
 /// The app's own logo, embedded in the binary: a single-file install has no
