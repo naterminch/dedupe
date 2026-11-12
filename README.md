@@ -10,9 +10,13 @@ terminal.
 
 ## Screenshots
 
-| Light | Dark | Before deleting |
+| Home, light | Home, dark |
+| --- | --- |
+| ![The first-run page in light mode](docs/gui-home-light.png) | ![The first-run page in dark mode](docs/gui-home-dark.png) |
+
+| Results, light | Results, dark | Before deleting |
 | --- | --- | --- |
-| ![The desktop app in light mode](docs/gui-light.png) | ![The desktop app in dark mode](docs/gui-dark.png) | ![The delete confirmation dialog](docs/gui-delete-confirm.png) |
+| ![Duplicate groups in light mode](docs/gui-light.png) | ![Duplicate groups in dark mode](docs/gui-dark.png) | ![The delete confirmation dialog](docs/gui-delete-confirm.png) |
 
 ## What it finds
 
