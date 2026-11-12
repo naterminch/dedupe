@@ -57,16 +57,26 @@ pub(crate) fn bootstrap() {
 
 // --- Navigation -------------------------------------------------------------
 
+/// The pages swap whole panes: every list mounts at its top again, so the
+/// wheel's remembered offsets no longer describe what is on screen.
+fn forget_pane_offsets() {
+    crate::ui::results::reset_lists();
+    crate::ui::shell::reset_scroll();
+    crate::ui::settings::reset_scroll();
+}
+
 pub(crate) fn leave_settings() {
     app().update(|s| {
         if s.view == AppView::Settings {
             s.view = AppView::Main;
         }
     });
+    forget_pane_offsets();
 }
 
 pub(crate) fn open_settings() {
     app().update(|s| s.view = AppView::Settings);
+    forget_pane_offsets();
 }
 
 pub(crate) fn set_settings_tab(tab: SettingsTab) {
@@ -153,6 +163,8 @@ pub(crate) fn drop_folders(uris: &[String]) {
 /// Escape outside a text input: close the delete confirmation when it is
 /// open, otherwise leave the Settings page when it is open.
 pub(crate) fn escape_leaves_settings() {
+    let was_settings = app().with_untracked(|s| s.view == AppView::Settings);
+    let confirming = app().with_untracked(|s| s.confirm_delete);
     app().update(|s| {
         if s.confirm_delete {
             s.confirm_delete = false;
@@ -160,6 +172,9 @@ pub(crate) fn escape_leaves_settings() {
             s.view = AppView::Main;
         }
     });
+    if was_settings && !confirming {
+        forget_pane_offsets();
+    }
 }
 
 pub(crate) fn add_from_input() {
@@ -278,6 +293,7 @@ pub(crate) fn save_prefs() {
         trash: s.trash,
         sort_biggest: s.sort_biggest,
         remember_folders: s.remember_folders,
+        wheel_page: s.wheel_page,
         dark: dark(),
         window: window_state::current(),
     });
@@ -602,6 +618,43 @@ pub(crate) fn stop_scan() {
         s.playing = None;
         s.last_stats = None;
         s.status = "Scan cancelled.".to_string();
+    });
+}
+
+/// Leave a finished scan for the first-run page, where the composer and the
+/// mode pills set up the next run. Only the results go: the folders, the
+/// prefs and the last statistics stay, so going back costs nothing.
+pub(crate) fn back_to_setup() {
+    if app().with_untracked(|s| s.scanning) {
+        return;
+    }
+    scan_status().update(|p| *p = ScanStatus::default());
+    app().update(|s| {
+        // Everything the last run produced goes, not just the lists: the
+        // status bar's counts, the reclaim totals and the per-run media caches
+        // would otherwise keep describing a scan whose results are gone.
+        s.has_scanned = false;
+        s.groups.clear();
+        s.base_groups.clear();
+        s.mode_result = None;
+        s.selected.clear();
+        s.collapsed.clear();
+        s.playing = None;
+        s.group_limit = crate::ui::state::GROUP_PAGE;
+        s.results_rev += 1;
+        s.files_scanned = 0;
+        s.bytes_scanned = 0;
+        s.dup_files = 0;
+        s.reclaim_bytes = 0;
+        s.last_stats = None;
+        s.last_paths.clear();
+        s.last_ffprobe = false;
+        s.last_ref_dirs.clear();
+        s.ffprobe_note = false;
+        s.posters.clear();
+        s.strips.clear();
+        s.poster_jobs.clear();
+        s.status = "Choose a folder and press Scan.".to_string();
     });
 }
 
@@ -1260,6 +1313,8 @@ pub(crate) fn request_delete() {
         });
         return;
     }
+    // The dialog opens at its top, wherever the wheel left its list before.
+    crate::ui::results::reset_delete_scroll();
     state.update(|s| s.confirm_delete = true);
 }
 

@@ -1,10 +1,10 @@
-//! Design tokens: one flat dark workspace system, light and dark.
+//! Design tokens: one calm, warm workspace system, light and dark.
 //!
-//! Surfaces are opaque solids separated by a one-pixel hairline; depth comes
-//! from the surface ramp itself (window → card → pane → elevated) rather than
-//! shadows or blur. The ramp is hue-neutral near-black in the dark appearance
-//! and paper-grey in the light one, and the accent is a warm orange per
-//! appearance.
+//! Surfaces are opaque solids separated by a soft hairline; depth comes from
+//! the surface ramp itself (window → sidebar → card → pane → elevated) and
+//! from the bezel: a tinted outer tray with the card surface nested inside it
+//! on a concentric radius. The dark appearance is a deep warm near-black, the
+//! light one a warm paper, and the accent is a warm amber per appearance.
 
 use nsh_core::element::{AdaptiveColor, Rgba};
 
@@ -30,42 +30,50 @@ pub(crate) mod colors {
 
     /// The window itself, behind everything else.
     pub(crate) const BACKGROUND: AdaptiveColor =
-        tone(veil(0xf4, 0xf4, 0xf5, 255), veil(0x0e, 0x0f, 0x10, 255));
+        tone(veil(0xf5, 0xf3, 0xef, 255), veil(0x0a, 0x0b, 0x0b, 255));
     /// List pane next to the window: one step up from the background.
     pub(crate) const SIDEBAR: AdaptiveColor =
-        tone(veil(0xfa, 0xfa, 0xfa, 255), veil(0x12, 0x13, 0x13, 255));
+        tone(veil(0xfb, 0xf9, 0xf5, 255), veil(0x10, 0x11, 0x12, 255));
     /// Card surface: group cards, the top bar, the status bar, dialogs.
     pub(crate) const CARD: AdaptiveColor =
-        tone(veil(0xff, 0xff, 0xff, 255), veil(0x1d, 0x1f, 0x20, 255));
+        tone(veil(0xff, 0xff, 0xff, 255), veil(0x17, 0x19, 0x1a, 255));
     /// A row that sits on a card (list rows, secondary buttons): one step
     /// deeper so two stacked surfaces stay legible.
     pub(crate) const PANE: AdaptiveColor =
-        tone(veil(0xf0, 0xf0, 0xf2, 255), veil(0x24, 0x26, 0x28, 255));
+        tone(veil(0xf2, 0xef, 0xe9, 255), veil(0x1f, 0x21, 0x23, 255));
     /// The hover step: one more tint above a pane.
     pub(crate) const ELEVATED: AdaptiveColor =
-        tone(veil(0xe8, 0xe8, 0xea, 255), veil(0x2c, 0x2e, 0x30, 255));
+        tone(veil(0xe9, 0xe5, 0xdd, 255), veil(0x29, 0x2b, 0x2d, 255));
     /// Wells and fields: punched in rather than raised.
     pub(crate) const INSET: AdaptiveColor =
-        tone(veil(0xf0, 0xf0, 0xf2, 255), veil(0x14, 0x15, 0x16, 255));
-    /// Separators and outlines: a solid hairline grey, never a shadow.
+        tone(veil(0xee, 0xeb, 0xe5, 255), veil(0x0d, 0x0e, 0x0f, 255));
+    /// The outer tray of a bezelled surface: a veil over the background, so a
+    /// card reads as a pane of glass seated in a tray.
+    pub(crate) const SHELL: AdaptiveColor =
+        tone(veil(0x00, 0x00, 0x00, 8), veil(0xff, 0xff, 0xff, 10));
+    /// Separators and outlines: a soft hairline, never a shadow.
     pub(crate) const BORDER: AdaptiveColor =
-        tone(veil(0xe2, 0xe2, 0xe4, 255), veil(0x3a, 0x3c, 0x3a, 255));
+        tone(veil(0xe4, 0xdf, 0xd6, 255), veil(0x2b, 0x2e, 0x30, 255));
+    /// One step softer than [`BORDER`]: the seam of a tray and the edge of a
+    /// raised control, so a container reads as a join, not a frame.
+    pub(crate) const HAIRLINE: AdaptiveColor =
+        tone(veil(0x00, 0x00, 0x00, 12), veil(0xff, 0xff, 0xff, 14));
     pub(crate) const TEXT: AdaptiveColor =
-        tone(veil(0x1d, 0x1d, 0x1f, 255), veil(0xe4, 0xe4, 0xe6, 255));
+        tone(veil(0x1c, 0x1b, 0x18, 255), veil(0xed, 0xee, 0xef, 255));
     pub(crate) const MUTED: AdaptiveColor =
-        tone(veil(0x6e, 0x6e, 0x73, 255), veil(0x7f, 0x81, 0x81, 255));
-    /// A deep orange in light; a soft, warm orange in dark, with
-    /// dark-on-orange contrast for filled controls. The light step is dark
+        tone(veil(0x74, 0x70, 0x6a, 255), veil(0x8a, 0x8f, 0x8c, 255));
+    /// A deep burnt amber in light; a soft, warm amber in dark, with
+    /// dark-on-amber contrast for filled controls. The light step is dark
     /// enough that white label text on a filled pill stays legible.
     pub(crate) const ACCENT: AdaptiveColor =
-        tone(veil(0xc0, 0x56, 0x0f, 255), veil(0xf2, 0xa6, 0x5f, 255));
+        tone(veil(0xb4, 0x55, 0x0f, 255), veil(0xf2, 0xa6, 0x5f, 255));
     pub(crate) const ON_ACCENT: AdaptiveColor =
         tone(veil(0xff, 0xff, 0xff, 255), veil(0x1a, 0x14, 0x10, 255));
     pub(crate) const ACCENT_WASH: AdaptiveColor =
-        tone(veil(0xc0, 0x56, 0x0f, 20), veil(0xf2, 0xa6, 0x5f, 38));
+        tone(veil(0xb4, 0x55, 0x0f, 20), veil(0xf2, 0xa6, 0x5f, 38));
     pub(crate) const ACCENT_WASH_STRONG: AdaptiveColor =
-        tone(veil(0xc0, 0x56, 0x0f, 36), veil(0xf2, 0xa6, 0x5f, 64));
-    /// The keeper of a group. Green, deliberately not the accent blue used
+        tone(veil(0xb4, 0x55, 0x0f, 36), veil(0xf2, 0xa6, 0x5f, 64));
+    /// The keeper of a group. Green, deliberately not the accent amber used
     /// for primary actions, so "this copy is kept" can never be confused
     /// with "this copy is ticked for deletion".
     pub(crate) const KEEP: AdaptiveColor =
@@ -89,19 +97,24 @@ pub(crate) mod colors {
 }
 
 pub(crate) mod text {
+    /// Eyebrows: the smallest step, for kickers and the upper-case name above
+    /// a heading.
+    pub(crate) const MICRO: f32 = 11.0;
     pub(crate) const CAPTION: f32 = 12.0;
     pub(crate) const BODY: f32 = 14.0;
     /// Page headings. Text scales with the user's text size by itself; only
     /// the step value lives here.
-    pub(crate) const HEADING: f32 = 20.0;
+    pub(crate) const HEADING: f32 = 22.0;
     /// Page titles ("General", "Preferences"), one step above the heading.
-    pub(crate) const PAGE: f32 = 28.0;
+    pub(crate) const PAGE: f32 = 30.0;
 }
 
 /// Corner radii: one finite scale instead of a value per element. A large
 /// surface gets the softer tier, and the controls inside it take the tighter
 /// one, so the nesting stays legible.
 pub(crate) mod radius {
+    /// The outer tray of a bezelled surface; its core takes the difference.
+    pub(crate) const SHELL: f32 = 22.0;
     /// Cards, bars, floating panels and media cards.
     pub(crate) const CARD: f32 = 18.0;
     /// Inputs, rows, previews and small controls.
@@ -119,4 +132,7 @@ pub(crate) mod space {
     pub(crate) const LG: f32 = 16.0;
     pub(crate) const XL: f32 = 24.0;
     pub(crate) const XXL: f32 = 32.0;
+    /// The gap between sections of one page: deliberately larger than a
+    /// content group so the page breathes instead of stacking.
+    pub(crate) const XXXL: f32 = 44.0;
 }

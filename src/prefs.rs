@@ -125,6 +125,9 @@ pub struct GuiPrefs {
     /// installs keep their current behavior; off starts every launch empty.
     #[serde(default = "default_true")]
     pub remember_folders: bool,
+    /// A mouse wheel notch scrolls a whole page instead of a fixed step.
+    #[serde(default)]
+    pub wheel_page: bool,
     /// True = dark mode. Defaults to light (kit default).
     #[serde(default)]
     pub dark: bool,
@@ -190,6 +193,7 @@ impl Default for GuiPrefs {
             trash: true,
             sort_biggest: false,
             remember_folders: true,
+            wheel_page: false,
             dark: false,
             window: None,
         }
@@ -360,6 +364,7 @@ mod tests {
             trash: false,
             sort_biggest: true,
             remember_folders: false,
+            wheel_page: true,
             window: Some(WindowGeometry {
                 x: 88.0,
                 y: 44.0,

@@ -101,6 +101,8 @@ pub(crate) struct AppState {
     pub(crate) trash: bool,
     pub(crate) sort_biggest: bool,
     pub(crate) remember_folders: bool,
+    /// A mouse wheel notch scrolls a whole page of a list.
+    pub(crate) wheel_page: bool,
     pub(crate) last_stats: Option<ScanStats>,
     pub(crate) last_paths: Vec<String>,
     pub(crate) last_hash_algo: String,
@@ -211,6 +213,7 @@ impl Default for AppState {
             trash: true,
             sort_biggest: false,
             remember_folders: true,
+            wheel_page: false,
             last_stats: None,
             last_paths: Vec::new(),
             last_hash_algo: "blake3".to_string(),
@@ -316,6 +319,7 @@ impl AppState {
         self.trash = saved.trash;
         self.sort_biggest = saved.sort_biggest;
         self.remember_folders = saved.remember_folders;
+        self.wheel_page = saved.wheel_page;
     }
 }
 

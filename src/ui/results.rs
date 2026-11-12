@@ -4,6 +4,7 @@
 //! Group rows are built inside one `dynamic` region: every read of [`app`]
 //! subscribes, so a scan, a keeper swap or a tick re-renders the list.
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use nsh_base::{
@@ -21,9 +22,10 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app, scan_status};
 use crate::ui::widgets::{
-    caption, card, chevron, chip, danger_button, divider, field_label, ghost_button, hint, icon,
-    icon_button, icon_chip, icon_ghost_button, icons, motion, primary_button, secondary_button,
-    selection,
+    bezel, bezel_core, caption, card, chevron, chip, danger_button, divider, entering, eyebrow,
+    fading_in, fast_scroll, fast_scroll_by, fast_scroll_max, field_label, ghost_button, hint, icon,
+    icon_button, icon_chip, icon_ghost_button, icon_pill_button, icon_secondary_button, icons,
+    motion, primary_button, secondary_button, selection, timing,
 };
 use crate::ui_helpers::fit_text;
 use crate::util;
@@ -38,6 +40,11 @@ const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
 /// never changes the row's geometry (rows would overlap mid-layout).
 const THUMB_W: f32 = 72.0;
 const THUMB_H: f32 = 56.0;
+
+/// Height of one group card, which is what one wheel notch moves: a photo card
+/// in grid layout carries a large preview, a compact card two plain rows.
+const CARD_STEP_GRID: f32 = 355.0;
+const CARD_STEP_LIST: f32 = 240.0;
 
 /// What preview a member row shows: the photo itself, a video's extracted
 /// poster frame, a placeholder while that poster extracts, or nothing for
@@ -149,13 +156,37 @@ fn title(label: impl IntoReactive<SharedString>) -> Text {
         .text_color(colors::TEXT)
 }
 
+// Where each long list sits, as the wheel last left it. The wheel is the
+// app's over these lists (`fast_scroll`): `scroll_to` takes an absolute
+// offset, so the pane keeps the one it moved to.
+thread_local! {
+    static RESULTS_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+    static MODE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+    static DELETE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+}
+
+/// Puts the delete dialog's list back at its top: it opens anew each time,
+/// while the wheel's remembered offset outlives it.
+pub(crate) fn reset_delete_scroll() {
+    DELETE_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+}
+
+/// Puts the workspace's lists back at their top: leaving the page unmounts
+/// them, so the wheel's remembered offsets would point into a list that opens
+/// at the start again.
+pub(crate) fn reset_lists() {
+    for at in [&RESULTS_AT, &MODE_AT, &DELETE_AT] {
+        at.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+    }
+}
+
 fn duplicate_workspace() -> View {
     view()
         .flex_col()
         .flex_1()
         .h_full()
-        .gap(px(space::LG))
-        .p(px(space::XL))
+        .gap(px(space::XL))
+        .p(px(space::XXL))
         // Before the first scan the workspace is a centered hero: mascot,
         // question, option pills and the scan composer. Once a scan runs the
         // toolbar takes over and the hero never returns.
@@ -180,26 +211,31 @@ fn duplicate_workspace() -> View {
         // delete, a consolidate, a re-sort, Show more. Keeper picks and ticks
         // update their own cards, so pressing Keep never rebuilds (or
         // reorders) the list.
-        .child(scroll().flex_1().child(dynamic(|| {
-            let signature = computed(|| {
-                app().with(|s| {
-                    (
-                        s.results_rev,
-                        s.scanning,
-                        s.has_scanned,
-                        s.groups.len(),
-                        s.group_limit,
-                        s.ffprobe_note,
-                    )
-                })
-            });
-            list_body(signature.get())
-        })))
+        .child(fast_scroll_by(
+            &RESULTS_AT,
+            card_step,
+            dynamic(|| {
+                let signature = computed(|| {
+                    app().with(|s| {
+                        (
+                            s.results_rev,
+                            s.scanning,
+                            s.has_scanned,
+                            s.groups.len(),
+                            s.group_limit,
+                            s.ffprobe_note,
+                        )
+                    })
+                });
+                list_body(signature.get())
+            }),
+        ))
 }
 
 fn header_row() -> View {
     view()
         .flex_row()
+        .flex_wrap()
         .justify_between()
         .items_end()
         .gap(px(16.0))
@@ -207,7 +243,8 @@ fn header_row() -> View {
             view()
                 .flex_col()
                 .min_w(px(0.0))
-                .gap(px(4.0))
+                .gap(px(space::XS))
+                .child(eyebrow("DUPLICATES"))
                 .child(title(|| {
                     if app().with(|s| s.has_scanned) {
                         "Review duplicates"
@@ -314,14 +351,40 @@ fn action_row() -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .gap(px(4.0))
+                // Back sits with Delete, not in the header: both act on the
+                // whole result set, and the pill matches the row's sizing.
+                .child(back_button())
                 .child(delete_bar())
                 .child(consolidate_button())
-                .child(icon_ghost_button(
+                .child(icon_pill_button(
                     icons::EXPORT,
                     "Export JSON report",
                     actions::save_report,
                 )),
         )
+}
+
+/// Re-running a finished scan. In the cleanup workspace the findings are
+/// read-only and there is no composer, so its header carries the next run
+/// itself. Hidden while a scan runs, where the progress card's Stop is the
+/// only scan action. The duplicates page takes the same action from the
+/// composer it keeps on screen.
+fn scan_again_button() -> impl IntoElement {
+    dynamic(|| {
+        let scanning = computed(|| app().with(|s| s.scanning));
+        when(!scanning.get(), || {
+            secondary_button("Scan again", actions::start_scan)
+        })
+    })
+}
+
+/// Leave the results for the setup page. Hidden while a scan runs, where the
+/// progress card's Stop owns cancelling.
+fn back_button() -> impl IntoElement {
+    when(!app().with(|s| s.scanning), || {
+        icon_secondary_button(icons::ARROW_LEFT, "Back", actions::back_to_setup)
+            .tooltip(hint("Back to scan setup"))
+    })
 }
 
 fn sim_filter() -> impl IntoElement {
@@ -372,7 +435,7 @@ fn keep_modes() -> View {
         // their hover and drop a press mid-flight.
         let current = computed(|| app().with(|s| s.keep_index.unwrap_or(0)));
         let current = current.get();
-        let mut row = view().flex_row().gap(px(2.0));
+        let mut row = view().flex_row().flex_wrap().gap(px(2.0));
         for (index, label) in KEEP_MODES.iter().enumerate() {
             row = row.child(keep_chip(label, index, current == index));
         }
@@ -398,6 +461,9 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .bg(fill)
         .border_1()
         .border_color(border)
+        // Picking another rule cross-fades the chosen pill.
+        .transition_colors()
+        .duration(motion(timing::FAST))
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -410,33 +476,34 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         )
 }
 
+/// The sort rule as one text chip: same metrics and selection colours as the
+/// keep-mode and layout chips beside it, so the bar reads as one row of pills.
 fn sort_toggle() -> impl IntoElement {
     dynamic(|| {
         let biggest = computed(|| app().with(|s| s.sort_biggest));
         let biggest = biggest.get();
+        let (fill, border, content) = selection(biggest);
         toggle()
             .pressed(biggest)
             .on_change(move |_: &bool| actions::toggle_sort_biggest())
             .accessibility_label("Sort groups by most reclaimable space first")
-            .px(px(12.0))
-            .py(px(6.0))
             .flex_row()
             .items_center()
             .justify_center()
+            .px(px(space::SM))
+            .py(px(space::XS))
             .rounded_full()
+            .bg(fill)
+            .border_1()
+            .border_color(border)
             .transition_colors()
-            .duration(150.0)
-            .hover(|s| s.bg(colors::INSET))
-            .pressed_style(|s| s.bg(colors::ACCENT))
+            .duration(motion(timing::FAST))
+            .active(|s| s.opacity(0.9))
             .child(
                 text(if biggest { "Biggest" } else { "Path" })
-                    .text_size(px(text::BODY))
+                    .text_size(px(text::CAPTION))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(if biggest {
-                        colors::ON_ACCENT
-                    } else {
-                        colors::TEXT
-                    }),
+                    .text_color(content),
             )
     })
 }
@@ -494,7 +561,7 @@ fn delete_bar() -> View {
             row = row.child(danger_button(label, actions::request_delete).tooltip(hint(tip)));
         }
         if can_undo {
-            row = row.child(icon_button(
+            row = row.child(icon_pill_button(
                 icons::UNDO,
                 "Undo delete",
                 actions::undo_delete,
@@ -602,7 +669,7 @@ pub(crate) fn delete_confirm() -> View {
                 .text_color(colors::TEXT),
         )
         .child(caption(description))
-        .child(scroll().max_h(px(320.0)).child(body))
+        .child(fast_scroll_max(&DELETE_AT, px(320.0), body))
         .child(divider())
         .child(
             view()
@@ -616,44 +683,57 @@ pub(crate) fn delete_confirm() -> View {
         );
     // nsh's dialog owns the modal layer: the focus moves into it, Escape and
     // the back button arrive as `on_cancel`, and screen readers hear an alert
-    // dialog named by its title. The look is the app's: a scrim below the
-    // panel that takes the presses which miss it, and a transparent
-    // centering layer (box-none) so only the card is hit.
-    view().child(
-        dialog()
-            .role(AccessibilityRole::AlertDialog)
-            .label(format!("Delete {count} file(s)?"))
-            .on_cancel(actions::cancel_delete)
-            .child(
-                overlay()
-                    .inset_0()
-                    .bg(colors::SCRIM)
-                    .on_press(actions::cancel_delete),
-            )
-            .child(
-                overlay()
-                    .inset_0()
-                    .pointer_events(PointerEvents::BoxNone)
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .p(px(space::XL))
-                    .child(panel),
-            ),
-    )
+    // dialog named by its title. The look is the app's: a scrim that takes the
+    // presses which miss the panel, and a transparent centering layer
+    // (box-none) so only the card is hit.
+    //
+    // The scrim sits in the page layer, below the dialog, not inside it: the
+    // dialog's own entrance and exit slide its whole layer, so a scrim in
+    // there travelled down the screen with the panel. Out here it stays put
+    // and only the panel moves.
+    // The scrim fades in under the panel. It stays put as the panel slides,
+    // and it is the page's own layer, so it leaves when the dialog does.
+    let scrim = fading_in();
+    view()
+        .child(
+            overlay()
+                .inset_0()
+                .bg(colors::SCRIM)
+                .on_press(actions::cancel_delete)
+                .bind_motion(&scrim),
+        )
+        .child(
+            dialog()
+                .role(AccessibilityRole::AlertDialog)
+                .label(format!("Delete {count} file(s)?"))
+                .on_cancel(actions::cancel_delete)
+                // A press that lands on the modal layer itself still closes
+                // it, as the scrim did when it lived in here.
+                .child(overlay().inset_0().on_press(actions::cancel_delete))
+                .child(
+                    overlay()
+                        .inset_0()
+                        .pointer_events(PointerEvents::BoxNone)
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .p(px(space::XL))
+                        .child(panel),
+                ),
+        )
 }
 
 fn consolidate_button() -> View {
     view().child(dynamic(|| {
         let dest = computed(|| app().with(|s| s.consolidate_dest.is_some()));
         if dest.get() {
-            icon_button(
+            icon_pill_button(
                 icons::FOLDER_MOVE,
                 "Move keepers into the chosen folder",
                 actions::perform_consolidate,
             )
         } else {
-            icon_button(
+            icon_pill_button(
                 icons::FOLDER,
                 "Choose a folder to consolidate into",
                 actions::pick_consolidate_dir,
@@ -668,7 +748,10 @@ fn consolidate_button() -> View {
 type ListSignature = (u64, bool, bool, usize, usize, bool);
 
 fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignature) -> View {
-    let mut list = view().flex_col().gap(px(space::MD));
+    // The column owns the pane's width. Without it the list is content-sized,
+    // so a wide row (the composer's controls) stretches the whole column past
+    // the window instead of wrapping inside it.
+    let mut list = view().flex_col().w_full().min_w(px(0.0)).gap(px(space::MD));
     if scanning {
         list = list.child(dynamic(progress_card));
     }
@@ -684,7 +767,10 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
         ));
     }
     if has_scanned && total == 0 {
-        list = list.child(note_card("No duplicate files found."));
+        list = list.child(nothing_found_card(
+            "No duplicates found",
+            "Every file is unique at this similarity. Add another folder or loosen the threshold, then scan again.",
+        ));
     }
     // Structural snapshot, read untracked: nothing here subscribes, so this
     // list only re-runs when the signature above changes.
@@ -699,7 +785,11 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
             actions::show_more_groups,
         )));
     }
-    list
+    // A rebuilt list — a scan landing, a new filter, a delete — fades in where
+    // it stands. It fades rather than rises because it keeps the scroll's own
+    // place; only the page itself travels.
+    let fade = fading_in();
+    list.bind_motion(&fade)
 }
 
 fn progress_card() -> View {
@@ -752,18 +842,28 @@ fn progress_card() -> View {
                         .bg(colors::INSET)
                         .overflow_hidden()
                 })
+                // A determinate bar glides between ticks instead of stepping
+                // in 30 pt jumps; an indeterminate one shimmers.
                 .indicator_class(if determinate {
-                    ""
+                    "transition-all"
                 } else {
                     "w-full animate-pulse"
                 })
-                .indicator_style(|s| s.h(px(6.0)).rounded(px(3.0)).bg(colors::ACCENT)),
+                .indicator_style(|s| {
+                    s.h(px(6.0))
+                        .rounded(px(3.0))
+                        .bg(colors::ACCENT)
+                        .duration(motion(timing::SLOW))
+                }),
         )
 }
 
 /// The first-run page, restyled as a centered hero: the mascot, the
 /// question, the option pills, a tip card and the scan composer.
 fn hero() -> View {
+    // The first-run page arrives as one piece: mascot, question and composer
+    // rise together instead of appearing fully formed.
+    let enter = entering();
     view()
         .flex_col()
         .items_center()
@@ -781,6 +881,7 @@ fn hero() -> View {
         .child(pill_row())
         .child(tip_card())
         .child(composer())
+        .bind_motion(&enter)
 }
 
 /// The two dropdowns under the question: what to look for, and where
@@ -916,7 +1017,7 @@ fn dropdown_trigger(markup: &'static str, label: impl Fn() -> SharedString + 'st
         .border_color(colors::BORDER)
         .rounded(px(radius::CONTROL))
         .transition_colors()
-        .duration(motion(180.0))
+        .duration(motion(timing::BASE))
         .ease_out()
         .hover(|s| s.bg(colors::ELEVATED))
         .child(icon(markup, 14.0, colors::MUTED))
@@ -935,6 +1036,7 @@ fn tip_card() -> View {
     card().w_full().max_w(px(860.0)).p(px(space::LG)).child(
         view()
             .flex_row()
+            .flex_wrap()
             .items_center()
             .gap(px(space::MD))
             .child(
@@ -982,30 +1084,25 @@ fn tip_card() -> View {
 /// prompt card. The + button adds the typed path, the pills pick the keeper
 /// default, the pill on the right sets the similarity floor, and the orange
 /// button starts the scan.
+///
+/// It belongs to the first-run page alone: once results are on screen the
+/// page is about acting on them, and the header's back arrow returns here to
+/// set up the next run.
 fn composer() -> View {
     card()
         .w_full()
         .max_w(px(860.0))
         .gap(px(space::MD))
         .p(px(space::LG))
-        .child(
-            input()
-                .value(|| app().with(|s| s.folder_input.clone()))
-                .on_change(|value: &str| app().update(|s| s.folder_input = value.to_owned()))
-                .placeholder("Scan a folder")
-                .placeholder_color(|| color(colors::MUTED))
-                .caret_color(|| color(colors::ACCENT))
-                .selection_color(|| color(colors::ACCENT))
-                .w_full()
-                .h(px(space::XXL))
-                .px(px(space::SM))
-                .text_size(px(text::BODY))
-                .text_color(colors::TEXT),
-        )
+        .child(composer_input())
         .child(divider())
+        // The row reflows instead of forcing the card past the window edge:
+        // the keep chips wrap among themselves, and the similarity pill and
+        // the scan button move down as one group when they no longer fit.
         .child(
             view()
                 .flex_row()
+                .flex_wrap()
                 .items_center()
                 .gap(px(space::SM))
                 .w_full()
@@ -1015,11 +1112,34 @@ fn composer() -> View {
                     actions::add_from_input,
                 ))
                 .child(keep_modes())
-                .child(view().flex_1())
-                .child(media_status())
-                .child(sim_pill())
-                .child(primary_button(scan_label, actions::start_scan)),
+                .child(view().flex_1().min_w(px(space::SM)))
+                .child(
+                    view()
+                        .flex_row()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .child(media_status())
+                        .child(sim_pill())
+                        .child(primary_button(scan_label, actions::start_scan)),
+                ),
         )
+}
+
+/// The folder path field of the composer.
+fn composer_input() -> impl IntoElement {
+    input()
+        .value(|| app().with(|s| s.folder_input.clone()))
+        .on_change(|value: &str| app().update(|s| s.folder_input = value.to_owned()))
+        .placeholder("Scan a folder")
+        .placeholder_color(|| color(colors::MUTED))
+        .caret_color(|| color(colors::ACCENT))
+        .selection_color(|| color(colors::ACCENT))
+        .w_full()
+        .h(px(space::XXL))
+        .px(px(space::SM))
+        .text_size(px(text::BODY))
+        .text_color(colors::TEXT)
 }
 
 /// The similarity floor of a run: one value out of the five offered, as a
@@ -1105,6 +1225,22 @@ fn media_status() -> impl IntoElement {
     })
 }
 
+/// A scan that found nothing: what to change and where. The composer sits just
+/// above it with the scan and add-folder actions, so this card only explains
+/// and never competes with those buttons.
+fn nothing_found_card(message: &'static str, hint: &'static str) -> View {
+    card()
+        .gap(px(space::MD))
+        .p(px(space::LG))
+        .child(
+            text(message)
+                .text_size(px(text::BODY))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(colors::TEXT),
+        )
+        .child(caption(hint))
+}
+
 fn note_card(message: &'static str) -> View {
     card()
         .p(px(space::MD))
@@ -1141,6 +1277,22 @@ fn stat_chips() -> View {
             colors::MUTED,
         ))
         .child(chip(format!("hash: {hash}"), colors::INSET, colors::MUTED))
+}
+
+/// One group card, as the wheel's step: the layout decides a card's height,
+/// and a group whose members have no preview stays a compact card even in
+/// grid layout.
+fn card_step() -> f32 {
+    app().with_untracked(|s| {
+        let grid = s.layout == Layout::Grid
+            && s.groups.first().is_some_and(|g| {
+                g.members.len() >= 2
+                    && g.members
+                        .iter()
+                        .all(|m| is_grid_preview(&thumb_for(m, None)))
+            });
+        if grid { CARD_STEP_GRID } else { CARD_STEP_LIST }
+    })
 }
 
 fn group_header(group: &Group) -> String {
@@ -1184,7 +1336,11 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
     let grid = layout == Layout::Grid
         && members.len() >= 2
         && members.iter().all(|m| is_grid_preview(&thumb_for(m, None)));
-    let mut body = view().flex_col().gap(px(8.0)).px(px(12.0)).pb(px(12.0));
+    let mut body = view()
+        .flex_col()
+        .gap(px(space::SM))
+        .px(px(space::MD))
+        .pb(px(space::MD));
     if grid {
         for (row_index, pair) in members.chunks(2).enumerate() {
             let mut row = view().flex_row().items_stretch().gap(px(8.0));
@@ -1238,53 +1394,55 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
     // trigger (one big hit target instead of a 16 pt chevron to aim at), it
     // reports the expanded state to screen readers, and `reveal` springs the
     // body open and shut instead of snapping.
-    card().child(
-        collapsible()
-            .open(expanded)
-            .reveal(true)
-            .child(
-                view()
-                    .role(AccessibilityRole::Button)
-                    .accessibility_state(move || AccessibilityState {
-                        expanded: Some(expanded),
-                        ..AccessibilityState::default()
-                    })
-                    .on_press(move || actions::toggle_expanded(index))
-                    .flex_row()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .p(px(space::MD))
-                    .rounded(px(radius::CONTROL))
-                    .transition_colors()
-                    .duration(motion(150.0))
-                    .hover(|s| s.bg(colors::INSET))
-                    .child(chevron(expanded))
-                    .child(
-                        text(header)
-                            .flex_1()
-                            .truncate()
-                            .text_size(px(text::BODY))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(colors::TEXT),
-                    )
-                    .child(dynamic(move || {
-                        let (keep, dup) = stats.get();
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(space::SM))
-                            .child(caption(format!(
-                                "{keep} keep - {} dup",
-                                member_count - keep
-                            )))
-                            .child(chip(
-                                util::human_bytes(dup),
-                                colors::ACCENT_WASH,
-                                colors::ACCENT,
-                            ))
-                    })),
-            )
-            .content(body),
+    bezel().child(
+        bezel_core().child(
+            collapsible()
+                .open(expanded)
+                .reveal(true)
+                .child(
+                    view()
+                        .role(AccessibilityRole::Button)
+                        .accessibility_state(move || AccessibilityState {
+                            expanded: Some(expanded),
+                            ..AccessibilityState::default()
+                        })
+                        .on_press(move || actions::toggle_expanded(index))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(space::SM))
+                        .p(px(space::MD))
+                        .rounded(px(radius::CONTROL))
+                        .transition_colors()
+                        .duration(motion(timing::FAST))
+                        .hover(|s| s.bg(colors::INSET))
+                        .child(chevron(expanded))
+                        .child(
+                            text(header)
+                                .flex_1()
+                                .truncate()
+                                .text_size(px(text::BODY))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(colors::TEXT),
+                        )
+                        .child(dynamic(move || {
+                            let (keep, dup) = stats.get();
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(space::SM))
+                                .child(caption(format!(
+                                    "{keep} keep - {} dup",
+                                    member_count - keep
+                                )))
+                                .child(chip(
+                                    util::human_bytes(dup),
+                                    colors::ACCENT_WASH,
+                                    colors::ACCENT,
+                                ))
+                        })),
+                )
+                .content(body),
+        ),
     )
 }
 
@@ -1446,7 +1604,7 @@ fn card_preview(thumb: &Thumb, path: &Path, playing: bool) -> View {
         let play_path = path.to_path_buf();
         frame
             .transition_colors()
-            .duration(motion(180.0))
+            .duration(motion(timing::BASE))
             .on_press(move || actions::toggle_play(&play_path))
     } else {
         frame
@@ -1494,6 +1652,10 @@ fn media_card(
         } else {
             colors::BORDER
         })
+        // Picking the keeper or ticking a copy changes only these three
+        // colours: the change crosses over instead of snapping.
+        .transition_colors()
+        .duration(motion(timing::FAST))
         .child(card_preview(&thumb, &member.path, playing))
         .child(
             view()
@@ -1561,7 +1723,7 @@ fn member_row(
         let play_path = member.path.clone();
         thumb_box
             .transition_colors()
-            .duration(motion(180.0))
+            .duration(motion(timing::BASE))
             .on_press(move || actions::toggle_play(&play_path))
     } else {
         thumb_box
@@ -1603,7 +1765,7 @@ fn member_row(
             colors::BORDER
         })
         .transition_colors()
-        .duration(motion(180.0));
+        .duration(motion(timing::BASE));
     if playing && video_member {
         // Playing is the one deliberate expansion: a 72 pt thumbnail is not a
         // usable player, so the row grows to hold one (muted, with the
@@ -1752,26 +1914,35 @@ fn mode_workspace() -> View {
         .gap(px(space::LG))
         .p(px(space::XL))
         .child(mode_header())
-        .child(scroll().flex_1().child(dynamic(mode_list)))
+        .child(fast_scroll(&MODE_AT, dynamic(mode_list)))
 }
 
 fn mode_header() -> View {
     view()
-        .flex_col()
-        .gap(px(4.0))
-        .child(kicker("Cleanup workspace"))
-        .child(title(|| {
-            app().with(|s| {
-                s.mode_result
-                    .as_ref()
-                    .map(|r| mode_title(r.mode))
-                    .unwrap_or("Cleanup scan")
-                    .to_string()
-            })
-        }))
-        .child(caption(
-            "Cleanup findings are read-only in the GUI; use the CLI with --delete or --trash.",
-        ))
+        .flex_row()
+        .items_end()
+        .justify_between()
+        .gap(px(space::LG))
+        .child(
+            view()
+                .flex_col()
+                .min_w(px(0.0))
+                .gap(px(4.0))
+                .child(kicker("Cleanup workspace"))
+                .child(title(|| {
+                    app().with(|s| {
+                        s.mode_result
+                            .as_ref()
+                            .map(|r| mode_title(r.mode))
+                            .unwrap_or("Cleanup scan")
+                            .to_string()
+                    })
+                }))
+                .child(caption(
+                    "Cleanup findings are read-only in the GUI; use the CLI with --delete or --trash.",
+                )),
+        )
+        .child(scan_again_button())
 }
 
 fn mode_list() -> View {
@@ -1784,7 +1955,10 @@ fn mode_list() -> View {
     }
     list = list.child(mode_chips(&result));
     if result.is_empty() {
-        list = list.child(note_card("Nothing found. The scanned folders are clean."));
+        list = list.child(nothing_found_card(
+            "Nothing to clean up",
+            "The scanned folders came back clean. Add a folder, or scan again after changing the threshold.",
+        ));
         return list;
     }
     for finding in &result.findings {

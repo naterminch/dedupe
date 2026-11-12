@@ -143,6 +143,7 @@ fn resetting_settings_restores_the_defaults() {
         no_cache: true,
         trash: false,
         remember_folders: false,
+        wheel_page: true,
         sort_biggest: true,
         find_index: Some(3),
         match_index: Some(2),
@@ -158,6 +159,7 @@ fn resetting_settings_restores_the_defaults() {
     assert_eq!(s.min_size_input, crate::ui_helpers::NO_LIMIT_LABEL);
     assert!(s.trash, "trash is the default");
     assert!(s.remember_folders, "remembering folders is the default");
+    assert!(!s.wheel_page, "a notch scrolls a fixed step by default");
     assert_eq!(s.find_index, Some(0));
     assert_eq!(s.match_index, Some(0));
     assert_eq!(s.image_hash_index, Some(0));

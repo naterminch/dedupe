@@ -5,6 +5,8 @@
 //! scan controls live in the workspace's composer, so the sidebar stays a
 //! quiet index of places.
 
+use std::cell::Cell;
+
 use nsh_base::button;
 use nsh_core::prelude::*;
 
@@ -12,39 +14,50 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, divider, field, focus_ring, heading, hint, icon, icon_ghost_button, icons,
-    motion,
+    caption, card, chip, divider, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon,
+    icon_ghost_button, icons, motion, timing,
 };
 use crate::ui_helpers::fit_text;
+
+// Where the folder list sits, as the wheel last left it (`fast_scroll`).
+thread_local! {
+    static FOLDERS_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+}
+
+/// Puts the folder list back at its top: the workspace unmounts with the
+/// page, so the wheel's remembered offset would point into a list that opens
+/// at the start again.
+pub(crate) fn reset_scroll() {
+    FOLDERS_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+}
 
 /// The left column of the main flow.
 pub(crate) fn sidebar() -> impl IntoElement {
     view()
         .flex_col()
-        .w(px(300.0))
+        .w(px(312.0))
         .h_full()
         .flex_shrink_0()
         .bg(colors::SIDEBAR)
         .border_r_1()
         .border_color(colors::BORDER)
         .child(header_block())
-        .child(
-            scroll().flex_1().min_h(px(0.0)).child(
-                view()
-                    .flex_col()
-                    .gap(px(space::XS))
-                    .px(px(space::SM))
-                    .pb(px(space::MD))
-                    .child(quick_actions())
-                    .child(
-                        view()
-                            .px(px(space::SM))
-                            .pt(px(space::MD))
-                            .child(section_kicker("Folders")),
-                    )
-                    .child(folder_list()),
-            ),
-        )
+        .child(fast_scroll(
+            &FOLDERS_AT,
+            view()
+                .flex_col()
+                .gap(px(space::XS))
+                .px(px(space::SM))
+                .pb(px(space::MD))
+                .child(quick_actions())
+                .child(
+                    view()
+                        .px(px(space::SM))
+                        .pt(px(space::MD))
+                        .child(section_kicker("Folders")),
+                )
+                .child(folder_list()),
+        ))
         .child(tip_card())
 }
 
@@ -100,10 +113,7 @@ fn filter_field() -> impl IntoElement {
 }
 
 fn section_kicker(label: impl IntoReactive<SharedString>) -> Text {
-    text(label)
-        .text_size(px(text::CAPTION))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors::MUTED)
+    eyebrow(label)
 }
 
 /// The "New chat"-style rows: add, scan and the trash switch, each a full
@@ -198,7 +208,7 @@ fn side_row(
         .rounded(px(radius::CONTROL))
         .opacity(if ready { 1.0 } else { 0.45 })
         .transition_colors()
-        .duration(motion(150.0))
+        .duration(motion(timing::FAST))
         .ease_out()
         .hover(move |s| if ready { s.bg(colors::PANE) } else { s })
         .active(|s| s.bg(colors::ELEVATED))
@@ -274,7 +284,7 @@ fn folder_row(path: String, reference: bool) -> View {
         .items_center()
         .gap(px(space::XS))
         .px(px(space::SM))
-        .py(px(space::XXS))
+        .py(px(space::XS))
         .rounded(px(radius::CONTROL))
         .bg(if reference {
             colors::PANE
@@ -282,7 +292,7 @@ fn folder_row(path: String, reference: bool) -> View {
             colors::SIDEBAR
         })
         .transition_colors()
-        .duration(motion(150.0))
+        .duration(motion(timing::FAST))
         .hover(|s| s.bg(colors::PANE))
         .child(icon(
             icons::FOLDER,
@@ -348,7 +358,7 @@ fn row_ghost(
                 .h(px(24.0))
                 .rounded(px(radius::CONTROL))
                 .transition_colors()
-                .duration(motion(150.0))
+                .duration(motion(timing::FAST))
                 .ease_out()
                 .hover(|s| s.bg(colors::ELEVATED))
                 .active(|s| s.opacity(0.9))
@@ -403,7 +413,7 @@ fn tip_card() -> impl IntoElement {
                                     .bg(colors::PANE)
                                     .rounded_full()
                                     .transition_colors()
-                                    .duration(motion(150.0))
+                                    .duration(motion(timing::FAST))
                                     .ease_out()
                                     .hover(|s| s.bg(colors::ELEVATED))
                                     .active(|s| s.opacity(0.9))

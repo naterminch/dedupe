@@ -38,22 +38,39 @@ from the owner's value, so it survives rebuilds.
 
 ## Motion inventory
 
-Every duration goes through `widgets::motion(ms)`, which reads the platform's
-reduce-motion preference reactively and returns 0 when it is on: the same end
-state arrives without an animation.
+Durations are tokens in `widgets::timing`: `FAST` (150 ms) for a control
+answering the pointer, `BASE` (180 ms) for a look change, `SLOW` (240 ms) for a
+surface arriving. Every one goes through `widgets::motion(ms)`, which reads the
+platform's reduce-motion preference reactively and returns 0 when it is on: the
+same end state arrives without the wait.
+
+Arrivals use nsh's motion presets through two helpers: `widgets::entering()`
+(fade while rising 24 pt, 450 ms) for a whole page, and `widgets::fading_in()`
+(fade only, 300 ms) for anything that must not move under the reader. Both are
+created where the pane is built, so a pane that mounts again plays again, and
+nsh lands them at their end state when reduce-motion is on.
 
 | Change | Tool | Tokens |
 | --- | --- | --- |
-| Button hover wash | colour transition, ease-out | 150–180 ms |
-| Button press dim | state style (native, no transition) | opacity 0.9 |
-| Rail slot moving between pages | background transition | 180 ms, `PANE` |
-| Group disclosure chevron opening | transform rotation 0° → 90° | 150 ms, one glyph turned rather than two swapped |
-| Toggle switch thumb | `transition-transform` class on the thumb | 150 ms |
-| Text-field focus edge | colour transition | 180 ms, `BORDER` → `ACCENT` |
-| Toast entering and leaving | all-property transition with starting/ending classes | 200 ms, `translate-y-3` + opacity |
+| Page switch (workspace ⇄ Settings) | `entering()` bound to the page | `FadeInUp`, 450 ms |
+| First-run hero appearing | `entering()` | `FadeInUp`, 450 ms |
+| Results list rebuilt (scan landing, filter, delete, Show more) | `fading_in()` on the list | `FadeIn`, 300 ms |
+| Button hover wash | colour transition, ease-out | `BASE` |
+| Button press dim and sink | state style + scale 0.97, transitioned | `FAST`, opacity 0.9 |
+| Rail slot moving between pages | background transition | `BASE`, `PANE` |
+| Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
+| Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
+| Text-field focus edge | colour transition | `BASE`, `BORDER` → `ACCENT` |
+| Keeper pick and duplicate tick | colour transition on the member surface | `FAST`, `KEEP_WASH` / `SELECT_WASH` |
+| Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
+| Delete dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |
+| Delete dialog panel | nsh's modal slide, panel-only (the scrim is a page-layer sibling) | platform `Slide` |
+| Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
 
-A change that is only a rebuild (a new filter, a new scan) has no animation by
-design: the retained identity of the list is the data, not the elements.
+Two things deliberately do not move: the scrim (a full-window layer must not
+travel) and the results list on a rebuild (it keeps the reader's scroll place,
+so only its opacity changes). Everything else that swaps content fades or rises
+once, instead of blinking.
 
 ## Known gaps
 
