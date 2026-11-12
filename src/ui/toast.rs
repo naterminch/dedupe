@@ -14,7 +14,7 @@ use nsh_core::prelude::*;
 use nsh_core::time::now;
 
 use crate::ui::palette::{colors, radius, space, text};
-use crate::ui::widgets::motion;
+use crate::ui::widgets::{motion, timing};
 
 /// How long a toast stays on screen before it dismisses itself.
 const TOAST_TIMEOUT: Duration = Duration::from_secs(6);
@@ -122,7 +122,7 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                                 colors::BORDER
                             })
                             .transition_all()
-                            .duration(motion(200.0))
+                            .duration(motion(timing::SLOW))
                             .starting_class("translate-y-3 opacity-0")
                             .ending_class("opacity-0")
                             .child(

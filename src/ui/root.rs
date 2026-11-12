@@ -11,7 +11,9 @@ use nsh_core::prelude::*;
 
 use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app, scan_status};
-use crate::ui::widgets::{caption, focus_ring, icon, icon_ghost_button, icons, motion};
+use crate::ui::widgets::{
+    caption, entering, focus_ring, icon, icon_ghost_button, icons, motion, timing,
+};
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::util;
 
@@ -86,11 +88,11 @@ fn nav_rail() -> View {
         view()
             .flex_col()
             .items_center()
-            .w(px(52.0))
+            .w(px(56.0))
             .h_full()
             .flex_shrink_0()
-            .py(px(space::SM))
-            .gap(px(space::XS))
+            .py(px(space::MD))
+            .gap(px(space::SM))
             .bg(colors::BACKGROUND)
             .child(rail_item(
                 icons::HOME,
@@ -126,16 +128,16 @@ fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: 
             .flex_row()
             .items_center()
             .justify_center()
-            .w(px(36.0))
-            .h(px(36.0))
-            .rounded(px(10.0))
+            .w(px(38.0))
+            .h(px(38.0))
+            .rounded(px(12.0))
             .bg(if active {
                 colors::PANE
             } else {
                 colors::BACKGROUND
             })
             .transition_colors()
-            .duration(motion(180.0))
+            .duration(motion(timing::BASE))
             .ease_out()
             .hover(|s| s.bg(colors::PANE))
             .active(|s| s.bg(colors::ELEVATED))
@@ -161,13 +163,18 @@ fn body() -> impl IntoElement {
             // only rebuild when the page actually changes: rebuilding it on a
             // keeper pick or a tick would jump the list back to the top.
             let page = computed(|| app().with(|s| s.view));
+            // Each page rises in as it mounts: the rail says where you are and
+            // the page arriving says you moved, without a wipe between them.
             if page.get() == AppView::Settings {
+                let enter = entering();
                 view()
                     .flex_1()
                     .h_full()
                     .min_w(px(0.0))
                     .child(settings::settings_page())
+                    .bind_motion(&enter)
             } else {
+                let enter = entering();
                 view()
                     .flex_row()
                     .flex_1()
@@ -175,6 +182,7 @@ fn body() -> impl IntoElement {
                     .min_w(px(0.0))
                     .child(shell::sidebar())
                     .child(results::results())
+                    .bind_motion(&enter)
             }
         }))
 }
@@ -189,7 +197,7 @@ fn status_bar() -> impl IntoElement {
         .py(px(space::MD))
         .bg(colors::CARD)
         .border_t_1()
-        .border_color(colors::BORDER)
+        .border_color(colors::HAIRLINE)
         .child(caption(|| {
             // A running scan's phase is what the line reports. It lives in the
             // scan signal, so the status line follows a tick without the app
@@ -203,6 +211,11 @@ fn status_bar() -> impl IntoElement {
         }))
         .child(caption(|| {
             let state = app();
+            // Nothing scanned and nothing running: the counters would only
+            // report "0 file(s) scanned", which is not information.
+            if !state.with(|s| s.scanning || s.has_scanned) {
+                return String::new();
+            }
             let files = state.with(|s| s.files_scanned);
             let bytes = state.with(|s| s.bytes_scanned);
             format!("{files} file(s) scanned - {}", util::human_bytes(bytes))

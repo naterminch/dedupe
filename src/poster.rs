@@ -2,8 +2,8 @@
 //!
 //! Videos cannot be decoded by the UI toolkit, so the GUI shows a poster
 //! frame extracted with `ffmpeg` (already an optional dependency of the
-//! app). Posters are cached in the OS temp dir keyed by path+size+mtime,
-//! so repeat scans never re-extract.
+//! app). Posters are cached in the OS temp dir keyed by path+size+mtime and
+//! the extraction version, so repeat scans never re-extract.
 
 use std::path::{Path, PathBuf};
 
@@ -12,9 +12,16 @@ fn cache_dir() -> PathBuf {
     std::env::temp_dir().join("dedupe-posters")
 }
 
+/// Extraction version: bumped when the way a frame is produced changes, so
+/// frames cached by an older build are decoded again instead of being served
+/// as they were. Version 1 held a clip's opening frame, which is a black
+/// fade or title card for a great many videos.
+const CACHE_VERSION: u8 = 2;
+
 /// Stable cache key: the poster is valid while size+mtime are unchanged.
 fn key_for(path: &Path, size: u64, mtime: Option<i64>) -> String {
     let mut h = blake3::Hasher::new();
+    h.update(&[CACHE_VERSION]);
     h.update(path.to_string_lossy().as_bytes());
     h.update(&size.to_le_bytes());
     if let Some(m) = mtime {
@@ -76,6 +83,22 @@ pub fn video_strip(path: &Path, size: u64, mtime: Option<i64>, n: usize) -> Vec<
     }
     out
 }
+/// Where in a clip its poster frame comes from.
+///
+/// ffmpeg hands back the first frame by default, and plenty of clips open on
+/// a black fade or a title card: a thumbnail of that reads as an empty box on
+/// screen. Ten percent in (but at least a second, and never past the last
+/// half second) lands in the clip's own content. `None` keeps the first
+/// frame, for clips too short to have a middle.
+fn poster_seek(duration_ms: Option<u64>) -> Option<String> {
+    let secs = duration_ms? as f64 / 1000.0;
+    if secs < 1.5 {
+        return None;
+    }
+    let at = (secs * 0.1).clamp(1.0, secs - 0.5);
+    Some(format!("{at:.2}"))
+}
+
 /// Extract (or reuse) a poster PNG for `path`.
 ///
 /// Returns `None` when ffmpeg is missing or extraction fails — callers show
@@ -95,8 +118,13 @@ pub fn video_poster(path: &Path, size: u64, mtime: Option<i64>) -> Option<PathBu
     // Single-threaded decode: posters extract one frame each, and the GUI
     // already runs these back to back — ffmpeg's internal threading would
     // only oversubscribe the machine during big scans.
-    let ok = crate::util::quiet_command("ffmpeg")
-        .args(["-y", "-v", "error", "-threads", "1", "-i"])
+    let mut cmd = crate::util::quiet_command("ffmpeg");
+    cmd.args(["-y", "-v", "error", "-threads", "1"]);
+    if let Some(at) = poster_seek(crate::media::probe_media(path).and_then(|m| m.duration_ms)) {
+        cmd.args(["-ss", at.as_str()]);
+    }
+    let ok = cmd
+        .arg("-i")
         .arg(path)
         .args(["-vframes", "1", "-vf", "scale=320:-1"])
         .arg(&out)
@@ -124,6 +152,19 @@ mod tests {
             "path matters"
         );
         assert_eq!(base.len(), 64, "blake3 hex digest");
+    }
+
+    #[test]
+    fn poster_seek_lands_inside_the_clip() {
+        assert_eq!(poster_seek(None), None, "unknown duration keeps frame one");
+        assert_eq!(poster_seek(Some(900)), None, "too short to have a middle");
+        assert_eq!(poster_seek(Some(4_000)).as_deref(), Some("1.00"));
+        assert_eq!(poster_seek(Some(60_000)).as_deref(), Some("6.00"));
+        assert_eq!(
+            poster_seek(Some(1_600)).as_deref(),
+            Some("1.00"),
+            "never seeks past the last half second"
+        );
     }
 
     #[test]

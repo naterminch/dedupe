@@ -4,6 +4,8 @@
 //! Every control writes straight into [`AppState`] and persists through
 //! `actions::save_prefs`.
 
+use std::cell::Cell;
+
 use nsh_base::{number_input, radio, radio_group, tab, tabs};
 use nsh_core::prelude::*;
 
@@ -13,8 +15,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
-    caption, card, divider, heading, help_dot, page_heading, panel_title, secondary_button,
-    selection, toggle_switch,
+    bezel, bezel_core, caption, divider, eyebrow, fast_scroll, heading, help_dot, motion,
+    page_heading, panel_title, secondary_button, selection, timing, toggle_switch,
 };
 use crate::ui_helpers::{find_mode_caption, hash_caption};
 use crate::util;
@@ -39,6 +41,18 @@ const IMAGE_HASH_LABELS: [&str; 5] = ["Auto (dHash)", "dHash", "pHash", "aHash",
 const KEEP_LABELS: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best quality"];
 const MUSIC_LABELS: [&str; 2] = ["Embedded tags", "Audio fingerprint"];
 
+// Where the settings page sits, as the wheel last left it (`fast_scroll`).
+thread_local! {
+    static SETTINGS_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+}
+
+/// Puts the settings page back at its top: leaving it unmounts the page, so
+/// the wheel's remembered offset would point into a page that opens at the
+/// start again.
+pub(crate) fn reset_scroll() {
+    SETTINGS_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+}
+
 pub(crate) fn settings_page() -> View {
     view()
         .flex_row()
@@ -47,24 +61,21 @@ pub(crate) fn settings_page() -> View {
         .min_w(px(0.0))
         .overflow_hidden()
         .child(nav())
-        .child(
-            view()
-                .flex_1()
-                .h_full()
-                .min_w(px(0.0))
-                .child(scroll().h_full().child(view().w_full().child(dynamic(|| {
-                    // The page follows the settings it shows, not the app's
-                    // progress: reading the app signal directly rebuilt every
-                    // control here on each scan tick (and re-walked the cache
-                    // directory with it).
-                    let shape = computed(settings_shape);
-                    shape.get();
-                    match app().with_untracked(|s| s.settings_tab) {
-                        SettingsTab::General => general_page(),
-                        SettingsTab::Preferences => preferences_page(),
-                    }
-                })))),
-        )
+        .child(view().flex_1().h_full().min_w(px(0.0)).child(fast_scroll(
+            &SETTINGS_AT,
+            dynamic(|| {
+                // The page follows the settings it shows, not the app's
+                // progress: reading the app signal directly rebuilt every
+                // control here on each scan tick (and re-walked the cache
+                // directory with it).
+                let shape = computed(settings_shape);
+                shape.get();
+                match app().with_untracked(|s| s.settings_tab) {
+                    SettingsTab::General => general_page(),
+                    SettingsTab::Preferences => preferences_page(),
+                }
+            }),
+        )))
 }
 
 /// Everything the Settings pages render from the app state.
@@ -79,6 +90,7 @@ struct SettingsShape {
     cache_msg: String,
     trash: bool,
     remember_folders: bool,
+    wheel_page: bool,
     find_index: usize,
     /// Match mode, hash algorithm, no-cache, image fingerprint, partial
     /// clips, music-by-content: the choices the Preferences page builds from.
@@ -94,6 +106,7 @@ fn settings_shape() -> SettingsShape {
         cache_msg: s.cache_msg.clone(),
         trash: s.trash,
         remember_folders: s.remember_folders,
+        wheel_page: s.wheel_page,
         find_index: s.find_index.unwrap_or(0),
         matching: (
             s.match_index.unwrap_or(0),
@@ -158,7 +171,7 @@ fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> im
                     FontWeight::NORMAL
                 })
                 .text_color(if active {
-                    colors::ACCENT
+                    colors::ACCENT_INK
                 } else {
                     colors::MUTED
                 }),
@@ -170,8 +183,9 @@ fn page_column(children: Vec<View>) -> View {
         .flex_col()
         .w_full()
         .max_w(px(970.0))
-        .gap(px(space::XXL))
-        .p(px(space::XXL));
+        .gap(px(space::XXXL))
+        .px(px(space::XXXL))
+        .py(px(space::XXL));
     for child in children {
         column = column.child(child);
     }
@@ -182,13 +196,17 @@ fn header(title: &'static str, description: &'static str) -> View {
     view()
         .flex_col()
         .gap(px(space::XS))
+        .child(eyebrow(title.to_uppercase()))
         .child(page_heading(title))
         .child(caption(description))
 }
 
 fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
+    // A narrow window stacks the control under its label rather than pushing
+    // the row past the card's edge.
     view()
         .flex_row()
+        .flex_wrap()
         .w_full()
         .items_center()
         .justify_between()
@@ -214,13 +232,14 @@ fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> V
         }
         body = body.child(content);
     }
-    card()
-        .w_full()
-        .gap(px(space::MD))
-        .p(px(space::LG))
-        .child(panel_title(title))
-        .child(caption(description))
-        .child(body)
+    bezel().w_full().child(
+        bezel_core()
+            .gap(px(space::MD))
+            .p(px(space::LG))
+            .child(panel_title(title))
+            .child(caption(description))
+            .child(body),
+    )
 }
 
 fn choice_chip(
@@ -239,6 +258,10 @@ fn choice_chip(
         .bg(fill)
         .border_1()
         .border_color(border)
+        // Choosing a different option cross-fades the pill instead of
+        // repainting it.
+        .transition_colors()
+        .duration(motion(timing::FAST))
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -348,6 +371,7 @@ fn general_page() -> View {
     let cache_msg = app().with(|s| s.cache_msg.clone());
     let trash = app().with(|s| s.trash);
     let remember = app().with(|s| s.remember_folders);
+    let wheel_page = app().with(|s| s.wheel_page);
     page_column(vec![
         header("General", "Everyday behavior and the local scan cache."),
         section(
@@ -367,6 +391,14 @@ fn general_page() -> View {
                     "Restore the last folder list the next time the app opens.",
                     toggle("Remember", remember, || {
                         app().update(|s| s.remember_folders = !s.remember_folders);
+                        actions::save_prefs();
+                    }),
+                ),
+                row(
+                    "Page-sized mouse wheel",
+                    "A wheel notch moves a whole page of the list instead of a few rows. Touchpads keep their own, finer scrolling.",
+                    toggle("Page", wheel_page, || {
+                        app().update(|s| s.wheel_page = !s.wheel_page);
                         actions::save_prefs();
                     }),
                 ),
