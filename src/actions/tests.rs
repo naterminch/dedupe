@@ -3,6 +3,7 @@ use crate::cli::HashAlgo;
 use crate::hashing::HashEngine;
 use crate::matching::{Group, GroupMember};
 use crate::media::MediaKind;
+use crate::modes::{Finding, FindingGroup};
 use std::fs;
 use std::path::PathBuf;
 
@@ -387,6 +388,126 @@ fn hardlink_duplicates_skips_similar_groups() {
     assert_eq!(stats.linked, 0);
     assert_eq!(stats.files_skipped, 1);
     assert!(dup.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A cleanup finding as the scan leaves it: content hashed for the delete
+/// check that follows.
+fn finding_for(path: &PathBuf, kind: &'static str) -> Finding {
+    Finding {
+        path: path.clone(),
+        size: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        kind,
+        detail: String::new(),
+        is_dir: false,
+        hash: Some(engine().full(path).unwrap()),
+    }
+}
+
+#[test]
+fn protected_findings_are_kept_and_counted() {
+    let dir = tmpdir("find-protected");
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let kept = backup.join("empty.log");
+    let gone = dir.join("empty.log");
+    fs::write(&kept, b"").unwrap();
+    fs::write(&gone, b"").unwrap();
+    let findings = vec![finding_for(&kept, "empty"), finding_for(&gone, "empty")];
+    let protected = vec![fs::canonicalize(&backup).unwrap()];
+
+    let stats = delete_findings(
+        &findings,
+        Disposition::Permanent,
+        true,
+        &protected,
+        &engine(),
+    );
+
+    assert_eq!(stats.deleted, 1, "only the unprotected finding goes");
+    assert_eq!(stats.skipped, 1);
+    assert!(
+        kept.exists(),
+        "a finding inside a protected folder must survive"
+    );
+    assert!(!gone.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finding_with_changed_content_is_skipped() {
+    let dir = tmpdir("find-changed");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"aaaa").unwrap();
+    let before = finding_for(&path, "temp");
+    // Same size, different bytes: only the content hash can catch this.
+    fs::write(&path, b"bbbb").unwrap();
+
+    let stats = delete_findings(&[before], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 0);
+    assert_eq!(stats.skipped, 1);
+    assert!(path.exists(), "a file whose content changed must survive");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finding_with_unchanged_content_is_deleted() {
+    let dir = tmpdir("find-same");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"payload").unwrap();
+    let finding = finding_for(&path, "temp");
+
+    let stats = delete_findings(&[finding], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 1);
+    assert!(!path.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn protected_group_members_are_kept() {
+    let dir = tmpdir("find-group");
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let keep = dir.join("song.flac");
+    let dup = dir.join("copy.flac");
+    let guarded = backup.join("archive.flac");
+    for path in [&keep, &dup, &guarded] {
+        fs::write(path, b"one").unwrap();
+    }
+    let eng = engine();
+    let group = FindingGroup {
+        label: "track".to_string(),
+        detail: String::new(),
+        members: vec![keep.clone(), dup.clone(), guarded.clone()],
+        sizes: vec![3, 3, 3],
+        hashes: vec![
+            Some(eng.full(&keep).unwrap()),
+            Some(eng.full(&dup).unwrap()),
+            Some(eng.full(&guarded).unwrap()),
+        ],
+        bytes: 9,
+        reclaimable: 6,
+    };
+    let protected = vec![fs::canonicalize(&backup).unwrap()];
+
+    let stats = delete_finding_groups(
+        &[group],
+        Disposition::Permanent,
+        true,
+        &protected,
+        &engine(),
+    );
+
+    assert_eq!(stats.deleted, 1, "only the unprotected copy goes");
+    assert!(keep.exists(), "the keeper always stays");
+    assert!(guarded.exists(), "a protected copy must survive");
+    assert!(!dup.exists());
 
     let _ = fs::remove_dir_all(&dir);
 }

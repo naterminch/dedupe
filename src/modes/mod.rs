@@ -33,6 +33,10 @@ pub struct Finding {
     pub kind: &'static str,
     pub detail: String,
     pub is_dir: bool,
+    /// Content hash recorded when the scan ran, so a deletion can prove the
+    /// file has not changed since. `None` for directories, symlinks and
+    /// anything that could not be read.
+    pub hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +45,9 @@ pub struct FindingGroup {
     pub detail: String,
     pub members: Vec<PathBuf>,
     pub sizes: Vec<u64>,
+    /// Content hash per member, parallel to `sizes`, recorded at scan time
+    /// (see [`attach_content_hashes`]).
+    pub hashes: Vec<Option<String>>,
     pub bytes: u64,
     pub reclaimable: u64,
 }
@@ -79,6 +86,29 @@ impl ModeResult {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.findings.is_empty() && self.groups.is_empty()
+    }
+}
+
+/// Record the content of every deletable item, so deletion can re-hash it and
+/// skip the ones that changed in between.
+///
+/// Only a run that is about to delete pays for this: hashing is per finding,
+/// and a report-only scan (or `--dry-run`) must not read the files it merely
+/// lists. Directories and symlinks keep `None`; the type checks before removal
+/// cover those.
+pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine) {
+    for finding in &mut result.findings {
+        if finding.is_dir {
+            continue;
+        }
+        finding.hash = engine.full(&finding.path).ok();
+    }
+    for group in &mut result.groups {
+        group.hashes = group
+            .members
+            .iter()
+            .map(|path| engine.full(path).ok())
+            .collect();
     }
 }
 

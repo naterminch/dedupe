@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 pub use consolidate::{consolidate_keepers, consolidate_targets, plan_consolidation};
 pub use delete::{delete_duplicates, delete_targets};
-pub use findings::{delete_finding_groups, delete_findings};
+pub use findings::{delete_finding_groups, delete_findings, is_protected};
 pub use hardlink::hardlink_duplicates;
 pub use quarantine::move_duplicates;
 

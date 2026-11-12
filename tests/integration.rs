@@ -710,6 +710,41 @@ fn trash_delete_removes_files_from_their_location() {
 }
 
 #[test]
+fn cleanup_delete_keeps_findings_in_reference_dirs() {
+    let dir = tmpdir("cleanup-protected");
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    fs::write(dir.join("stray.log"), b"").unwrap();
+    fs::write(backup.join("keep.log"), b"").unwrap();
+
+    let (out, _) = run(&[
+        "--find",
+        "empty-files",
+        "--delete",
+        "--yes",
+        "--quiet",
+        "--reference-dir",
+        backup.to_str().unwrap(),
+        dir.to_str().unwrap(),
+    ]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        backup.join("keep.log").exists(),
+        "a finding inside --reference-dir must survive a cleanup delete"
+    );
+    assert!(
+        !dir.join("stray.log").exists(),
+        "unprotected findings are still deleted"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn json_report_carries_provenance_fields() {
     let dir = tmpdir("provenance");
     fs::write(dir.join("a.txt"), b"payload").unwrap();

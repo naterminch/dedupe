@@ -1,11 +1,39 @@
 use super::guard::prompt;
 use super::{Disposition, FindingDeleteStats};
+use crate::hashing::HashEngine;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
 use crate::util::human_bytes;
 use anyhow::Result;
 use console::style;
 use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Whether `path` sits inside one of the reference directories.
+///
+/// A reference directory is the user's own safety net — a backup, or a folder
+/// the GUI shows as protected — so a cleanup mode may still find clutter in
+/// there but must never remove it.
+#[must_use]
+pub fn is_protected(path: &Path, protected: &[PathBuf]) -> bool {
+    if protected.is_empty() {
+        return false;
+    }
+    let canonical = crate::matching::canonical_member(path);
+    protected.iter().any(|dir| canonical.starts_with(dir))
+}
+
+/// Compare a finding against the hash recorded during the scan.
+///
+/// `true` when nothing was recorded (a directory, a symlink, or a file that
+/// could not be read) or the file still hashes the same: only a real content
+/// change keeps a finding from being deleted.
+fn content_unchanged(finding: &Finding, engine: &HashEngine) -> bool {
+    let Some(expected) = finding.hash.as_deref() else {
+        return true;
+    };
+    engine.full(&finding.path).is_ok_and(|now| now == expected)
+}
 
 fn finding_still_valid(finding: &Finding) -> bool {
     match finding.kind {
@@ -57,17 +85,45 @@ pub fn delete_findings(
     findings: &[Finding],
     disposition: Disposition,
     yes: bool,
+    protected: &[PathBuf],
+    engine: &HashEngine,
 ) -> FindingDeleteStats {
     let mut stats = FindingDeleteStats::default();
     if findings.is_empty() {
         return stats;
     }
-    let bytes: u64 = findings.iter().filter(|f| !f.is_dir).map(|f| f.size).sum();
+    // Protected folders are decided before anything is asked or removed: a
+    // finding inside one is not a candidate, and saying so up front keeps the
+    // prompt's count honest.
+    let (protected_findings, deleteable): (Vec<&Finding>, Vec<&Finding>) = findings
+        .iter()
+        .partition(|finding| is_protected(&finding.path, protected));
+    if !protected_findings.is_empty() {
+        stats.skipped += protected_findings.len() as u64;
+        eprintln!(
+            "{} {}",
+            style("⚠").yellow(),
+            style(format!(
+                "{} found item(s) are inside a protected folder, keeping them",
+                protected_findings.len()
+            ))
+            .yellow()
+            .bold()
+        );
+    }
+    if deleteable.is_empty() {
+        return stats;
+    }
+    let bytes: u64 = deleteable
+        .iter()
+        .filter(|f| !f.is_dir)
+        .map(|f| f.size)
+        .sum();
     if !yes {
         let answer = prompt(&format!(
             "{} Delete {} found item(s) ({} reclaimable)? {} ",
             style("?").yellow().bold(),
-            findings.len(),
+            deleteable.len(),
             human_bytes(bytes),
             style("[y/N]").dim(),
         ));
@@ -75,12 +131,12 @@ pub fn delete_findings(
             answer.trim().to_ascii_lowercase().as_str(),
             "y" | "yes" | "a" | "all"
         ) {
-            stats.skipped = findings.len() as u64;
+            stats.skipped += deleteable.len() as u64;
             return stats;
         }
     }
-    for finding in findings {
-        if !finding_still_valid(finding) {
+    for finding in deleteable {
+        if !finding_still_valid(finding) || !content_unchanged(finding, engine) {
             eprintln!(
                 "{} {}: {}",
                 style("⚠").yellow(),
@@ -115,12 +171,36 @@ pub fn delete_finding_groups(
     groups: &[FindingGroup],
     disposition: Disposition,
     yes: bool,
+    protected: &[PathBuf],
+    engine: &HashEngine,
 ) -> FindingDeleteStats {
     let mut stats = FindingDeleteStats::default();
     let mut assume_yes = yes;
     'groups: for group in groups {
-        let targets: Vec<(usize, &std::path::PathBuf)> =
-            group.members.iter().enumerate().skip(1).collect();
+        // The first member is the keeper; the rest are deletion candidates,
+        // minus anything sitting in a protected folder.
+        let mut targets: Vec<(usize, &PathBuf)> = Vec::new();
+        let mut kept = 0usize;
+        for (index, path) in group.members.iter().enumerate().skip(1) {
+            if is_protected(path, protected) {
+                kept += 1;
+            } else {
+                targets.push((index, path));
+            }
+        }
+        if kept > 0 {
+            stats.skipped += kept as u64;
+            eprintln!(
+                "{} {}",
+                style("⚠").yellow(),
+                style(format!(
+                    "{kept} copy(ies) of “{}” are inside a protected folder, keeping them",
+                    group.label
+                ))
+                .yellow()
+                .bold()
+            );
+        }
         if targets.is_empty() {
             continue;
         }
@@ -147,7 +227,11 @@ pub fn delete_finding_groups(
             let size_ok = fs::metadata(path)
                 .map(|m| m.len() == expected_size)
                 .unwrap_or(false);
-            if !size_ok {
+            let content_ok = match group.hashes.get(i).and_then(|hash| hash.as_deref()) {
+                None => true,
+                Some(expected) => engine.full(path).is_ok_and(|now| now == expected),
+            };
+            if !size_ok || !content_ok {
                 eprintln!(
                     "{} {}: {}",
                     style("⚠").yellow(),
@@ -163,6 +247,7 @@ pub fn delete_finding_groups(
                 kind: "group",
                 detail: String::new(),
                 is_dir: false,
+                hash: None,
             };
             match remove_finding_path(&finding, disposition) {
                 Ok(()) => {

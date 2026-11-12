@@ -78,6 +78,7 @@ pub(super) fn music_groups(
             reclaimable: bytes.saturating_sub(largest),
             sizes,
             bytes,
+            hashes: vec![None; members_sorted.len()],
             members: members_sorted,
         });
     }

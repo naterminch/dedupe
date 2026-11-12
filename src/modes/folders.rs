@@ -124,6 +124,7 @@ pub(super) fn duplicate_folders(
                 crate::util::human_bytes(total_bytes)
             ),
             reclaimable: total_bytes.saturating_mul(filtered.len() as u64 - 1),
+            hashes: vec![None; filtered.len()],
             members: filtered,
             sizes,
             bytes: total_bytes,
