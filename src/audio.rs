@@ -185,6 +185,7 @@ pub fn music_groups(
             reclaimable: bytes.saturating_sub(largest),
             sizes,
             bytes,
+            hashes: vec![None; paths.len()],
             members: paths,
         });
     }

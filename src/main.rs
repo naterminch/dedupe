@@ -442,17 +442,48 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
         }
         return Ok(());
     }
+    let protected = dedupe::matching::canonicalize_refs(&cli.reference_dir);
     if cli.dry_run {
+        let kept = result
+            .findings
+            .iter()
+            .filter(|finding| dedupe::actions::is_protected(&finding.path, &protected))
+            .count();
+        let members = result
+            .groups
+            .iter()
+            .map(|group| group.members.len().saturating_sub(1))
+            .sum::<usize>();
+        let kept_members = result
+            .groups
+            .iter()
+            .map(|group| {
+                group
+                    .members
+                    .iter()
+                    .skip(1)
+                    .filter(|path| dedupe::actions::is_protected(path, &protected))
+                    .count()
+            })
+            .sum::<usize>();
         println!(
             "{} Dry run: would delete {} finding(s) and {} duplicate group member(s); nothing was removed.",
             style("◌").cyan().bold(),
-            result.findings.len(),
-            result
-                .groups
-                .iter()
-                .map(|g| g.members.len().saturating_sub(1))
-                .sum::<usize>(),
+            result.findings.len().saturating_sub(kept),
+            members.saturating_sub(kept_members),
         );
+        if kept + kept_members > 0 {
+            eprintln!(
+                "{} {}",
+                style("⚠").yellow(),
+                style(format!(
+                    "{} found item(s) are inside a protected folder and would be kept",
+                    kept + kept_members
+                ))
+                .yellow()
+                .bold()
+            );
+        }
         return Ok(());
     }
     let disposition = if cli.trash {
@@ -460,17 +491,30 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
     } else {
         dedupe::actions::Disposition::Permanent
     };
+    let engine = dedupe::hashing::HashEngine::new(cli.hash);
     let mut deleted = 0u64;
     let mut bytes = 0u64;
     let mut skipped = 0u64;
     if !result.findings.is_empty() {
-        let stats = dedupe::actions::delete_findings(&result.findings, disposition, cli.yes);
+        let stats = dedupe::actions::delete_findings(
+            &result.findings,
+            disposition,
+            cli.yes,
+            &protected,
+            &engine,
+        );
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;
     }
     if !result.groups.is_empty() {
-        let stats = dedupe::actions::delete_finding_groups(&result.groups, disposition, cli.yes);
+        let stats = dedupe::actions::delete_finding_groups(
+            &result.groups,
+            disposition,
+            cli.yes,
+            &protected,
+            &engine,
+        );
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;

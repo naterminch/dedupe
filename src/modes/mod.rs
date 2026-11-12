@@ -16,7 +16,7 @@ use crate::cancel::CancelToken;
 use crate::cli::{Cli, FindMode};
 use crate::hashing::HashEngine;
 use crate::scan::FileEntry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use exif::{ExifReport, strip_exif};
 pub use glob::glob_match;
@@ -26,21 +26,39 @@ pub const AUDIO_EXTS: [&str; 12] = [
     "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "wma", "aiff", "aif", "ape",
 ];
 
-#[derive(Debug, Clone)]
+/// One item a cleanup mode reported.
+///
+/// `#[non_exhaustive]`: fields grow as new safety checks appear (the content
+/// hash was the last one), and callers outside the crate should build these
+/// with [`Finding::default`] and field assignment rather than a literal.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Finding {
     pub path: PathBuf,
     pub size: u64,
     pub kind: &'static str,
     pub detail: String,
     pub is_dir: bool,
+    /// Content hash recorded when the scan ran, so a deletion can prove the
+    /// file has not changed since. `None` when the content could not be read,
+    /// which deletion treats as unverified and keeps.
+    pub hash: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// A set of items a cleanup mode treats as copies of each other.
+///
+/// `#[non_exhaustive]` for the same reason as [`Finding`]: build with
+/// [`FindingGroup::default`] plus field assignment outside the crate.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct FindingGroup {
     pub label: String,
     pub detail: String,
     pub members: Vec<PathBuf>,
     pub sizes: Vec<u64>,
+    /// Content hash per member, parallel to `sizes`, recorded at scan time
+    /// (see [`attach_content_hashes`]).
+    pub hashes: Vec<Option<String>>,
     pub bytes: u64,
     pub reclaimable: u64,
 }
@@ -79,6 +97,73 @@ impl ModeResult {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.findings.is_empty() && self.groups.is_empty()
+    }
+}
+
+/// What a candidate holds: file bytes, or a symlink's target so a broken link
+/// can still be verified before it is unlinked. `None` for directories and for
+/// anything unreadable, which deletion treats as "cannot prove it unchanged"
+/// and keeps.
+#[must_use]
+pub fn content_hash(path: &Path, engine: &HashEngine) -> Option<String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path)
+            .ok()
+            .map(|target| engine.bytes(target.to_string_lossy().as_bytes())),
+        Ok(meta) if meta.is_dir() => None,
+        Ok(_) => engine.full(path).ok(),
+        Err(_) => None,
+    }
+}
+
+/// Record the content of every deletable item, so deletion can re-hash it and
+/// skip the ones that changed in between.
+///
+/// Only a run that is about to delete pays for this: hashing is per finding,
+/// and a report-only scan (or `--dry-run`) must not read the files it merely
+/// lists. A cancelled scan stops early, leaving the rest unhashed so they are
+/// kept rather than removed unverified.
+pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cancel: &CancelToken) {
+    for finding in &mut result.findings {
+        if cancel.is_cancelled() {
+            return;
+        }
+        finding.hash = if still_same_size(&finding.path, finding.size) {
+            content_hash(&finding.path, engine)
+        } else {
+            // The file already changed since it was classified: hashing it now
+            // would bless the new contents, so record nothing and let the
+            // deletion keep it.
+            None
+        };
+    }
+    for group in &mut result.groups {
+        if cancel.is_cancelled() {
+            return;
+        }
+        group.hashes = group
+            .members
+            .iter()
+            .zip(&group.sizes)
+            .map(|(path, size)| {
+                if still_same_size(path, *size) {
+                    content_hash(path, engine)
+                } else {
+                    None
+                }
+            })
+            .collect();
+    }
+}
+
+/// Whether a candidate still looks like the entry the scan classified. Symlinks
+/// report their own size, so they count as unchanged; a regular file that grew
+/// or shrank between detection and hashing does not.
+fn still_same_size(path: &Path, expected: u64) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => true,
+        Ok(meta) if meta.is_file() => meta.len() == expected,
+        _ => false,
     }
 }
 

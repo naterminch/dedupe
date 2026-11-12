@@ -60,6 +60,12 @@ impl HashEngine {
         }
     }
 
+    /// Hash a slice already in memory, in the configured algorithm.
+    #[must_use]
+    pub fn bytes(&self, data: &[u8]) -> String {
+        self.digest_bytes(data)
+    }
+
     fn digest_bytes(&self, data: &[u8]) -> String {
         match self.algo {
             HashAlgo::Blake3 => blake3::hash(data).to_hex().to_string(),

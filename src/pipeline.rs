@@ -152,7 +152,13 @@ pub fn run_scan(
     let similar_threshold = cli.similarity / 100.0;
     let engine = hashing::HashEngine::new(cli.hash);
     if cli.find != cli::FindMode::Duplicates {
-        let mode_result = modes::run_mode(cli, cancel);
+        let mut mode_result = modes::run_mode(cli, cancel);
+        // A deletion has to prove each finding is unchanged, so record what
+        // the files hold now. Report-only runs skip this: hashing the top
+        // entries of a big-files report would cost more than the scan.
+        if cli.delete && !cli.dry_run {
+            modes::attach_content_hashes(&mut mode_result, &engine, cancel);
+        }
         let stats = report::ScanStats {
             files_scanned: mode_result.files_scanned as usize,
             bytes_scanned: mode_result.bytes_scanned,
@@ -171,7 +177,7 @@ pub fn run_scan(
             needs_ffprobe_note: false,
             needs_ffmpeg_note: false,
             cache_save_errors: Vec::new(),
-            reference_dirs: Vec::new(),
+            reference_dirs: reference_dirs.clone(),
             cancelled,
             mode_result: Some(mode_result),
         });

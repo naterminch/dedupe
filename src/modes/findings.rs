@@ -18,6 +18,7 @@ pub(super) fn finding(
         kind,
         detail: detail.into(),
         is_dir,
+        hash: None,
     }
 }
 

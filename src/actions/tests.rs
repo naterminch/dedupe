@@ -3,8 +3,9 @@ use crate::cli::HashAlgo;
 use crate::hashing::HashEngine;
 use crate::matching::{Group, GroupMember};
 use crate::media::MediaKind;
+use crate::modes::{Finding, FindingGroup};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -389,4 +390,306 @@ fn hardlink_duplicates_skips_similar_groups() {
     assert!(dup.exists());
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// A cleanup finding as the scan leaves it: content hashed for the delete
+/// check that follows.
+fn finding_for(path: &PathBuf, kind: &'static str) -> Finding {
+    Finding {
+        path: path.clone(),
+        size: fs::metadata(path).map(|m| m.len()).unwrap_or(0),
+        kind,
+        detail: String::new(),
+        is_dir: false,
+        hash: Some(engine().full(path).unwrap()),
+    }
+}
+
+#[test]
+fn relative_path_without_working_directory_counts_as_protected() {
+    let protected = vec![std::env::temp_dir().join("backup")];
+
+    // Nothing can be placed without a working directory, so the check must
+    // assume the file sits behind the fence instead of letting it through.
+    assert!(findings::is_protected_in(
+        Path::new("stray.log"),
+        &protected,
+        None
+    ));
+}
+
+#[test]
+fn relative_path_is_resolved_against_the_working_directory() {
+    let cwd = std::env::temp_dir();
+    let protected = vec![cwd.join("backup")];
+
+    assert!(findings::is_protected_in(
+        Path::new("backup/stray.log"),
+        &protected,
+        Some(&cwd)
+    ));
+}
+
+#[test]
+fn relative_path_outside_the_fence_is_not_protected() {
+    let cwd = std::env::temp_dir();
+    let protected = vec![cwd.join("backup")];
+
+    assert!(!findings::is_protected_in(
+        Path::new("elsewhere/stray.log"),
+        &protected,
+        Some(&cwd)
+    ));
+}
+
+/// One zero-byte finding inside a reference dir and one outside it, so each
+/// test can assert on a single outcome.
+struct ProtectedFindings {
+    dir: PathBuf,
+    kept: PathBuf,
+    gone: PathBuf,
+    findings: Vec<Finding>,
+    protected: Vec<PathBuf>,
+}
+
+fn protected_findings(tag: &str) -> ProtectedFindings {
+    let dir = tmpdir(tag);
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let kept = backup.join("empty.log");
+    let gone = dir.join("empty.log");
+    fs::write(&kept, b"").unwrap();
+    fs::write(&gone, b"").unwrap();
+    let findings = vec![finding_for(&kept, "empty"), finding_for(&gone, "empty")];
+    let protected = vec![fs::canonicalize(&backup).unwrap()];
+    ProtectedFindings {
+        dir,
+        kept,
+        gone,
+        findings,
+        protected,
+    }
+}
+
+#[test]
+fn protected_finding_is_not_deleted() {
+    let fixture = protected_findings("find-protected-kept");
+
+    delete_findings(
+        &fixture.findings,
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert!(
+        fixture.kept.exists(),
+        "a finding inside a protected folder must survive"
+    );
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn unprotected_finding_is_deleted_beside_a_protected_one() {
+    let fixture = protected_findings("find-protected-deleted");
+
+    delete_findings(
+        &fixture.findings,
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert!(
+        !fixture.gone.exists(),
+        "a finding outside the reference dirs is still deleted"
+    );
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn protected_finding_is_counted_as_skipped() {
+    let fixture = protected_findings("find-protected-skipped");
+
+    let stats = delete_findings(
+        &fixture.findings,
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert_eq!(
+        stats.skipped, 1,
+        "a protected finding is reported as skipped"
+    );
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn finding_with_changed_content_is_skipped() {
+    let dir = tmpdir("find-changed");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"aaaa").unwrap();
+    let before = finding_for(&path, "temp");
+    // Same size, different bytes: only the content hash can catch this.
+    fs::write(&path, b"bbbb").unwrap();
+
+    let stats = delete_findings(&[before], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 0);
+    assert_eq!(stats.skipped, 1);
+    assert!(path.exists(), "a file whose content changed must survive");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finding_with_unchanged_content_is_deleted() {
+    let dir = tmpdir("find-same");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"payload").unwrap();
+    let finding = finding_for(&path, "temp");
+
+    let stats = delete_findings(&[finding], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 1);
+    assert!(!path.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn finding_without_recorded_hash_is_kept() {
+    let dir = tmpdir("find-nohash");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"payload").unwrap();
+    let mut finding = finding_for(&path, "temp");
+    finding.hash = None;
+
+    let stats = delete_findings(&[finding], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 0, "an unverifiable file is not deleted");
+    assert_eq!(stats.skipped, 1);
+    assert!(path.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// One track with a keeper, an unprotected copy and a copy inside a reference
+/// dir, so each test can assert on a single outcome.
+struct ProtectedGroup {
+    dir: PathBuf,
+    keep: PathBuf,
+    dup: PathBuf,
+    guarded: PathBuf,
+    group: FindingGroup,
+    protected: Vec<PathBuf>,
+}
+
+fn protected_group(tag: &str) -> ProtectedGroup {
+    let dir = tmpdir(tag);
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let keep = dir.join("song.flac");
+    let dup = dir.join("copy.flac");
+    let guarded = backup.join("archive.flac");
+    for path in [&keep, &dup, &guarded] {
+        fs::write(path, b"one").unwrap();
+    }
+    let eng = engine();
+    let group = FindingGroup {
+        label: "track".to_string(),
+        detail: String::new(),
+        members: vec![keep.clone(), dup.clone(), guarded.clone()],
+        sizes: vec![3, 3, 3],
+        hashes: vec![
+            Some(eng.full(&keep).unwrap()),
+            Some(eng.full(&dup).unwrap()),
+            Some(eng.full(&guarded).unwrap()),
+        ],
+        bytes: 9,
+        reclaimable: 6,
+    };
+    let protected = vec![fs::canonicalize(&backup).unwrap()];
+    ProtectedGroup {
+        dir,
+        keep,
+        dup,
+        guarded,
+        group,
+        protected,
+    }
+}
+
+#[test]
+fn group_keeper_is_never_deleted() {
+    let fixture = protected_group("find-group-keeper");
+
+    delete_finding_groups(
+        &[fixture.group],
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert!(fixture.keep.exists(), "the keeper always stays");
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn protected_group_member_is_not_deleted() {
+    let fixture = protected_group("find-group-kept");
+
+    delete_finding_groups(
+        &[fixture.group],
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert!(
+        fixture.guarded.exists(),
+        "a copy inside a protected folder must survive"
+    );
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn unprotected_group_member_is_deleted() {
+    let fixture = protected_group("find-group-deleted");
+
+    delete_finding_groups(
+        &[fixture.group],
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert!(
+        !fixture.dup.exists(),
+        "a copy outside the reference dirs is still deleted"
+    );
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn protected_group_member_is_counted_as_skipped() {
+    let fixture = protected_group("find-group-skipped");
+
+    let stats = delete_finding_groups(
+        &[fixture.group],
+        Disposition::Permanent,
+        true,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert_eq!(stats.skipped, 1, "a protected copy is reported as skipped");
+    let _ = fs::remove_dir_all(&fixture.dir);
 }

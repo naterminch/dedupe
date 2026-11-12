@@ -40,7 +40,7 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
    counts. **Stop** cancels a scan instantly.
 
 Folders can be marked as **protected**: their copies win the keep decision and
-are never deleted (duplicate scans). The keep rule (First / Smallest / Newest /
+are never deleted, whatever the scan is looking for. The keep rule (First / Smallest / Newest /
 Oldest / Best quality) can be changed without rescanning, and **Consolidate**
 gathers one copy of every group into a folder of your choosing, leaving protected
 keepers where they are. Settings also cover the scan type, match mode, image
@@ -76,7 +76,7 @@ Useful flags:
 | `--image-hash` | `auto` (dHash), `phash`, `ahash` or `color` |
 | `--partial-clips` | Also match a short clip found inside a longer one |
 | `--trash` / `--dry-run` | Move to the system trash instead of deleting; or only list what would go |
-| `--reference-dir` | Never delete copies here (repeatable, duplicate scans; scan the folder too) |
+| `--reference-dir` | Never delete anything inside this folder (repeatable); scan it too to use it as a matching reference |
 | `--jobs N` | Worker threads (`0` = all but one core) |
 | `--json` / `--csv` / `--html` | Machine-readable, spreadsheet or shareable report |
 
@@ -84,9 +84,11 @@ Useful flags:
 
 ## Is my data safe?
 
-- Duplicates are re-hashed immediately before they are removed, and a copy that
-  changed meanwhile is skipped. Cleanup findings are re-checked for type and size
-  instead, since there is no second copy to compare against.
+- Every file is re-hashed immediately before it is removed — duplicate copies,
+  cleanup findings and duplicate tracks alike — and anything that changed
+  meanwhile is skipped.
+- Nothing inside a `--reference-dir` or a protected folder is ever deleted, in
+  any scan mode.
 - Duplicate deletions ask once per group unless you pass `-y`; cleanup deletions
   ask once for the whole list. `--trash` moves files to the system trash, where
   they can be restored, instead of removing them outright.
