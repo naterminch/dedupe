@@ -26,7 +26,13 @@ pub const AUDIO_EXTS: [&str; 12] = [
     "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "wma", "aiff", "aif", "ape",
 ];
 
-#[derive(Debug, Clone)]
+/// One item a cleanup mode reported.
+///
+/// `#[non_exhaustive]`: fields grow as new safety checks appear (the content
+/// hash was the last one), and callers outside the crate should build these
+/// with [`Finding::default`] and field assignment rather than a literal.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Finding {
     pub path: PathBuf,
     pub size: u64,
@@ -39,7 +45,12 @@ pub struct Finding {
     pub hash: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// A set of items a cleanup mode treats as copies of each other.
+///
+/// `#[non_exhaustive]` for the same reason as [`Finding`]: build with
+/// [`FindingGroup::default`] plus field assignment outside the crate.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct FindingGroup {
     pub label: String,
     pub detail: String,

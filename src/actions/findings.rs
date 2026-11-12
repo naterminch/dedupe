@@ -65,19 +65,46 @@ fn absolute(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
     Some(out)
 }
 
-/// Compare a finding against what the scan recorded.
+/// Outcome of one guarded removal.
+enum Removal {
+    Removed,
+    /// Type, size or content no longer match the scan, so the item survives.
+    Changed,
+    /// The check passed but the file could not be removed.
+    Failed(String),
+}
+
+/// Prove the candidate is unchanged and remove it in the same call, so no
+/// prompting, bookkeeping or logging can run between the proof and the syscall.
 ///
-/// Directories are covered by the type test instead. Anything else has to prove
-/// it still holds the same bytes, and a finding with no recorded hash has no
-/// proof: it is kept rather than removed on trust.
-fn content_unchanged(finding: &Finding, engine: &HashEngine) -> bool {
-    if finding.is_dir {
-        return true;
+/// Directories are covered by the type test. Anything else must hold the same
+/// bytes as the scan recorded, and a candidate with no recording has no proof:
+/// it is kept rather than removed on trust.
+///
+/// The unlink (or move to trash) is still a separate syscall, so a file swapped
+/// in the microseconds after the check can slip through; every path-based
+/// removal shares that limit.
+fn remove_verified(
+    finding: &Finding,
+    expected_hash: Option<&str>,
+    disposition: Disposition,
+    engine: &HashEngine,
+) -> Removal {
+    if !finding_still_valid(finding) {
+        return Removal::Changed;
     }
-    let Some(expected) = finding.hash.as_deref() else {
-        return false;
-    };
-    content_hash(&finding.path, engine).is_some_and(|now| now == expected)
+    if !finding.is_dir {
+        let Some(expected) = expected_hash else {
+            return Removal::Changed;
+        };
+        if content_hash(&finding.path, engine).as_deref() != Some(expected) {
+            return Removal::Changed;
+        }
+    }
+    match remove_finding_path(finding, disposition) {
+        Ok(()) => Removal::Removed,
+        Err(err) => Removal::Failed(err),
+    }
 }
 
 fn finding_still_valid(finding: &Finding) -> bool {
@@ -181,24 +208,23 @@ pub fn delete_findings(
         }
     }
     for finding in deleteable {
-        if !finding_still_valid(finding) || !content_unchanged(finding, engine) {
-            eprintln!(
-                "{} {}: {}",
-                style("⚠").yellow(),
-                style("changed since the scan, skipping").yellow().bold(),
-                style(finding.path.display()).dim()
-            );
-            stats.skipped += 1;
-            continue;
-        }
-        match remove_finding_path(finding, disposition) {
-            Ok(()) => {
+        match remove_verified(finding, finding.hash.as_deref(), disposition, engine) {
+            Removal::Removed => {
                 stats.deleted += 1;
                 if !finding.is_dir {
                     stats.bytes_freed += finding.size;
                 }
             }
-            Err(err) => {
+            Removal::Changed => {
+                eprintln!(
+                    "{} {}: {}",
+                    style("⚠").yellow(),
+                    style("changed since the scan, skipping").yellow().bold(),
+                    style(finding.path.display()).dim()
+                );
+                stats.skipped += 1;
+            }
+            Removal::Failed(err) => {
                 eprintln!(
                     "{} {}: {}",
                     style("⚠").yellow(),
@@ -269,26 +295,8 @@ pub fn delete_finding_groups(
         }
         for (i, path) in targets {
             let expected_size = group.sizes.get(i).copied().unwrap_or(0);
-            let size_ok = fs::metadata(path)
-                .map(|m| m.len() == expected_size)
-                .unwrap_or(false);
-            let content_ok = group
-                .hashes
-                .get(i)
-                .and_then(|hash| hash.as_deref())
-                .is_some_and(|expected| {
-                    content_hash(path, engine).is_some_and(|now| now == expected)
-                });
-            if !size_ok || !content_ok {
-                eprintln!(
-                    "{} {}: {}",
-                    style("⚠").yellow(),
-                    style("changed since the scan, skipping").yellow().bold(),
-                    style(path.display()).dim()
-                );
-                stats.skipped += 1;
-                continue;
-            }
+            // The synthesized finding carries the size the scan recorded, so
+            // the guard checks type and size; the hash comes from the group.
             let finding = Finding {
                 path: path.clone(),
                 size: expected_size,
@@ -297,12 +305,22 @@ pub fn delete_finding_groups(
                 is_dir: false,
                 hash: None,
             };
-            match remove_finding_path(&finding, disposition) {
-                Ok(()) => {
+            let expected_hash = group.hashes.get(i).and_then(|hash| hash.as_deref());
+            match remove_verified(&finding, expected_hash, disposition, engine) {
+                Removal::Removed => {
                     stats.deleted += 1;
                     stats.bytes_freed += expected_size;
                 }
-                Err(err) => {
+                Removal::Changed => {
+                    eprintln!(
+                        "{} {}: {}",
+                        style("⚠").yellow(),
+                        style("changed since the scan, skipping").yellow().bold(),
+                        style(path.display()).dim()
+                    );
+                    stats.skipped += 1;
+                }
+                Removal::Failed(err) => {
                     eprintln!(
                         "{} {}: {}",
                         style("⚠").yellow(),
