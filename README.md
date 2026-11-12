@@ -1,6 +1,6 @@
 # dedupe
 
-<img src="assets/icons/logo.png" alt="dedupe logo" width="88">
+<img src="assets/icons/logo.png" alt="dedupe logo" width="96">
 
 Finds duplicate files — exact copies, and the same photo or video saved twice in a
 different format.
