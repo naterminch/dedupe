@@ -147,6 +147,11 @@ pub(crate) struct AppState {
     /// How many groups render at once; the rest sit behind a "Show more"
     /// button so huge result sets stay navigable (and fast).
     pub(crate) group_limit: usize,
+    /// How many cleanup findings (or finding groups, or read errors) render at
+    /// once, on the same rule as the groups: a scan over a large tree can
+    /// return tens of thousands of them, and building every card before the
+    /// first paint is a freeze, not a list.
+    pub(crate) mode_limit: usize,
     pub(crate) last_hash: HashAlgo,
     /// Groups the user closed; every other group is open. Storing the closed
     /// ones instead of the open ones is what makes expansion the default: a
@@ -240,6 +245,7 @@ impl Default for AppState {
             scan_similarity: similarity,
             min_sim: similarity,
             group_limit: GROUP_PAGE,
+            mode_limit: GROUP_PAGE,
             last_hash: HashAlgo::Blake3,
             collapsed: HashSet::new(),
             playing: None,

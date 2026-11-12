@@ -727,6 +727,7 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.playing = None;
             s.consolidate_dest = None;
             s.group_limit = crate::ui::state::GROUP_PAGE;
+            s.mode_limit = crate::ui::state::GROUP_PAGE;
             s.dup_files = findings as u64;
             s.reclaim_bytes = reclaim;
             s.status = if empty {
@@ -1198,6 +1199,10 @@ pub(crate) fn toggle_sort_biggest() {
         sort_groups(s);
     });
     save_prefs();
+}
+
+pub(crate) fn show_more_findings() {
+    app().update(|s| s.mode_limit += crate::ui::state::GROUP_PAGE);
 }
 
 pub(crate) fn show_more_groups() {

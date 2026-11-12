@@ -591,23 +591,41 @@ fn layout_toggle() -> View {
 /// duplicates` — instead of rendering nothing and leaving the row with only
 /// Back. Selection used to hide behind an unlabelled glyph in the header
 /// pill, which is the one step between reading the list and deleting from it.
+/// What the delete bar renders from, named field by field: the tuple it used
+/// to be had grown to five positional values, and `(usize, u64, bool, bool,
+/// usize)` does not say which `bool` is the trash setting.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DeleteBar {
+    count: usize,
+    bytes: u64,
+    can_undo: bool,
+    trash: bool,
+    groups: usize,
+}
+
 fn delete_bar() -> View {
     view().child(dynamic(|| {
         // The selection and the trash switch decide this bar. A scan tick
         // rebuilding it replaced the Delete button under the pointer.
-        let targets = computed(|| {
+        let bar = computed(|| {
             app().with(|s| {
                 let targets = actions::pending_targets(s);
-                (
-                    targets.len(),
-                    targets.iter().map(|t| t.size).sum::<u64>(),
-                    !s.last_trashed.is_empty(),
-                    s.trash,
-                    s.groups.len(),
-                )
+                DeleteBar {
+                    count: targets.len(),
+                    bytes: targets.iter().map(|t| t.size).sum(),
+                    can_undo: !s.last_trashed.is_empty(),
+                    trash: s.trash,
+                    groups: s.groups.len(),
+                }
             })
         });
-        let (count, bytes, can_undo, trash, groups) = targets.get();
+        let DeleteBar {
+            count,
+            bytes,
+            can_undo,
+            trash,
+            groups,
+        } = bar.get();
         let mut row = view().flex_row().gap(px(space::SM)).items_center();
         if count > 0 {
             let label = format!("Delete {count} ({})", util::human_bytes(bytes));
@@ -1012,9 +1030,17 @@ fn hero_logo() -> impl IntoElement {
     static LOGO: OnceLock<(u32, u32, Arc<[u8]>)> = OnceLock::new();
     let (width, height, pixels) = LOGO.get_or_init(|| {
         const SIDE: u32 = 192;
-        let decoded = ::image::load_from_memory(include_bytes!("../../assets/icons/logo.png"))
-            .expect("the embedded logo is a PNG")
-            .into_rgba8();
+        // The asset is embedded at build time, so a decode failure means the
+        // repository's PNG is corrupt. That is a reason to draw nothing, not
+        // to take the window down at first paint: a transparent pixel keeps
+        // the plinth and every layout below it intact.
+        let Some(decoded) =
+            ::image::load_from_memory(include_bytes!("../../assets/icons/logo.png"))
+                .ok()
+                .map(|decoded| decoded.into_rgba8())
+        else {
+            return (1, 1, Arc::from([0_u8, 0, 0, 0].as_slice()));
+        };
         let scaled = ::image::imageops::resize(
             &decoded,
             SIDE,
@@ -1518,6 +1544,7 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                             ..AccessibilityState::default()
                         })
                         .on_press(move || actions::toggle_expanded(index))
+                        .w_full()
                         .flex_row()
                         .items_center()
                         .gap(px(space::SM))
@@ -1526,6 +1553,11 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                         .transition_colors()
                         .duration(motion(timing::FAST))
                         .hover(|s| s.bg(colors::INSET))
+                        // A press and the keyboard's focus read here too: the
+                        // header is the group's only control, so it must
+                        // answer the pointer and show where the keys are.
+                        .active(|s| s.opacity(0.9))
+                        .focus_visible(focus_ring)
                         .child(chevron(expanded))
                         .child(
                             text(header)
@@ -2082,14 +2114,28 @@ fn mode_list() -> View {
         ));
         return list;
     }
-    for finding in &result.findings {
+    // A cleanup scan over a large tree returns findings by the thousand
+    // ("empty files" in a download folder, "temp files" in a home
+    // directory). Cards are built for what is rendered, so the list takes a
+    // page at a time, the same rule the duplicate groups already follow.
+    let limit = app().with(|s| s.mode_limit);
+    for finding in result.findings.iter().take(limit) {
         list = list.child(mode_finding_row(finding));
     }
-    for group in &result.groups {
+    for group in result.groups.iter().take(limit) {
         list = list.child(mode_group_card(group));
     }
-    for error in &result.errors {
+    for error in result.errors.iter().take(limit) {
         list = list.child(note_card_error(error));
+    }
+    let remaining = result.findings.len().saturating_sub(limit)
+        + result.groups.len().saturating_sub(limit)
+        + result.errors.len().saturating_sub(limit);
+    if remaining > 0 {
+        list = list.child(view().flex_row().justify_center().child(ghost_button(
+            format!("Show more ({remaining} remaining)"),
+            actions::show_more_findings,
+        )));
     }
     list
 }
