@@ -1285,6 +1285,11 @@ fn composer_input() -> impl IntoElement {
         .border_1()
         .border_color(colors::HAIRLINE)
         .rounded(px(radius::CONTROL))
+        // The same focus edge every field carries: the composer is the first
+        // thing a new user clicks, so it must answer.
+        .transition_colors()
+        .duration(motion(timing::BASE))
+        .focus(|s| s.border_color(colors::ACCENT))
 }
 
 /// The similarity floor of a run: one value out of the five offered, as a

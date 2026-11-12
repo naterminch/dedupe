@@ -155,7 +155,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Rail slot moving between pages | background transition | `BASE`, `PANE` |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
-| Text-field focus edge | colour transition | `BASE`, `BORDER` → `ACCENT` |
+| Text-field focus edge | colour transition | `BASE`, `HAIRLINE` → `ACCENT` |
 | Keeper pick and duplicate tick | colour transition on the member surface | `FAST`, `KEEP_WASH` / `SELECT_WASH` |
 | Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
 | Delete dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |

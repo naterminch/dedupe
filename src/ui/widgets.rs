@@ -619,6 +619,10 @@ pub(crate) fn field(
         .rounded(px(radius::CONTROL))
         .transition_colors()
         .duration(motion(timing::BASE))
+        // A field that has the keyboard says so. The design system promised a
+        // focus edge and the input drew none, so clicking into it looked like
+        // clicking the page behind it.
+        .focus(|s| s.border_color(colors::ACCENT))
 }
 
 /// Icons, as inline SVG stroked with `currentColor`: one markup works in both
