@@ -1,11 +1,8 @@
 use crate::cancel::CancelToken;
 use crate::cli::Cli;
+use crate::walk::{self, Limits, Sink};
 use std::collections::HashSet;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::UNIX_EPOCH;
-use walkdir::WalkDir;
 
 /// A single discovered file.
 #[derive(Debug, Clone)]
@@ -33,7 +30,7 @@ pub fn extension_filter(exts: &[String]) -> HashSet<String> {
         .collect()
 }
 
-fn matches_extension(path: &Path, filter: &HashSet<String>) -> bool {
+pub(crate) fn matches_extension(path: &Path, filter: &HashSet<String>) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
@@ -47,153 +44,35 @@ impl ScanResult {
     }
 }
 
+impl Sink for ScanResult {
+    fn file(&mut self, entry: FileEntry) {
+        self.entries.push(entry);
+    }
+
+    fn file_skipped(&mut self) {
+        self.files_skipped += 1;
+    }
+
+    fn dirs_skipped(&mut self, count: u64) {
+        self.dirs_skipped += count;
+    }
+
+    fn error(&mut self, message: String) {
+        self.dir_read_errors.push(message);
+    }
+}
+
 /// Recursively collect candidate files under `cli.paths`.
 ///
-/// Files outside the size range, or excluded by `--exclude*` / `--types`
-/// filters, are skipped. Directory read errors are collected (not fatal).
-/// Polls `cancel` per walked entry and returns the partial result early,
-/// so a Stop during a long walk costs at most one file.
+/// Filtering lives in [`crate::walk`], which the cleanup modes share, so the
+/// two front ends cannot drift; this wrapper only collects what the walk keeps.
+/// Directory read errors are collected (not fatal), and `cancel` stops the walk
+/// with a partial result.
 #[must_use]
 pub fn scan(cli: &Cli, size_min: u64, size_max: u64, cancel: &CancelToken) -> ScanResult {
-    let ext_filter = extension_filter(&cli.types);
-    let type_filtered = !ext_filter.is_empty();
     let mut result = ScanResult::new();
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-
-    for raw_path in &cli.paths {
-        if cancel.is_cancelled() {
-            return result;
-        }
-        let path = Path::new(raw_path);
-
-        // A directly-given file: include it if it passes the filters.
-        if path.is_file() {
-            collect_file(
-                path,
-                cli,
-                &ext_filter,
-                type_filtered,
-                size_min,
-                size_max,
-                &mut seen,
-                &mut result,
-            );
-            continue;
-        }
-        if !path.exists() {
-            result
-                .dir_read_errors
-                .push(format!("path does not exist: {}", path.display()));
-            continue;
-        }
-
-        let dirs_skipped = AtomicU64::new(0);
-        let walker = WalkDir::new(path)
-            // walkdir counts the root as depth 0 and the user's --max-depth 0
-            // means "direct children only", hence the +1 offset.
-            .max_depth(cli.max_depth.map_or(usize::MAX, |d| d + 1))
-            .into_iter()
-            .filter_entry(|e| {
-                if e.depth() == 0 {
-                    return true; // never prune the root itself
-                }
-                if e.file_type().is_dir() && matches_excluded_dir(e.path(), cli) {
-                    dirs_skipped.fetch_add(1, Ordering::Relaxed);
-                    return false;
-                }
-                true
-            });
-        for entry in walker {
-            if cancel.is_cancelled() {
-                return result;
-            }
-            let entry = match entry {
-                Ok(e) => e,
-                Err(err) => {
-                    result.dir_read_errors.push(format!("cannot read: {err}"));
-                    continue;
-                }
-            };
-
-            if entry.file_type().is_dir() || !entry.file_type().is_file() {
-                continue;
-            }
-            collect_file(
-                entry.path(),
-                cli,
-                &ext_filter,
-                type_filtered,
-                size_min,
-                size_max,
-                &mut seen,
-                &mut result,
-            );
-        }
-        result.dirs_skipped += dirs_skipped.load(Ordering::Relaxed);
-    }
-
+    walk::walk(cli, Limits { size_min, size_max }, cancel, &mut result);
     result
-}
-
-fn matches_excluded_dir(path: &Path, cli: &Cli) -> bool {
-    if cli.exclude_dir.is_empty() {
-        return false;
-    }
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    cli.exclude_dir.iter().any(|ex| name.contains(ex.as_str()))
-}
-
-fn matches_excluded_path(path: &Path, cli: &Cli) -> bool {
-    let raw = path.to_string_lossy();
-    cli.exclude_path.iter().any(|ex| raw.contains(ex.as_str()))
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "walk callback: filters and output are independent inputs, and a context struct would duplicate `Cli`"
-)]
-fn collect_file(
-    path: &Path,
-    cli: &Cli,
-    ext_filter: &HashSet<String>,
-    type_filtered: bool,
-    size_min: u64,
-    size_max: u64,
-    seen: &mut HashSet<PathBuf>,
-    result: &mut ScanResult,
-) {
-    if type_filtered && !matches_extension(path, ext_filter) {
-        result.files_skipped += 1;
-        return;
-    }
-    if matches_excluded_path(path, cli) {
-        result.files_skipped += 1;
-        return;
-    }
-    let Ok(meta) = fs::metadata(path) else {
-        result.files_skipped += 1;
-        return;
-    };
-    let size = meta.len();
-    if size < size_min || (size_max > 0 && size > size_max) {
-        result.files_skipped += 1;
-        return;
-    }
-    if !seen.insert(path.to_path_buf()) {
-        return;
-    }
-    let mtime_secs = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64);
-    result.entries.push(FileEntry {
-        path: path.to_path_buf(),
-        size,
-        mtime_secs,
-    });
 }
 
 #[cfg(test)]
