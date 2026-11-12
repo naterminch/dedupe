@@ -35,7 +35,10 @@ const PREFS_VERSION: u32 = 1;
 /// One scan folder with its protection flag (mirrors the sidebar Ref toggle).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FolderPref {
+    /// Absolute path to the scan folder.
     pub path: String,
+    /// The sidebar's Ref toggle: this folder is a protection reference and is
+    /// never deleted from.
     pub reference: bool,
 }
 
@@ -44,10 +47,15 @@ pub struct FolderPref {
 /// here.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WindowGeometry {
+    /// Left edge of the frame in points.
     pub x: f32,
+    /// Top edge of the frame in points.
     pub y: f32,
+    /// Frame width in points.
     pub width: f32,
+    /// Frame height in points.
     pub height: f32,
+    /// Whether the window was maximized when it was last recorded.
     #[serde(default)]
     pub maximized: bool,
 }
@@ -64,28 +72,40 @@ impl WindowGeometry {
 /// All sidebar selections worth restoring on next launch.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuiPrefs {
+    /// Schema version, checked on load so old files can be discarded.
     #[serde(default = "default_version")]
     pub version: u32,
+    /// Scan folders in sidebar order.
     #[serde(default)]
     pub folders: Vec<FolderPref>,
+    /// Extension filter as typed, e.g. `jpg;png`.
     #[serde(default)]
     pub types: String,
+    /// Minimum size filter as typed (`none` means no limit).
     #[serde(default = "default_no_limit")]
     pub min_size: String,
+    /// Maximum size filter as typed (`none` means no limit).
     #[serde(default = "default_no_limit")]
     pub max_size: String,
+    /// Directory depth limit as typed.
     #[serde(default)]
     pub max_depth: String,
+    /// Directory names to skip, as typed.
     #[serde(default)]
     pub exclude_dir: String,
+    /// Paths to skip, as typed.
     #[serde(default)]
     pub exclude_path: String,
+    /// Similarity threshold as typed, in percent.
     #[serde(default = "default_similarity")]
     pub similarity: String,
+    /// Worker thread count as typed (`0` means one per core).
     #[serde(default)]
     pub jobs: String,
+    /// Index into the hash-algorithm list.
     #[serde(default)]
     pub hash_index: usize,
+    /// Index into the keep-mode list (first, smallest, newest, oldest, best).
     #[serde(default)]
     pub keep_index: usize,
     /// Index into the scan-type list (0 = duplicates).
@@ -100,8 +120,10 @@ pub struct GuiPrefs {
     /// Also find shorter clips contained inside longer videos.
     #[serde(default)]
     pub partial_clips: bool,
+    /// Similarity of a contained clip to the longer video, in percent.
     #[serde(default = "default_partial_similarity")]
     pub partial_similarity: String,
+    /// Fuzzy name-matching threshold, in percent.
     #[serde(default = "default_fuzzy_threshold")]
     pub fuzzy_threshold: String,
     /// `big-files`: how many of the largest files to report.
@@ -113,12 +135,16 @@ pub struct GuiPrefs {
     /// Music matching: true = audio fingerprint, false = embedded tags.
     #[serde(default)]
     pub music_by_content: bool,
+    /// Compare content hashes byte-for-byte instead of by fingerprint.
     #[serde(default)]
     pub exact: bool,
+    /// Ignore the on-disk fingerprint and hash caches for this run.
     #[serde(default)]
     pub no_cache: bool,
+    /// Send deletions to the system trash rather than removing them.
     #[serde(default = "default_true")]
     pub trash: bool,
+    /// List the largest files first in size-ordered results.
     #[serde(default)]
     pub sort_biggest: bool,
     /// Remember scan folders between runs. Defaults to true so existing

@@ -21,6 +21,7 @@ pub use crate::glob::glob_match;
 pub use exif::{ExifReport, strip_exif};
 pub use names::{MatchBucket, match_entries, name_similarity};
 
+/// Extensions the music mode treats as audio, lowercase and without the dot.
 pub const AUDIO_EXTS: [&str; 12] = [
     "mp3", "flac", "m4a", "aac", "ogg", "oga", "opus", "wav", "wma", "aiff", "aif", "ape",
 ];
@@ -33,10 +34,15 @@ pub const AUDIO_EXTS: [&str; 12] = [
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct Finding {
+    /// The item the mode reported.
     pub path: PathBuf,
+    /// Size in bytes; 0 for directories.
     pub size: u64,
+    /// Short machine-readable reason ("empty", "temp", "broken", …).
     pub kind: &'static str,
+    /// Human-readable explanation shown next to the path.
     pub detail: String,
+    /// A folder rather than a file, which deletion treats differently.
     pub is_dir: bool,
     /// Content hash recorded when the scan ran, so a deletion can prove the
     /// file has not changed since. `None` when the content could not be read,
@@ -51,29 +57,47 @@ pub struct Finding {
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct FindingGroup {
+    /// Short heading, e.g. "Identical folder tree (2 copies)".
     pub label: String,
+    /// Supporting line of text for the heading.
     pub detail: String,
+    /// The copies, in display order.
     pub members: Vec<PathBuf>,
+    /// Size per member, parallel to `members`.
     pub sizes: Vec<u64>,
     /// Content hash per member, parallel to `sizes`, recorded at scan time
     /// (see [`attach_content_hashes`]).
     pub hashes: Vec<Option<String>>,
+    /// Total size of one copy of the group's content.
     pub bytes: u64,
+    /// Space freed if every member but one is removed.
     pub reclaimable: u64,
 }
 
+/// Everything one cleanup-mode run produced.
 #[derive(Debug, Clone, Default)]
 pub struct ModeResult {
+    /// Which mode ran.
     pub mode: FindMode,
+    /// Individual items, one per finding.
     pub findings: Vec<Finding>,
+    /// Items the mode treated as copies of each other.
     pub groups: Vec<FindingGroup>,
+    /// Files the walker handed to the mode.
     pub files_scanned: u64,
+    /// Directories the walker entered.
     pub dirs_scanned: u64,
+    /// Total size of those files.
     pub bytes_scanned: u64,
+    /// Files skipped by size, type or ignore rules.
     pub files_skipped: u64,
+    /// Directories skipped by depth, exclusion or ignore rules.
     pub dirs_skipped: u64,
+    /// Problems that stopped a file or directory from being checked.
     pub errors: Vec<String>,
+    /// Informational asides, e.g. why a check could not run.
     pub notes: Vec<String>,
+    /// The run stopped early because the user cancelled.
     pub cancelled: bool,
 }
 

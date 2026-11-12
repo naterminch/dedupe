@@ -3,9 +3,12 @@ use crate::scan::FileEntry;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Entries a name or size match considers the same item.
 #[derive(Debug)]
 pub struct MatchBucket {
+    /// Normalized grouping key, e.g. `size:1024` or `fuzzy:holiday`.
     pub key: String,
+    /// The entries sharing that key; always two or more.
     pub entries: Vec<FileEntry>,
 }
 
