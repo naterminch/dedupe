@@ -6,7 +6,7 @@
 //!
 //! Layout: an icon rail (workspace + settings), a sidebar with the wordmark,
 //! quick actions and the folder list, and a main pane that opens on a centered
-//! hero (mascot, option pills, scan composer) before a run and then shows one
+//! hero (logo, option pills, scan composer) before a run and then shows one
 //! collapsible card per duplicate group, plus a Settings page for global
 //! defaults and a status bar. Pure helpers live in `crate::ui_helpers`; every
 //! state transition lives in `actions`.

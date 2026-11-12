@@ -27,10 +27,11 @@ that lands in a row of pills takes `icon_pill_button` so the row lines up.
 
 ## Surfaces, palette and hairlines
 
-The system is warm in both appearances: a paper with a yellow-brown cast in the
-light one, a deep warm charcoal in the dark one, and an amber accent whose
-light step is dark enough to carry white label text. Nothing is a neutral grey —
-the tint is what keeps the app calm rather than clinical.
+The neutral surfaces are warm in both appearances: a paper with a yellow-brown
+cast in the light one and a deep warm charcoal in the dark one, with the app's
+blue as the accent and a light step dark enough to carry white label text.
+Nothing is a neutral grey — the tint is what keeps the app calm rather than
+clinical.
 
 Depth is a ramp plus a hairline, in that order. The window itself steps up to
 the rail and then to a card, and in both appearances that direction is lighter:
@@ -53,21 +54,21 @@ them, so they are the darkest step in light and the darkest step in dark.
 | `SHELL` | black 8% | white 10% | a bezel's outer tray |
 | `BORDER` | `#e4dfd6` | `#2b2e30` | rules, media frames, raised-control outlines |
 | `HAIRLINE` | black 12% | white 14% | container and control seams |
-| `ACCENT` | `#b4550f` | `#f2a65f` | primary actions, focus, links |
-| `ACCENT_INK` | `#7a3a08` | `#ffd9b4` | text and glyphs on an accent tint |
+| `ACCENT` | `#0b63d8` | `#74b4ff` | primary actions, focus, links |
+| `ACCENT_INK` | `#0a4696` | `#cfe6ff` | text and glyphs on an accent tint |
 | `KEEP` | `#1d9a4a` | `#32d74b` | the copy a group keeps |
 | `SELECT` | `#c27500` | `#ff9f0a` | a copy ticked for deletion |
 | `DANGER` | `#ff3b30` | `#ff453a` | Delete, and errors |
 
 An accent tint is a backing, not a label colour: `ACCENT` on
-`ACCENT_WASH_STRONG` measures 2.9:1 in light and 2.0:1 in dark, so anything
-written on that tint takes `ACCENT_INK` instead (4.97:1 on the light tint,
-6.6–7.2:1 on the dark one). `ACCENT` itself is only used on a plain surface,
+`ACCENT_WASH_STRONG` measures 3.2:1 in light and 3.5:1 in dark, so anything
+written on that tint takes `ACCENT_INK` instead (5.2:1 on the light tint,
+5.9:1 on the dark one). `ACCENT` itself is only used on a plain surface,
 or as a fill under `ON_ACCENT`.
 
-Hue is meaning, not decoration. Amber is reserved for actions and focus; the
+Hue is meaning, not decoration. Blue is reserved for actions and focus; the
 keeper of a group is green so "this one is kept" can never be mistaken for
-"this one is ticked", and the tick itself is a second, warmer amber. Washes are
+"this one is ticked", and the tick itself is a separate warm amber. Washes are
 the same hue at low alpha (`*_WASH` for a resting tint, `*_WASH_STRONG` for a
 selected chip or a filled state) so a surface can be tinted without inventing a
 new colour.
