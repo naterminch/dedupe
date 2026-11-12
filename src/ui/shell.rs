@@ -14,8 +14,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, chip, divider, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon,
-    icon_ghost_button, icons, motion, timing,
+    caption, card, divider, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon,
+    icon_ghost_button, icons, motion, panel_title, timing, toggle_switch,
 };
 use crate::ui_helpers::fit_text;
 
@@ -146,30 +146,34 @@ fn quick_actions() -> impl IntoElement {
                 actions::remove_all_folders,
             )
         })))
-        .child(view().child(dynamic(|| {
-            // The switch alone rebuilds this row, not the scan's progress.
-            let trash = computed(|| app().with(|s| s.trash));
-            let trash = trash.get();
-            side_row(
-                icons::TRASH,
-                "Trash deletes",
-                Some(view().child(chip(
-                    if trash { "On" } else { "Off" },
-                    if trash {
-                        colors::ACCENT_WASH_STRONG
-                    } else {
-                        colors::INSET
-                    },
-                    if trash {
-                        colors::ACCENT_INK
-                    } else {
-                        colors::MUTED
-                    },
-                ))),
-                RowState::Ready,
-                toggle_trash,
+        .child(trash_row())
+}
+
+/// The trash setting as the control it is: a switch, the same one Settings
+/// draws for the same field. The row used to be a button with an "On" chip,
+/// which is a second visual language for one state — and a chip that looked
+/// pressable inside a pressable row.
+fn trash_row() -> impl IntoElement {
+    view().child(dynamic(|| {
+        // The switch alone rebuilds this row, not the scan's progress.
+        let trash = computed(|| app().with(|s| s.trash));
+        let trash = trash.get();
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(space::SM))
+            .w_full()
+            .px(px(space::SM))
+            .py(px(space::XS))
+            .child(icon(icons::TRASH, 16.0, colors::MUTED))
+            .child(
+                text("Trash deletes")
+                    .flex_1()
+                    .text_size(px(text::BODY))
+                    .text_color(colors::TEXT),
             )
-        })))
+            .child(toggle_switch(trash, "Trash deletes", toggle_trash))
+    }))
 }
 
 fn toggle_trash() {
@@ -373,20 +377,14 @@ fn row_ghost(
         .tooltip(hint(label))
 }
 
-/// The sponsored-card slot at the bottom: what protection does and where to
-/// manage it.
+/// The card at the bottom: what protection does and where to manage it.
+/// Its title is the card's own heading — no scream-label above it.
 fn tip_card() -> impl IntoElement {
     view().px(px(space::MD)).pb(px(space::MD)).child(
         card()
             .gap(px(space::XS))
             .p(px(space::MD))
-            .child(section_kicker("TIP"))
-            .child(
-                text("Protect the originals")
-                    .text_size(px(text::BODY))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(colors::TEXT),
-            )
+            .child(panel_title("Protect the originals"))
             .child(caption("Protected folders are never touched by a delete."))
             .child(divider())
             .child(

@@ -407,6 +407,37 @@ pub(crate) fn icon_secondary_button(
     )
 }
 
+/// A compact accent action for dense rows: the keeper pick on a member card,
+/// the "Keep instead" beside a path in the delete plan. Caption-sized and
+/// borderless, so it sits inside a line of metadata without becoming the
+/// row's headline — a 14 pt pill and a check glyph both did.
+pub(crate) fn quiet_button(
+    label: impl IntoReactive<SharedString>,
+    on_press: impl Fn() + 'static,
+) -> View {
+    view().flex_shrink_0().child(
+        button()
+            .on_press(on_press)
+            .flex_row()
+            .items_center()
+            .justify_center()
+            .px(px(space::SM))
+            .py(px(space::XXS))
+            .rounded(px(radius::CONTROL))
+            .transition_colors()
+            .duration(motion(timing::FAST))
+            .ease_out()
+            .hover(|s| s.bg(colors::ACCENT_WASH))
+            .control_states()
+            .child(
+                text(label)
+                    .text_size(px(text::CAPTION))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(colors::ACCENT),
+            ),
+    )
+}
+
 /// A borderless action for dense rows (Show more, Expand all…).
 pub(crate) fn ghost_button(
     label: impl IntoReactive<SharedString>,
@@ -469,7 +500,7 @@ pub(crate) fn danger_button(
             .justify_center()
             .px(px(space::LG))
             .py(px(space::SM))
-            .bg(colors::DANGER)
+            .bg(colors::DANGER_SURFACE)
             .rounded_full()
             .transition_colors()
             .duration(motion(timing::BASE))
@@ -480,7 +511,7 @@ pub(crate) fn danger_button(
                 text(label)
                     .text_size(px(text::BODY))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(colors::ON_ACCENT),
+                    .text_color(colors::ON_DANGER),
             ),
     )
 }
@@ -515,7 +546,17 @@ pub(crate) fn toggle_switch(
                     colors::BORDER
                 })
         })
-        .thumb_style(|s| s.w(px(16.0)).h(px(16.0)).rounded_full().bg(colors::TEXT))
+        // The thumb carries the track's ink: white on the light accent, dark
+        // ink on the bright dark-theme accent, and a neutral mute when off.
+        // It was `TEXT`, which drew a near-black knob on the blue track in the
+        // light appearance and a white one on pale blue in the dark one.
+        .thumb_style(|s| {
+            s.w(px(16.0)).h(px(16.0)).rounded_full().bg(if checked {
+                colors::ON_ACCENT
+            } else {
+                colors::MUTED
+            })
+        })
         .thumb_class("transition-transform checked:translate-x-5")
 }
 

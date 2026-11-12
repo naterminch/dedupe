@@ -15,10 +15,10 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
-    bezel, bezel_core, caption, divider, eyebrow, fast_scroll, heading, help_dot, motion,
-    page_heading, panel_title, secondary_button, selection, timing, toggle_switch,
+    bezel, bezel_core, caption, divider, fast_scroll, heading, help_dot, motion, page_heading,
+    panel_title, secondary_button, selection, timing, toggle_switch,
 };
-use crate::ui_helpers::{find_mode_caption, hash_caption};
+use crate::ui_helpers::{counted, find_mode_caption, hash_caption};
 use crate::util;
 
 pub(crate) const FIND_LABELS: [&str; 11] = [
@@ -192,11 +192,12 @@ fn page_column(children: Vec<View>) -> View {
     column
 }
 
+/// A page's own heading: the title, then one line of what it governs. The
+/// upper-case copy of the title above it said the same word twice.
 fn header(title: &'static str, description: &'static str) -> View {
     view()
         .flex_col()
         .gap(px(space::XS))
-        .child(eyebrow(title.to_uppercase()))
         .child(page_heading(title))
         .child(caption(description))
 }
@@ -319,15 +320,11 @@ fn choice_row(label: &'static str, hint: impl IntoReactive<SharedString>, contro
         .child(control)
 }
 
+/// A setting's control is the switch alone: the row already carries the
+/// setting's name, so a repeated short label beside the thumb is read twice
+/// (and spoken twice). The label stays as the switch's accessible name.
 fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> View {
-    view().child(
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(space::SM))
-            .child(caption(label))
-            .child(toggle_switch(value, label, on_press)),
-    )
+    view().child(toggle_switch(value, label, on_press))
 }
 
 fn number(
@@ -409,7 +406,11 @@ fn general_page() -> View {
             "Hashes and fingerprints cached between runs in ~/.dedupe/.",
             vec![row(
                 "Cache on disk",
-                format!("{} file(s) - {}", files, util::human_bytes(bytes)),
+                format!(
+                    "{} · {}",
+                    counted(files as u64, "file", "files"),
+                    util::human_bytes(bytes)
+                ),
                 secondary_button("Clear caches", actions::clear_cache),
             )],
         ),

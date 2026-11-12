@@ -12,9 +12,10 @@ use nsh_core::prelude::*;
 use crate::ui::palette::{colors, space};
 use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{
-    caption, entering, focus_ring, icon, icon_ghost_button, icons, motion, timing,
+    caption, entering, focus_ring, hint, icon, icon_ghost_button, icons, motion, timing,
 };
 use crate::ui::{actions, results, settings, shell, toast};
+use crate::ui_helpers::counted;
 use crate::util;
 
 #[component]
@@ -121,7 +122,9 @@ fn nav_rail() -> View {
 /// One rail button: an icon in a rounded slot; the active view's slot is a
 /// pane-tinted pill. The label lives in the accessibility tree.
 fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: fn()) -> View {
-    view().child(
+    // The rail is icons only, so the pointer gets the name too — not just the
+    // screen reader.
+    view().tooltip(hint(label)).child(
         button()
             .on_press(on_press)
             .accessibility_label(label)
@@ -218,6 +221,10 @@ fn status_bar() -> impl IntoElement {
             }
             let files = state.with(|s| s.files_scanned);
             let bytes = state.with(|s| s.bytes_scanned);
-            format!("{files} file(s) scanned - {}", util::human_bytes(bytes))
+            format!(
+                "{} scanned · {}",
+                counted(files as u64, "file", "files"),
+                util::human_bytes(bytes)
+            )
         }))
 }

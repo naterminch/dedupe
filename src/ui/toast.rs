@@ -128,7 +128,11 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                             .child(
                                 text(move || message.clone())
                                     .text_size(px(text::CAPTION))
-                                    .text_color(if error { colors::DANGER } else { colors::TEXT }),
+                                    .text_color(if error {
+                                        colors::DANGER_TEXT
+                                    } else {
+                                        colors::TEXT
+                                    }),
                             )
                     },
                 )),

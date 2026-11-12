@@ -17,7 +17,7 @@ use crate::ui::state::{
     AppState, AppView, FolderEntry, ReportSnapshot, ScanStatus, SettingsTab, app, scan_status,
 };
 use crate::ui::window_state;
-use crate::ui_helpers::{bar_pos, find_mode, image_hash_algo, is_no_limit, match_mode};
+use crate::ui_helpers::{bar_pos, counted, find_mode, image_hash_algo, is_no_limit, match_mode};
 use crate::{cli, hashing, media, pipeline, poster, prefs, similar, util};
 
 // --- Boot -------------------------------------------------------------------
@@ -699,8 +699,8 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.bytes_scanned = out.stats.bytes_scanned;
             s.last_stats = None;
             s.status = format!(
-                "Scan cancelled after {} file(s). Press Scan to run again.",
-                out.stats.files_scanned
+                "Scan cancelled after {}. Press Scan to run again.",
+                counted(out.stats.files_scanned as u64, "file", "files")
             );
             return;
         }
@@ -731,18 +731,21 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.reclaim_bytes = reclaim;
             s.status = if empty {
                 format!(
-                    "{title}: nothing found in {} file(s) ({}).",
-                    s.files_scanned,
+                    "{title}: nothing found in {} ({}).",
+                    counted(s.files_scanned as u64, "file", "files"),
                     util::human_bytes(s.bytes_scanned)
                 )
             } else if group_count > 0 {
                 format!(
-                    "{title}: {group_count} group(s) · {findings} item(s) · {} reclaimable.",
+                    "{title}: {} · {} · {} reclaimable.",
+                    counted(group_count as u64, "group", "groups"),
+                    counted(findings as u64, "item", "items"),
                     util::human_bytes(reclaim)
                 )
             } else {
                 format!(
-                    "{title}: {findings} finding(s) · {} reclaimable.",
+                    "{title}: {} · {} reclaimable.",
+                    counted(findings as u64, "finding", "findings"),
                     util::human_bytes(reclaim)
                 )
             };
@@ -781,15 +784,15 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         recount(s);
         if s.groups.is_empty() {
             s.status = format!(
-                "No duplicates — scanned {} file(s) ({}).",
-                s.files_scanned,
+                "No duplicates — scanned {} ({}).",
+                counted(s.files_scanned as u64, "file", "files"),
                 util::human_bytes(s.bytes_scanned)
             );
         } else {
             s.status = format!(
-                "{} group(s) · {} duplicate file(s) · {} reclaimable.",
-                s.groups.len(),
-                s.dup_files,
+                "{} · {} · {} reclaimable.",
+                counted(s.groups.len() as u64, "group", "groups"),
+                counted(s.dup_files, "duplicate", "duplicates"),
                 util::human_bytes(s.reclaim_bytes)
             );
         }
@@ -1040,10 +1043,10 @@ pub(crate) fn apply_threshold(s: &mut AppState, t: f64) {
     // Fresh member set: re-apply the display order once, here.
     sort_groups(s);
     s.status = format!(
-        "Similarity ≥ {:.0}% — {} group(s), {} duplicate file(s).",
+        "Similarity ≥ {:.0}% — {}, {}.",
         t * 100.0,
-        s.groups.len(),
-        s.dup_files,
+        counted(s.groups.len() as u64, "group", "groups"),
+        counted(s.dup_files, "duplicate", "duplicates"),
     );
 }
 
@@ -1139,7 +1142,10 @@ pub(crate) fn apply_keep_mode(index: usize) {
             "Oldest",
             "Best quality",
         ][index.min(4)];
-        s.status = format!("Keep mode: {name} applied to {} group(s).", s.groups.len());
+        s.status = format!(
+            "Keep mode: {name} applied to {}.",
+            counted(s.groups.len() as u64, "group", "groups")
+        );
         sync_keep_to_base(s);
         // New keepers everywhere: re-apply the display order once, here.
         sort_groups(s);
@@ -1414,8 +1420,8 @@ pub(crate) fn perform_delete() {
                 None => String::new(),
             };
             s.status = format!(
-                "{verb} {} file(s) ({} freed); {} skipped{failed}.",
-                outcome.deleted.len(),
+                "{verb} {} ({} freed); {} skipped{failed}.",
+                counted(outcome.deleted.len() as u64, "file", "files"),
                 util::human_bytes(outcome.bytes_freed),
                 outcome.skipped.len()
             );
@@ -1475,7 +1481,10 @@ pub(crate) fn undo_delete() {
                     s.last_trashed.clear();
                 }
                 Ok(n) => {
-                    s.status = format!("Restored {n} file(s). Press Scan to refresh.");
+                    s.status = format!(
+                        "Restored {}. Press Scan to refresh.",
+                        counted(n as u64, "file", "files")
+                    );
                     s.last_trashed.clear();
                 }
                 Err(e) => {
@@ -1611,6 +1620,7 @@ pub(crate) fn perform_consolidate() {
                 dest.display(),
                 outcome.skipped.len() + skipped,
             );
+            crate::ui::toast::notify(s.status.clone(), !outcome.failures.is_empty());
         });
     });
 }
@@ -1670,7 +1680,11 @@ pub(crate) fn save_report() {
 /// Wipe the on-disk hash and fingerprint caches from the Settings page.
 pub(crate) fn clear_cache() {
     let (files, bytes) = crate::cache::clear_caches();
-    let msg = format!("Cleared {files} file(s) ({})", util::human_bytes(bytes));
+    let msg = format!(
+        "Cleared {} ({})",
+        counted(files as u64, "file", "files"),
+        util::human_bytes(bytes)
+    );
     app().update(|s| {
         s.cache_msg = msg.clone();
         s.status = format!("Cache cleared: {msg}");

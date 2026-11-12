@@ -60,8 +60,11 @@ pub(crate) mod colors {
         tone(veil(0x00, 0x00, 0x00, 12), veil(0xff, 0xff, 0xff, 14));
     pub(crate) const TEXT: AdaptiveColor =
         tone(veil(0x1c, 0x1b, 0x18, 255), veil(0xed, 0xee, 0xef, 255));
+    /// Secondary copy. Dark enough in the light appearance to hold 4.5:1 on
+    /// the paper, the card and a pane: at the old `#74706a` captions measured
+    /// 4.2:1 on `BACKGROUND` and 4.1:1 on `PANE`.
     pub(crate) const MUTED: AdaptiveColor =
-        tone(veil(0x74, 0x70, 0x6a, 255), veil(0x8a, 0x8f, 0x8c, 255));
+        tone(veil(0x6b, 0x67, 0x61, 255), veil(0x8a, 0x8f, 0x8c, 255));
     /// A deep blue in light; a soft, bright blue in dark, with dark-on-blue
     /// contrast for filled controls. The light step is dark enough that white
     /// label text on a filled pill stays past 5:1.
@@ -88,6 +91,11 @@ pub(crate) mod colors {
         tone(veil(0x1d, 0x9a, 0x4a, 22), veil(0x32, 0xd7, 0x4b, 40));
     pub(crate) const KEEP_WASH_STRONG: AdaptiveColor =
         tone(veil(0x1d, 0x9a, 0x4a, 44), veil(0x32, 0xd7, 0x4b, 72));
+    /// `KEEP` as words on a keep wash. The tint is a backing, not a label
+    /// colour: green under a 44% wash measured 3.3:1, so the KEEP badge takes
+    /// this instead (6:1 on the wash).
+    pub(crate) const KEEP_INK: AdaptiveColor =
+        tone(veil(0x0f, 0x6b, 0x31, 255), veil(0x6f, 0xf0, 0x8b, 255));
     /// A copy ticked for deletion. Amber: a second decision, a second hue.
     pub(crate) const SELECT: AdaptiveColor =
         tone(veil(0xc2, 0x75, 0x00, 255), veil(0xff, 0x9f, 0x0a, 255));
@@ -95,8 +103,26 @@ pub(crate) mod colors {
         tone(veil(0xff, 0x95, 0x00, 26), veil(0xff, 0x9f, 0x0a, 44));
     pub(crate) const SELECT_WASH_STRONG: AdaptiveColor =
         tone(veil(0xff, 0x95, 0x00, 50), veil(0xff, 0x9f, 0x0a, 76));
+    /// `SELECT` as words on a tick wash: the amber is a fill and a border,
+    /// never a label colour (it measured 3.4:1 on the light wash).
+    pub(crate) const SELECT_INK: AdaptiveColor =
+        tone(veil(0x8a, 0x52, 0x00, 255), veil(0xff, 0xc4, 0x66, 255));
+    /// Error borders and marks. Not text: see [`DANGER_TEXT`].
     pub(crate) const DANGER: AdaptiveColor =
         tone(veil(0xff, 0x3b, 0x30, 255), veil(0xff, 0x45, 0x3a, 255));
+    /// The fill of a destructive action: one deeper red in both appearances,
+    /// so the label on it is white either way (5.8:1). The bright `DANGER`
+    /// under white text measured 3.4:1, and carrying dark ink in the dark
+    /// appearance made the one filled destructive control look disabled.
+    pub(crate) const DANGER_SURFACE: AdaptiveColor =
+        tone(veil(0xc4, 0x22, 0x1d, 255), veil(0xc4, 0x22, 0x1d, 255));
+    /// The label on [`DANGER_SURFACE`].
+    pub(crate) const ON_DANGER: AdaptiveColor =
+        tone(veil(0xff, 0xff, 0xff, 255), veil(0xff, 0xff, 0xff, 255));
+    /// Error copy on a plain surface: the fill colour is too light to read as
+    /// words (3.3:1 on a card in light).
+    pub(crate) const DANGER_TEXT: AdaptiveColor =
+        tone(veil(0xc4, 0x22, 0x1d, 255), veil(0xff, 0x6b, 0x5e, 255));
     /// The veil behind a dialog: dims the app without hiding it.
     pub(crate) const SCRIM: AdaptiveColor =
         tone(veil(0x00, 0x00, 0x00, 64), veil(0x00, 0x00, 0x00, 150));
