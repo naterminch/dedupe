@@ -5,7 +5,7 @@ use crate::matching::{Group, GroupMember};
 use crate::media::MediaKind;
 use crate::modes::{Finding, FindingGroup};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn tmpdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -403,6 +403,43 @@ fn finding_for(path: &PathBuf, kind: &'static str) -> Finding {
         is_dir: false,
         hash: Some(engine().full(path).unwrap()),
     }
+}
+
+#[test]
+fn relative_path_without_working_directory_counts_as_protected() {
+    let protected = vec![std::env::temp_dir().join("backup")];
+
+    // Nothing can be placed without a working directory, so the check must
+    // assume the file sits behind the fence instead of letting it through.
+    assert!(findings::is_protected_in(
+        Path::new("stray.log"),
+        &protected,
+        None
+    ));
+}
+
+#[test]
+fn relative_path_is_resolved_against_the_working_directory() {
+    let cwd = std::env::temp_dir();
+    let protected = vec![cwd.join("backup")];
+
+    assert!(findings::is_protected_in(
+        Path::new("backup/stray.log"),
+        &protected,
+        Some(&cwd)
+    ));
+}
+
+#[test]
+fn relative_path_outside_the_fence_is_not_protected() {
+    let cwd = std::env::temp_dir();
+    let protected = vec![cwd.join("backup")];
+
+    assert!(!findings::is_protected_in(
+        Path::new("elsewhere/stray.log"),
+        &protected,
+        Some(&cwd)
+    ));
 }
 
 #[test]

@@ -17,13 +17,23 @@ use std::path::{Component, Path, PathBuf};
 /// there but must never remove it.
 #[must_use]
 pub fn is_protected(path: &Path, protected: &[PathBuf]) -> bool {
+    is_protected_in(path, protected, std::env::current_dir().ok().as_deref())
+}
+
+/// [`is_protected`] with the working directory supplied, so the fail-closed
+/// branch can be exercised without breaking the test process's own cwd.
+pub(super) fn is_protected_in(path: &Path, protected: &[PathBuf], cwd: Option<&Path>) -> bool {
     if protected.is_empty() {
         return false;
     }
     // Both spellings matter: a symlink inside a protected folder points outside
     // it, and a dangling link cannot be resolved at all. Comparing the path
     // without following links keeps both of those inside the fence.
-    let lexical = absolute(path);
+    let Some(lexical) = absolute(path, cwd) else {
+        // A relative path with no readable working directory cannot be placed
+        // on either side of the fence, so assume the worst and keep it.
+        return true;
+    };
     let resolved = crate::matching::canonical_member(path);
     protected
         .iter()
@@ -32,13 +42,15 @@ pub fn is_protected(path: &Path, protected: &[PathBuf]) -> bool {
 
 /// `path` as an absolute path with `.` and `..` folded lexically, without
 /// resolving symlinks.
-fn absolute(path: &Path) -> PathBuf {
+///
+/// Relative paths are resolved against `cwd`; without one they cannot be
+/// placed, so the result is `None` rather than a bare relative path that would
+/// silently compare as unprotected.
+fn absolute(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
     let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(path))
-            .unwrap_or_else(|_| path.to_path_buf())
+        cwd?.join(path)
     };
     let mut out = PathBuf::new();
     for component in joined.components() {
@@ -50,7 +62,7 @@ fn absolute(path: &Path) -> PathBuf {
             other => out.push(other.as_os_str()),
         }
     }
-    out
+    Some(out)
 }
 
 /// Compare a finding against what the scan recorded.
