@@ -34,31 +34,37 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
 1. Pick a folder on the left and press **Scan**.
 2. Results are grouped by content. Green **KEEP** is the copy that stays, amber
    **Selected** is ticked for deletion.
-3. **Delete** shows exactly what is going to go, group by group, then moves it to
-   the trash. **Stop** cancels a scan instantly.
+3. **Delete** follows your Trash setting: with it on the ticked copies go to the
+   system trash, with it off they are deleted permanently. The dialog lists the
+   groups and files that will go first — a long selection is summarized with
+   counts. **Stop** cancels a scan instantly.
 
-Folders can be marked as **protected** so nothing inside them is ever deleted.
-The keep rule (First / Smallest / Newest / Oldest / Best quality) can be changed
-without rescanning, and **Consolidate** gathers one copy of every group into a
-folder of your choosing. Settings also cover the scan type, match mode, image
+Folders can be marked as **protected**: their copies win the keep decision and
+are never deleted (duplicate scans). The keep rule (First / Smallest / Newest /
+Oldest / Best quality) can be changed without rescanning, and **Consolidate**
+gathers one copy of every group into a folder of your choosing, leaving protected
+keepers where they are. Settings also cover the scan type, match mode, image
 fingerprint and partial clips; light/dark and your preferences persist between
 runs.
 
 ## Command line
 
 ```sh
-dedupe ~/Pictures                          # scan and report
-dedupe ~/Photos --delete --trash           # review each group, then delete
-dedupe /incoming --reference-dir /backup -Dy   # no prompts, keep the references
-dedupe ~/photos --consolidate-dir ~/sorted -y  # gather one copy of everything
-dedupe ~/photos --move-dir D:\quarantine -y    # move duplicates aside instead
-dedupe ~/photos --hardlink -y              # replace copies with hard links
-dedupe ~/photos --strip-exif -y            # strip EXIF/XMP in place
-dedupe ~/downloads --find empty-dirs -D -y # cleanup scan
-dedupe ~/music --find music --music-by content
+dedupe ~/Pictures                             # scan and report
+dedupe ~/Photos --delete --trash              # review each group, delete to the trash
+dedupe /incoming /backup --reference-dir /backup -Dy --trash   # backup always wins
+dedupe ~/photos --consolidate-dir ~/sorted -y # gather one copy of everything
+dedupe ~/photos --move-dir D:\quarantine -y   # move duplicates aside instead
+dedupe ~/photos --hardlink -y                 # replace copies with hard links
+dedupe ~/photos --strip-exif -y               # strip EXIF/XMP in place
+dedupe ~/downloads --find empty-dirs -D --trash -y  # cleanup scan
+dedupe ~/music --find music --music-by content      # needs FFmpeg
 dedupe ~/photos --match fuzzy --fuzzy-threshold 90
 dedupe ~/photos --csv report.csv --html report.html
 ```
+
+`--delete` on its own removes files permanently; add `--trash`, or leave out `-y`
+to be asked before anything goes.
 
 Useful flags:
 
@@ -69,8 +75,8 @@ Useful flags:
 | `--similarity PCT` | How close two images/videos must be (default 97) |
 | `--image-hash` | `auto` (dHash), `phash`, `ahash` or `color` |
 | `--partial-clips` | Also match a short clip found inside a longer one |
-| `--trash` / `--dry-run` | Trash instead of deleting; or only list what would go |
-| `--reference-dir` | Never delete anything in here (repeatable) |
+| `--trash` / `--dry-run` | Move to the system trash instead of deleting; or only list what would go |
+| `--reference-dir` | Never delete copies here (repeatable, duplicate scans; scan the folder too) |
 | `--jobs N` | Worker threads (`0` = all but one core) |
 | `--json` / `--csv` / `--html` | Machine-readable, spreadsheet or shareable report |
 
@@ -78,14 +84,17 @@ Useful flags:
 
 ## Is my data safe?
 
-- Every file is re-hashed immediately before it is removed; anything that changed
-  meanwhile is skipped.
-- Nothing is deleted without a per-group prompt unless you pass `-y`, and
-  `--trash` puts files in the system trash where it can be restored.
+- Duplicates are re-hashed immediately before they are removed, and a copy that
+  changed meanwhile is skipped. Cleanup findings are re-checked for type and size
+  instead, since there is no second copy to compare against.
+- Duplicate deletions ask once per group unless you pass `-y`; cleanup deletions
+  ask once for the whole list. `--trash` moves files to the system trash, where
+  they can be restored, instead of removing them outright.
 - `--dry-run`, `--move-dir` and `--hardlink` give you ways to clean up without
   losing anything.
 - Re-scans are fast: unchanged files are skipped using the size + mtime caches in
-  `~/.dedupe/`. `--no-cache` rebuilds them, `--clear-cache` wipes them.
+  `~/.dedupe/`. `--no-cache` bypasses them without refreshing them;
+  `--clear-cache` wipes them.
 
 ## Build
 
@@ -94,12 +103,18 @@ Useful flags:
 cargo build --release  # any OS
 ```
 
-Rust is the only requirement. FFmpeg is optional — it adds resolution, duration
-and codec info, plus video comparison; everything else works without it.
+Rust is the only requirement on Windows and macOS. On Linux the GUI stack also
+needs its development packages, as CI installs them: `gcc`, `g++`, `clang`,
+`libgtk-4-dev`, `libgstreamer1.0-dev`, `libgstreamer-plugins-base1.0-dev` and
+`libwayland-dev`.
+
+FFmpeg is optional for most scans: it adds resolution, duration and codec info,
+video comparison, and audio fingerprints for `--music-by content`.
 
 Release downloads: `dedupe.exe` on Windows, the bare binary plus a `dedupe.desktop`
-launcher on Linux, and a `dedupe.app` bundle next to the binary on macOS. The GUI
-never opens a terminal window on any platform.
+launcher on Linux (put the binary on `PATH` or point `Exec=`/`TryExec=` at it), and
+a `dedupe.app` bundle next to the binary on macOS. The GUI never opens a terminal
+window on any platform.
 
 ## How it works
 
