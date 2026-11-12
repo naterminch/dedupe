@@ -144,9 +144,7 @@ fn fast_wheel(
         .on_scroll(move |e: &ScrollEvent| {
             at.with(|cell| {
                 let (_, asked, viewport) = cell.get();
-                // Our own target coming back reports the same offset; anything
-                // else moved the pane, so follow that.
-                if (e.offset.y.0 - asked).abs() > 0.5 {
+                if scroll_moved_elsewhere(asked, e.offset.y.0) {
                     cell.set((e.offset.y.0, asked, viewport));
                 }
             });
@@ -161,17 +159,7 @@ fn fast_wheel(
                     let precise = e.delta.precise();
                     let page = !precise && app().with_untracked(|s| s.wheel_page);
                     let (pos, _, viewport) = at.with(|cell| cell.get());
-                    // Notches in this delta, so a wheel that reports more
-                    // than one line per notch still moves one card per notch.
-                    let notch = lines / (NOTCH_LINES * WHEEL_LINE) * step();
-                    let step = if precise {
-                        lines
-                    } else if page {
-                        // A whole page, less the strip `PAGE_KEEP` keeps.
-                        (viewport - PAGE_KEEP).max(notch)
-                    } else {
-                        notch
-                    };
+                    let step = wheel_step(lines, precise, page, viewport, step());
                     if step == 0.0 {
                         return;
                     }
@@ -181,6 +169,33 @@ fn fast_wheel(
                 })
                 .child(content),
         )
+}
+
+/// How far one wheel event moves a pane, given the delta in points.
+///
+/// A mouse notch is counted in whole notches so a wheel that reports several
+/// lines per notch still moves one card per notch, and the count is signed so
+/// the wheel turns both ways. Page mode moves a whole page per notch, less the
+/// strip `PAGE_KEEP` keeps so a card never ends exactly on the fold; a
+/// touchpad's precise deltas are already points and pass straight through.
+fn wheel_step(lines: f32, precise: bool, page: bool, viewport: f32, card: f32) -> f32 {
+    let notches = lines / (NOTCH_LINES * WHEEL_LINE);
+    if precise {
+        lines
+    } else if page {
+        (viewport - PAGE_KEEP).max(WHEEL_STEP) * notches
+    } else {
+        notches * card
+    }
+}
+
+/// Whether a scroll event came from somewhere other than our own `scroll_to`.
+///
+/// `asked` is what we last aimed at; it is NaN until the wheel has moved the
+/// pane once, and a scrollbar drag or keyboard scroll before (or after) that
+/// is external, so its offset becomes the pane's remembered position.
+fn scroll_moved_elsewhere(asked: f32, offset: f32) -> bool {
+    !asked.is_finite() || (offset - asked).abs() > 0.5
 }
 
 /// The states every control needs: a press that reads as pressed, the
@@ -764,4 +779,55 @@ pub(crate) fn help_dot(tip: impl IntoReactive<SharedString>) -> impl IntoElement
         .flex_shrink_0()
         .child(icon(icons::HELP, 14.0, colors::MUTED))
         .tooltip(hint(tip))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PAGE_KEEP, WHEEL_STEP, scroll_moved_elsewhere, wheel_step};
+
+    /// A notch: three lines of 16 points, the platform's usual step.
+    const NOTCH: f32 = 48.0;
+
+    #[test]
+    fn a_notch_moves_one_card_each_way() {
+        assert_eq!(wheel_step(NOTCH, false, false, 800.0, 355.0), 355.0);
+        assert_eq!(wheel_step(-NOTCH, false, false, 800.0, 355.0), -355.0);
+        assert_eq!(wheel_step(2.0 * NOTCH, false, false, 800.0, 240.0), 480.0);
+        assert_eq!(wheel_step(-2.0 * NOTCH, false, false, 800.0, 240.0), -480.0);
+    }
+
+    #[test]
+    fn page_mode_keeps_the_wheel_direction() {
+        let page = 800.0 - PAGE_KEEP;
+        assert_eq!(wheel_step(NOTCH, false, true, 800.0, 355.0), page);
+        assert_eq!(wheel_step(-NOTCH, false, true, 800.0, 355.0), -page);
+        assert_eq!(
+            wheel_step(2.0 * NOTCH, false, true, 800.0, 355.0),
+            2.0 * page
+        );
+    }
+
+    #[test]
+    fn a_page_is_never_shorter_than_the_base_step() {
+        let tall = WHEEL_STEP + PAGE_KEEP;
+        assert_eq!(wheel_step(NOTCH, false, true, tall, 355.0), WHEEL_STEP);
+        assert_eq!(wheel_step(-NOTCH, false, true, tall, 355.0), -WHEEL_STEP);
+    }
+
+    #[test]
+    fn precise_deltas_pass_straight_through() {
+        assert_eq!(wheel_step(7.0, true, false, 800.0, 355.0), 7.0);
+        assert_eq!(wheel_step(-7.0, true, true, 800.0, 355.0), -7.0);
+    }
+
+    #[test]
+    fn a_scroll_before_the_first_notch_is_external() {
+        // `asked` starts as NaN: a scrollbar drag before any wheel movement
+        // still has to become the remembered position.
+        assert!(scroll_moved_elsewhere(f32::NAN, 240.0));
+        // Our own target coming back is not a move.
+        assert!(!scroll_moved_elsewhere(355.0, 355.0));
+        // Anything else moved the pane.
+        assert!(scroll_moved_elsewhere(355.0, 120.0));
+    }
 }

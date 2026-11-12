@@ -66,15 +66,20 @@ fn forget_pane_offsets() {
 }
 
 pub(crate) fn leave_settings() {
-    app().update(|s| {
-        if s.view == AppView::Settings {
-            s.view = AppView::Main;
-        }
-    });
+    // Only a page switch remounts the panes. Pressing the rail item of the page
+    // already open leaves it mounted, so forgetting the offsets there would
+    // send the next wheel notch back to the top.
+    if app().with_untracked(|s| s.view != AppView::Settings) {
+        return;
+    }
+    app().update(|s| s.view = AppView::Main);
     forget_pane_offsets();
 }
 
 pub(crate) fn open_settings() {
+    if app().with_untracked(|s| s.view == AppView::Settings) {
+        return;
+    }
     app().update(|s| s.view = AppView::Settings);
     forget_pane_offsets();
 }
@@ -486,6 +491,9 @@ pub(crate) fn start_scan() {
     if app().with_untracked(|s| s.scanning) {
         return;
     }
+    // A fresh run re-reads the files it meets, so the memoized probe results
+    // of the last run must not answer for them.
+    crate::media::clear_probe_cache();
     save_prefs();
     let state = app();
     let opts = match state.with_untracked(collect_options) {
@@ -505,6 +513,10 @@ pub(crate) fn start_scan() {
         s.scan_gen += 1;
         s.scan_cancel.reset();
         s.has_scanned = false;
+        // The status bar reports these while a scan runs: zeroed here so a
+        // rerun never opens showing the previous run's totals.
+        s.files_scanned = 0;
+        s.bytes_scanned = 0;
         s.groups.clear();
         s.mode_result = None;
         s.selected.clear();
@@ -622,17 +634,22 @@ pub(crate) fn stop_scan() {
 }
 
 /// Leave a finished scan for the first-run page, where the composer and the
-/// mode pills set up the next run. Only the results go: the folders, the
-/// prefs and the last statistics stay, so going back costs nothing.
+/// mode pills set up the next run. Only the results go: the folders and the
+/// prefs stay, so going back costs nothing.
 pub(crate) fn back_to_setup() {
     if app().with_untracked(|s| s.scanning) {
         return;
     }
     scan_status().update(|p| *p = ScanStatus::default());
+    crate::ui::results::reset_lists();
     app().update(|s| {
         // Everything the last run produced goes, not just the lists: the
         // status bar's counts, the reclaim totals and the per-run media caches
-        // would otherwise keep describing a scan whose results are gone.
+        // would otherwise keep describing a scan whose results are gone. The
+        // generation bump is what makes clearing the media caches safe: a
+        // poster still being extracted for this run is dropped when it lands
+        // instead of being filed under a path the next run will show.
+        s.scan_gen += 1;
         s.has_scanned = false;
         s.groups.clear();
         s.base_groups.clear();
@@ -807,6 +824,10 @@ pub(crate) fn ensure_poster(path: &Path, size: u64, mtime: Option<i64>) {
     }
     let job = path.to_path_buf();
     let key = job.clone();
+    // The scan this poster belongs to. A result that lands after the reader
+    // left the results — or after the next run started — must not be filed
+    // under the path, where the new cards would show it.
+    let generation = app().with_untracked(|s| s.scan_gen);
     app().update(|s| {
         s.poster_jobs.insert(key.clone());
     });
@@ -819,7 +840,9 @@ pub(crate) fn ensure_poster(path: &Path, size: u64, mtime: Option<i64>) {
         drop(slot);
         if let Some(thumb) = done {
             app().update(move |s| {
-                s.posters.insert(key, thumb);
+                if s.scan_gen == generation {
+                    s.posters.insert(key, thumb);
+                }
             });
         }
     });

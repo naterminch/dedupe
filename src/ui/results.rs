@@ -770,6 +770,7 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
         list = list.child(nothing_found_card(
             "No duplicates found",
             "Every file is unique at this similarity. Add another folder or loosen the threshold, then scan again.",
+            true,
         ));
     }
     // Structural snapshot, read untracked: nothing here subscribes, so this
@@ -1229,11 +1230,12 @@ fn media_status() -> impl IntoElement {
     })
 }
 
-/// A scan that found nothing: what to change and where. The composer sits just
-/// above it with the scan and add-folder actions, so this card only explains
-/// and never competes with those buttons.
-fn nothing_found_card(message: &'static str, hint: &'static str) -> View {
-    card()
+/// A scan that found nothing: what to change and where. `rescan` adds the
+/// button that runs the same scan again — on the duplicates page the composer
+/// lives back on the setup page, so without it this state is a dead end. The
+/// cleanup workspace passes `false`: its header already carries the rerun.
+fn nothing_found_card(message: &'static str, hint: &'static str, rescan: bool) -> View {
+    let mut card = card()
         .gap(px(space::MD))
         .p(px(space::LG))
         .child(
@@ -1242,7 +1244,15 @@ fn nothing_found_card(message: &'static str, hint: &'static str) -> View {
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors::TEXT),
         )
-        .child(caption(hint))
+        .child(caption(hint));
+    if rescan {
+        card = card.child(
+            view()
+                .flex_row()
+                .child(primary_button("Scan again", actions::start_scan)),
+        );
+    }
+    card
 }
 
 fn note_card(message: &'static str) -> View {
@@ -1962,6 +1972,7 @@ fn mode_list() -> View {
         list = list.child(nothing_found_card(
             "Nothing to clean up",
             "The scanned folders came back clean. Add a folder, or scan again after changing the threshold.",
+            false,
         ));
         return list;
     }

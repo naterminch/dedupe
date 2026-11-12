@@ -1,6 +1,8 @@
 use crate::util::format_duration_ms;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 /// What kind of media a file is, based on its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -114,6 +116,58 @@ pub fn ffmpeg_available() -> bool {
 /// Returns `None` on any failure (missing binary, parse error, no video stream).
 #[must_use]
 pub fn probe_media(path: &Path) -> Option<MediaInfo> {
+    let stamp = file_stamp(path);
+    if let Ok(cache) = probe_cache().lock()
+        && let Some((cached, info)) = cache.get(path)
+        && *cached == stamp
+    {
+        return info.clone();
+    }
+    let info = run_probe(path);
+    if let Ok(mut cache) = probe_cache().lock() {
+        cache.insert(path.to_path_buf(), (stamp, info.clone()));
+    }
+    info
+}
+
+/// A file's identity plus its memoized probe result.
+type ProbeEntry = (ProbeStamp, Option<MediaInfo>);
+/// What makes a probe result valid: the file's size and modification time.
+type ProbeStamp = (u64, Option<i64>);
+type ProbeCache = Mutex<HashMap<PathBuf, ProbeEntry>>;
+
+/// Probe results per file identity.
+///
+/// A scan probes every video it meets and then the cards ask for posters of
+/// those same files; without this, each poster miss spawned a second
+/// `ffprobe` for a duration the scan had already read. Keyed by size and mtime
+/// so a file rewritten in place is probed again rather than answered from a
+/// stale entry.
+fn probe_cache() -> &'static ProbeCache {
+    static CACHE: OnceLock<ProbeCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Forget every memoized probe; a new scan re-reads the files it meets.
+pub(crate) fn clear_probe_cache() {
+    if let Ok(mut cache) = probe_cache().lock() {
+        cache.clear();
+    }
+}
+
+fn file_stamp(path: &Path) -> ProbeStamp {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return (0, None);
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64);
+    (meta.len(), mtime)
+}
+
+fn run_probe(path: &Path) -> Option<MediaInfo> {
     let output = crate::util::quiet_command("ffprobe")
         .args([
             "-v",
