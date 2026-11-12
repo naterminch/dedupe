@@ -641,7 +641,9 @@ pub(crate) fn delete_confirm() -> View {
             s.trash,
         )
     });
-    let mut body = view().flex_col().gap(px(space::MD));
+    // The plan fills the panel: without this the body is content-sized, so the
+    // rules between groups stopped short of the panel's own edge.
+    let mut body = view().flex_col().w_full().gap(px(space::MD));
     for (position, group) in groups.iter().enumerate() {
         let going = group.rows.len() + group.hidden_rows;
         // Each group reads as the pair it is: what stays, then what goes.
