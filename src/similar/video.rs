@@ -1,7 +1,8 @@
 use super::hash::{dhash_gray, frame_seq_similarity_sym};
 use super::images::sort_bucket;
 use super::{
-    FRAME_H, FRAME_W, FrameHash, SEEK_THRESHOLD_MS, SIMILAR_FRAMES, SimilarGroup, SimilarMember,
+    FRAME_H, FRAME_W, FULL_PASS_MAX_MBPS, FrameHash, SEEK_THRESHOLD_MS, SIMILAR_FRAMES,
+    SimilarGroup, SimilarMember,
 };
 use crate::cancel::CancelToken;
 use crate::media::MediaInfo;
@@ -32,7 +33,7 @@ pub(super) fn video_fingerprint(
     if let Some(info) = probe {
         let (w, h) = (info.width?, info.height?);
         let dur = info.duration_ms?;
-        let frames = if dur <= SEEK_THRESHOLD_MS {
+        let frames = if uses_full_decode_pass(dur, entry.size) {
             extract_frames_pass(&entry.path, dur)
         } else {
             extract_frames_seek(&entry.path, dur, cancel)
@@ -59,6 +60,24 @@ pub(super) fn video_fingerprint(
             frames,
         })
     }
+}
+
+/// Choose the sampling strategy for a video with a known duration.
+///
+/// The single-pass path is a full decode of the whole stream, so it is only
+/// right when the clip is short AND its bitrate is modest: a long clip, or a
+/// short but high-bitrate one (a 70 s 4K clip at ~100 Mbps is ~900 MB of
+/// stream), must use the per-frame keyframe seeks instead.
+#[must_use]
+pub(super) fn uses_full_decode_pass(duration_ms: u64, size_bytes: u64) -> bool {
+    if duration_ms == 0 {
+        return false;
+    }
+    if duration_ms > SEEK_THRESHOLD_MS {
+        return false;
+    }
+    let mbps = size_bytes as f64 * 8.0 / (duration_ms as f64 / 1000.0) / 1_000_000.0;
+    mbps <= FULL_PASS_MAX_MBPS
 }
 
 /// Sample `SIMILAR_FRAMES` frames in a single decode pass: the `fps` filter

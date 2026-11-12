@@ -4,6 +4,7 @@ use super::hash::{
     hash_similarity, image_algo_code, phash_gray,
 };
 use super::images::{ImageFp, aspect_key, cluster_images, image_fingerprint};
+use super::video::uses_full_decode_pass;
 use super::{DEFAULT_SIMILARITY_PCT, FRAME_H, FRAME_W, FrameHash, SimilarMember};
 use crate::cli::ImageHashAlgo;
 use crate::matching::KeepMode;
@@ -313,4 +314,19 @@ fn image_algo_cache_tags_are_distinct() {
     assert_eq!(image_algo_code(ImageHashAlgo::Phash), 1);
     assert_eq!(image_algo_code(ImageHashAlgo::Ahash), 2);
     assert_eq!(image_algo_code(ImageHashAlgo::Color), 3);
+}
+
+#[test]
+fn full_decode_pass_avoids_high_bitrate_short_clips() {
+    // A short, modest-bitrate clip keeps the fast single-pass path.
+    // 60 s at ~8 Mbps (60 MB) is a normal 1080p recording.
+    assert!(uses_full_decode_pass(60_000, 60_000_000));
+    // The user's case: ~70 s at ~100 Mbps (~900 MB) is a 4K camera clip;
+    // a full decode grinds for minutes, so it must seek instead.
+    assert!(!uses_full_decode_pass(69_272, 888_000_000));
+    assert!(!uses_full_decode_pass(75_488, 754_000_000));
+    // Long clips always seek, however small.
+    assert!(!uses_full_decode_pass(120_000, 1_000_000));
+    // Zero duration (a bad probe) must not divide by zero.
+    assert!(!uses_full_decode_pass(0, 500));
 }
