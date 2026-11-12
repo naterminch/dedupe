@@ -1,5 +1,5 @@
+use super::ActionError;
 use crate::hashing::HashEngine;
-use anyhow::Result;
 use std::fs;
 use std::path::Path;
 
@@ -21,12 +21,16 @@ pub(super) fn verify_expected(
     expected: &str,
     size: u64,
     engine: &HashEngine,
-) -> Result<bool, String> {
+) -> Result<bool, ActionError> {
+    let unreadable = |source| ActionError::Read {
+        path: path.to_path_buf(),
+        source,
+    };
     if label_expected(expected) {
-        let meta = fs::metadata(path).map_err(|e| e.to_string())?;
+        let meta = fs::metadata(path).map_err(unreadable)?;
         Ok(meta.is_file() && meta.len() == size)
     } else {
-        let hash = engine.full(path).map_err(|e| e.to_string())?;
+        let hash = engine.full(path).map_err(unreadable)?;
         Ok(hash == expected)
     }
 }

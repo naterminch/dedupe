@@ -1,5 +1,6 @@
 mod consolidate;
 mod delete;
+mod error;
 mod fileops;
 mod findings;
 mod guard;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 
 pub use consolidate::{consolidate_keepers, consolidate_targets, plan_consolidation};
 pub use delete::{delete_duplicates, delete_targets};
+pub use error::ActionError;
 pub use findings::{delete_finding_groups, delete_findings, is_protected};
 pub use hardlink::hardlink_duplicates;
 pub use quarantine::move_duplicates;
@@ -19,6 +21,8 @@ pub struct DeletionStats {
     pub files_deleted: u64,
     pub bytes_freed: u64,
     pub files_skipped: u64,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 /// Where deleted files go.
@@ -47,6 +51,8 @@ pub struct DeleteTarget {
 pub struct DeleteOutcome {
     pub deleted: Vec<PathBuf>,
     pub skipped: Vec<PathBuf>,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
     pub bytes_freed: u64,
 }
 
@@ -77,6 +83,8 @@ pub struct PlannedMove {
 pub struct ConsolidateOutcome {
     pub moved: Vec<(PathBuf, PathBuf)>,
     pub skipped: Vec<PathBuf>,
+    /// Moves that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
     pub bytes_moved: u64,
 }
 
@@ -85,6 +93,8 @@ pub struct ConsolidateStats {
     pub files_moved: u64,
     pub bytes_moved: u64,
     pub files_skipped: u64,
+    /// Moves that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[derive(Debug, Default)]
@@ -92,6 +102,8 @@ pub struct FindingDeleteStats {
     pub deleted: u64,
     pub bytes_freed: u64,
     pub skipped: u64,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[derive(Debug, Default)]
@@ -99,6 +111,8 @@ pub struct MoveDuplicateStats {
     pub files_moved: u64,
     pub bytes_moved: u64,
     pub files_skipped: u64,
+    /// Moves that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[derive(Debug, Default)]

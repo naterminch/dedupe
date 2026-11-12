@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 
 use nsh_base::{
     SelectItem, checkbox, collapsible, dialog, number_input, progress, select, toggle,
-    toggle_group, toolbar, toolbar_group, toolbar_separator,
+    toggle_group, toolbar, toolbar_group,
 };
 use nsh_core::AccessibilityState;
 use nsh_core::element::{BorderCurve, ImageSrc, input, video};
@@ -23,12 +23,12 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app, scan_status};
 use crate::ui::widgets::{
-    bezel, bezel_core, caption, card, chevron, chip, danger_button, divider, entering, eyebrow,
-    fading_in, fast_scroll, fast_scroll_by, fast_scroll_max, field_label, ghost_button, hint, icon,
+    bezel, bezel_core, caption, card, chevron, chip, danger_button, divider, entering, fading_in,
+    fast_scroll, fast_scroll_by, fast_scroll_max, field_label, ghost_button, hint, icon,
     icon_button, icon_chip, icon_ghost_button, icon_pill_button, icon_secondary_button, icons,
-    motion, primary_button, secondary_button, selection, timing,
+    motion, primary_button, quiet_button, secondary_button, selection, timing,
 };
-use crate::ui_helpers::fit_text;
+use crate::ui_helpers::{counted, fit_text};
 use crate::util;
 
 const KEEP_MODES: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best"];
@@ -202,7 +202,6 @@ fn duplicate_workspace() -> View {
                     .flex_col()
                     .gap(px(space::LG))
                     .child(header_row())
-                    .child(selection_row())
                     .child(action_row())
             } else {
                 view()
@@ -239,129 +238,175 @@ fn header_row() -> View {
         .flex_wrap()
         .justify_between()
         .items_end()
-        .gap(px(16.0))
+        .gap(px(space::LG))
         .child(
             view()
                 .flex_col()
                 .min_w(px(0.0))
+                .flex_1()
                 .gap(px(space::XS))
-                .child(eyebrow("DUPLICATES"))
                 .child(title(|| {
                     if app().with(|s| s.has_scanned) {
                         "Review duplicates"
                     } else {
                         "Find duplicate files"
                     }
-                })),
+                }))
+                .child(summary_line()),
         )
-        .child(chip(
-            || {
-                let state = app();
-                if state.with(|s| s.scanning) {
-                    "Running".to_string()
-                } else if state.with(|s| s.has_scanned) {
-                    format!("{} groups", state.with(|s| s.groups.len()))
-                } else {
-                    "Ready".to_string()
-                }
-            },
-            colors::INSET,
-            colors::MUTED,
+        .child(list_actions())
+}
+
+/// The one line under the title: what the scan found, ordered the way a
+/// reader acts on it — how many groups, how many copies go, how much space
+/// that frees. It replaces the chip row that repeated the same three numbers
+/// a second time above the list, and with them a one-line hash explainer that
+/// belongs where the hash is chosen (Settings, Preferences).
+fn summary_line() -> impl IntoElement {
+    caption(|| {
+        let state = app();
+        if state.with(|s| s.scanning) {
+            "Scanning. The list appears when it finishes.".to_string()
+        } else {
+            let groups = state.with(|s| s.groups.len());
+            let dups = state.with(|s| s.dup_files);
+            let bytes = state.with(|s| s.reclaim_bytes);
+            format!(
+                "{} · {} · {} reclaimable",
+                counted(groups as u64, "group", "groups"),
+                counted(dups, "duplicate", "duplicates"),
+                util::human_bytes(bytes)
+            )
+        }
+    })
+}
+
+/// The list's own controls, held in one pill so four unlabelled glyphs read
+/// as one control group instead of four buttons floating at the page edges:
+/// the disclosure pair on the left, the selection pair on the right, one
+/// hairline between them.
+fn list_actions() -> View {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(space::XXS))
+        .p(px(space::XXS))
+        .bg(colors::INSET)
+        .border_1()
+        .border_color(colors::HAIRLINE)
+        .rounded_full()
+        .child(icon_ghost_button(
+            icons::EXPAND,
+            "Expand all groups",
+            || actions::set_all_expanded(true),
+        ))
+        .child(icon_ghost_button(
+            icons::COLLAPSE,
+            "Collapse all groups",
+            || actions::set_all_expanded(false),
+        ))
+        .child(view().w(px(1.0)).h(px(16.0)).bg(colors::BORDER))
+        .child(icon_ghost_button(
+            icons::SELECT_ALL,
+            "Select all duplicates",
+            || app().update(actions::reselect_all_dups),
+        ))
+        .child(icon_ghost_button(
+            icons::CLEAR,
+            "Clear selection",
+            actions::select_none,
         ))
 }
 
-fn selection_row() -> View {
+/// Two bands, not one: what you do to the results, then what shapes them.
+///
+/// All fifteen controls used to share a line, so a red Delete competed with
+/// the similarity box for the same glance and the row wrapped into an
+/// unpredictable second line. Actions run along the top — Back and Delete
+/// together on the left, the two whole-set commands on the right — and the
+/// options that only tune the list sit below a hairline in nsh's smaller
+/// toolbar row, their chips one step quieter than the actions above them.
+fn action_row() -> impl IntoElement {
     view()
-        .flex_row()
-        .flex_wrap()
-        .items_center()
-        .justify_between()
-        .gap(px(8.0))
+        .flex_col()
+        .w_full()
+        .gap(px(space::MD))
+        .child(result_actions())
         .child(
             view()
-                .flex_row()
-                .gap(px(4.0))
-                .child(icon_ghost_button(
-                    icons::EXPAND,
-                    "Expand all groups",
-                    || actions::set_all_expanded(true),
-                ))
-                .child(icon_ghost_button(
-                    icons::COLLAPSE,
-                    "Collapse all groups",
-                    || actions::set_all_expanded(false),
-                )),
-        )
-        .child(
-            view()
-                .flex_row()
-                .gap(px(4.0))
-                .child(icon_ghost_button(
-                    icons::SELECT_ALL,
-                    "Select all duplicates",
-                    || app().update(actions::reselect_all_dups),
-                ))
-                .child(icon_ghost_button(
-                    icons::CLEAR,
-                    "Clear selection",
-                    actions::select_none,
-                )),
+                .w_full()
+                .border_t_1()
+                .border_color(colors::HAIRLINE)
+                .pt(px(space::MD))
+                .child(scan_options()),
         )
 }
 
-/// The action bar: nsh's toolbar gives the controls one roving keyboard stop
-/// and a toolbar's semantics, its groups mark which decisions belong
-/// together, and the separators split the groups.
-fn action_row() -> impl IntoElement {
+/// The actions that act on the whole result set. nsh's toolbar gives them one
+/// roving keyboard stop; the groups mark the two clusters — destructive
+/// changes to the files on the left, moving and reporting on the right.
+fn result_actions() -> impl IntoElement {
     toolbar()
         .accessibility_label("Results actions")
         .flex_row()
         .flex_wrap()
         .items_center()
-        .gap(px(8.0))
+        .justify_between()
+        .w_full()
+        .gap(px(space::MD))
         .child(
             toolbar_group()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
-                .child(sim_filter())
-                .child(keep_modes()),
-        )
-        .child(
-            toolbar_separator()
-                .h(px(20.0))
-                .w(px(1.0))
-                .bg(colors::BORDER),
-        )
-        .child(
-            toolbar_group()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .child(sort_toggle())
-                .child(layout_toggle()),
-        )
-        .child(
-            toolbar_separator()
-                .h(px(20.0))
-                .w(px(1.0))
-                .bg(colors::BORDER),
-        )
-        .child(
-            toolbar_group()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
+                .gap(px(space::SM))
                 // Back sits with Delete, not in the header: both act on the
                 // whole result set, and the pill matches the row's sizing.
                 .child(back_button())
-                .child(delete_bar())
+                .child(delete_bar()),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(space::SM))
                 .child(consolidate_button())
                 .child(icon_pill_button(
                     icons::EXPORT,
                     "Export JSON report",
                     actions::save_report,
                 )),
+        )
+}
+
+/// The scan options: the similarity floor on the left with the keeper rule
+/// beside it, the sort and layout choices pushed to the far edge. They wrap
+/// only when the five keep chips run out of room, so the row stays one line
+/// at the widths the window actually opens at.
+fn scan_options() -> impl IntoElement {
+    toolbar()
+        .accessibility_label("Scan options")
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .justify_between()
+        .w_full()
+        .gap(px(space::MD))
+        .child(
+            toolbar_group()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(space::MD))
+                .child(sim_filter())
+                .child(keep_modes()),
+        )
+        .child(
+            toolbar_group()
+                .flex_row()
+                .items_center()
+                .gap(px(space::XXS))
+                .child(sort_toggle())
+                .child(layout_toggle()),
         )
 }
 
@@ -501,10 +546,16 @@ fn sort_toggle() -> impl IntoElement {
             .duration(motion(timing::FAST))
             .active(|s| s.opacity(0.9))
             .child(
-                text(if biggest { "Biggest" } else { "Path" })
-                    .text_size(px(text::CAPTION))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(content),
+                // A bare "Path" read as another choice in the keeper group
+                // beside it; the chip says what it sorts.
+                text(if biggest {
+                    "Sort: Biggest"
+                } else {
+                    "Sort: Path"
+                })
+                .text_size(px(text::CAPTION))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(content),
             )
     })
 }
@@ -590,25 +641,36 @@ pub(crate) fn delete_confirm() -> View {
             s.trash,
         )
     });
-    let action = if trash {
-        "move to the trash"
-    } else {
-        "permanently delete"
-    };
     let mut body = view().flex_col().gap(px(space::MD));
-    for group in &groups {
-        let mut section = view().flex_col().gap(px(space::XS)).child(
-            text(format!(
-                "Group #{} - keeps {} - deletes {} ({})",
-                group.index,
-                group.keeper,
-                group.rows.len() + group.hidden_rows,
+    for (position, group) in groups.iter().enumerate() {
+        let going = group.rows.len() + group.hidden_rows;
+        // Each group reads as the pair it is: what stays, then what goes.
+        // The old line ran both facts together ("Group #1 - keeps a - deletes
+        // 1"), which is a sentence to parse at the moment of confirming a
+        // deletion.
+        let mut section = view()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(space::SM))
+                    .child(
+                        text(format!("Keeping {}", group.keeper))
+                            .flex_1()
+                            .truncate()
+                            .text_size(px(text::CAPTION))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors::TEXT),
+                    )
+                    .child(chip("KEEP", colors::KEEP_WASH_STRONG, colors::KEEP_INK)),
+            )
+            .child(caption(format!(
+                "{} · {}",
+                counted(going as u64, "copy goes", "copies go"),
                 util::human_bytes(group.bytes),
-            ))
-            .text_size(px(text::CAPTION))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(colors::TEXT),
-        );
+            )));
         for path in &group.rows {
             let full = path.display().to_string();
             let shown = fit_text(&full, 56);
@@ -631,7 +693,7 @@ pub(crate) fn delete_confirm() -> View {
                     .items_center()
                     .gap(px(space::SM))
                     .child(cell)
-                    .child(ghost_button("Keep", move || {
+                    .child(quiet_button("Keep instead", move || {
                         actions::set_keeper(index, &keep_path);
                     })),
             );
@@ -642,10 +704,19 @@ pub(crate) fn delete_confirm() -> View {
                 group.hidden_rows
             )));
         }
+        // One rule between plans: two groups of paths ran together as one
+        // block, and the keeper line of the second looked like a repeat of
+        // the first group's last row.
+        if position > 0 {
+            body = body.child(divider());
+        }
         body = body.child(section);
     }
     if hidden_groups > 0 {
-        body = body.child(caption(format!("... and {hidden_groups} more group(s)")));
+        body = body.child(caption(format!(
+            "... and {} more",
+            counted(hidden_groups as u64, "group", "groups")
+        )));
     }
     if count == 0 {
         body = body.child(caption("Nothing is ticked for deletion."));
@@ -653,19 +724,26 @@ pub(crate) fn delete_confirm() -> View {
     let description = if count == 0 {
         "Ticking a duplicate in a group lists it here.".to_string()
     } else {
+        let files = counted(count as u64, "file", "files");
+        let action = if trash {
+            "go to the trash"
+        } else {
+            "are deleted permanently"
+        };
         format!(
-            "This will {action} {count} file(s) ({}). Keepers are kept; every file is re-hashed before removal.",
+            "{files} ({}) {action}. Keepers stay, and every file is re-hashed before it goes.",
             util::human_bytes(bytes)
         )
     };
+    let heading = format!("Delete {}?", counted(count as u64, "file", "files"));
     let panel = card()
         .w(px(520.0))
         .flex_shrink_0()
         .gap(px(space::SM))
         .p(px(space::LG))
         .child(
-            text(format!("Delete {count} file(s)?"))
-                .text_size(px(text::BODY))
+            text(heading.clone())
+                .text_size(px(text::HEADING))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(colors::TEXT),
         )
@@ -706,7 +784,7 @@ pub(crate) fn delete_confirm() -> View {
         .child(
             dialog()
                 .role(AccessibilityRole::AlertDialog)
-                .label(format!("Delete {count} file(s)?"))
+                .label(heading.clone())
                 .on_cancel(actions::cancel_delete)
                 // A press that lands on the modal layer itself still closes
                 // it, as the scrim did when it lived in here.
@@ -758,9 +836,6 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
     }
     if !has_scanned && !scanning {
         list = list.child(dynamic(hero));
-    }
-    if has_scanned && total > 0 {
-        list = list.child(dynamic(stat_chips));
     }
     if ffprobe_note {
         list = list.child(note_card(
@@ -860,8 +935,9 @@ fn progress_card() -> View {
         )
 }
 
-/// The first-run page, restyled as a centered hero: the logo, the
-/// question, the option pills, a tip card and the scan composer.
+/// The first-run page: the logo, the question, the two option pills and the
+/// scan composer. One decision after another, then the field that starts the
+/// work — no card in between repeating what the composer already says.
 fn hero() -> View {
     // The first-run page arrives as one piece: logo, question and composer
     // rise together instead of appearing fully formed.
@@ -881,7 +957,6 @@ fn hero() -> View {
                 .text_color(colors::TEXT),
         )
         .child(pill_row())
-        .child(tip_card())
         .child(composer())
         .bind_motion(&enter)
 }
@@ -1076,56 +1151,6 @@ fn dropdown_trigger(markup: &'static str, label: impl Fn() -> SharedString + 'st
         .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED))
 }
 
-/// The ad-banner slot: what the app wants from you next, with the blue
-/// call to action on the right.
-fn tip_card() -> View {
-    card().w_full().max_w(px(860.0)).p(px(space::LG)).child(
-        view()
-            .flex_row()
-            .flex_wrap()
-            .items_center()
-            .gap(px(space::MD))
-            .child(
-                view()
-                    .w(px(40.0))
-                    .h(px(40.0))
-                    .flex_shrink_0()
-                    .items_center()
-                    .justify_center()
-                    .bg(colors::INSET)
-                    .rounded(px(radius::CONTROL))
-                    .child(icon(icons::FOLDER, 18.0, colors::MUTED)),
-            )
-            .child(
-                view()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .flex_col()
-                    .gap(px(space::XXS))
-                    .child(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(space::SM))
-                            .child(
-                                text("Drop folders to scan")
-                                    .text_size(px(text::BODY))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(colors::TEXT),
-                            )
-                            .child(caption("Tip")),
-                    )
-                    .child(caption(
-                        "Drop folders from Explorer, browse, or type a path in the composer.",
-                    )),
-            )
-            .child(secondary_button(
-                "Browse for a folder",
-                actions::browse_folder,
-            )),
-    )
-}
-
 /// The scan composer: a big input over a control row, like the reference's
 /// prompt card. The + button adds the typed path, the pills pick the keeper
 /// default, the pill on the right sets the similarity floor, and the blue
@@ -1141,6 +1166,9 @@ fn composer() -> View {
         .gap(px(space::MD))
         .p(px(space::LG))
         .child(composer_input())
+        .child(caption(
+            "Drop a folder here, or paste a path and press + to add it.",
+        ))
         .child(divider())
         // The row reflows instead of forcing the card past the window edge:
         // the keep chips wrap among themselves, and the similarity pill and
@@ -1183,9 +1211,16 @@ fn composer_input() -> impl IntoElement {
         .selection_color(|| color(colors::ACCENT))
         .w_full()
         .h(px(space::XXL))
-        .px(px(space::SM))
+        .px(px(space::MD))
         .text_size(px(text::BODY))
         .text_color(colors::TEXT)
+        // The hero's one input is a well, like every other field in the app:
+        // bare on the card it read as a heading, with the hint below as its
+        // caption and nothing saying "type here".
+        .bg(colors::INSET)
+        .border_1()
+        .border_color(colors::HAIRLINE)
+        .rounded(px(radius::CONTROL))
 }
 
 /// The similarity floor of a run: one value out of the five offered, as a
@@ -1307,37 +1342,6 @@ fn note_card(message: &'static str) -> View {
         .child(caption(message))
 }
 
-fn stat_chips() -> View {
-    let (groups, dups, reclaim, hash) = app().with(|s| {
-        (
-            s.groups.len(),
-            s.dup_files,
-            s.reclaim_bytes,
-            crate::ui_helpers::hash_caption(Some(s.hash_index.unwrap_or(0))).to_string(),
-        )
-    });
-    view()
-        .flex_row()
-        .flex_wrap()
-        .gap(px(6.0))
-        .child(chip(
-            format!("{groups} groups"),
-            colors::ACCENT_WASH,
-            colors::ACCENT_INK,
-        ))
-        .child(chip(
-            format!("{dups} duplicates"),
-            colors::INSET,
-            colors::MUTED,
-        ))
-        .child(chip(
-            format!("{} reclaimable", util::human_bytes(reclaim)),
-            colors::INSET,
-            colors::MUTED,
-        ))
-        .child(chip(format!("hash: {hash}"), colors::INSET, colors::MUTED))
-}
-
 /// One group card, as the wheel's step: the layout decides a card's height,
 /// and a group whose members have no preview stays a compact card even in
 /// grid layout.
@@ -1354,16 +1358,24 @@ fn card_step() -> f32 {
     })
 }
 
+/// The group's own line: how many copies, how big each one is, and how close
+/// they are when the group came from the similarity pass. No group number —
+/// the reader acts on files, not on row ids.
 fn group_header(group: &Group) -> String {
+    let copies = group.members.len();
+    let first = group.members.first().map(|m| m.size).unwrap_or(0);
+    let size = if group.members.iter().all(|m| m.size == first) {
+        format!(" · {} each", util::human_bytes(first))
+    } else {
+        String::new()
+    };
     let similarity = group
         .similarity
-        .map(|s| format!(" - {:.0}% similar", s * 100.0))
+        .map(|s| format!(" · {:.0}% similar", s * 100.0))
         .unwrap_or_default();
     format!(
-        "#{} - {} files - {}{similarity}",
-        group.index,
-        group.members.len(),
-        util::human_bytes(group.members.first().map(|m| m.size).unwrap_or(0)),
+        "{}{size}{similarity}",
+        counted(copies as u64, "copy", "copies")
     )
 }
 
@@ -1484,17 +1496,20 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                                 .text_color(colors::TEXT),
                         )
                         .child(dynamic(move || {
-                            let (keep, dup) = stats.get();
+                            let (keep, reclaim) = stats.get();
+                            let going = member_count.saturating_sub(keep);
                             view()
                                 .flex_row()
                                 .items_center()
                                 .gap(px(space::SM))
                                 .child(caption(format!(
-                                    "{keep} keep - {} dup",
-                                    member_count - keep
+                                    "{keep} kept · {} to delete",
+                                    counted(going as u64, "copy", "copies"),
                                 )))
+                                // "reclaimable" is the word that turns a bare
+                                // size into a reason to act.
                                 .child(chip(
-                                    util::human_bytes(dup),
+                                    format!("{} reclaimable", util::human_bytes(reclaim)),
                                     colors::ACCENT_WASH,
                                     colors::ACCENT_INK,
                                 ))
@@ -1930,10 +1945,12 @@ fn member_actions(
                     text(label)
                         .text_size(px(text::CAPTION))
                         .font_weight(FontWeight::SEMIBOLD)
+                        // The wash is a backing: the words on it take the ink
+                        // step of the same hue so they stay readable.
                         .text_color(if keep {
-                            colors::KEEP
+                            colors::KEEP_INK
                         } else if checked {
-                            colors::SELECT
+                            colors::SELECT_INK
                         } else {
                             colors::MUTED
                         }),
@@ -1944,7 +1961,7 @@ fn member_actions(
             caption(similarity.clone().unwrap_or_default())
         }))
         .child(when(member.reference, || {
-            chip("REF", colors::ACCENT_WASH, colors::ACCENT)
+            chip("REF", colors::ACCENT_WASH, colors::ACCENT_INK)
         }))
         .child(when(play.is_some(), move || {
             let path = play_path.clone();
@@ -1959,9 +1976,13 @@ fn member_actions(
         }))
         .child(when(!keep, move || {
             let path = keep_path.clone();
-            icon_ghost_button(icons::CHECK, "Keep this copy", move || {
-                actions::set_keeper(group_index, &path);
-            })
+            // A blue check next to the amber checked box read as a second
+            // tick; the action names itself instead.
+            view()
+                .child(quiet_button("Keep", move || {
+                    actions::set_keeper(group_index, &path);
+                }))
+                .tooltip(hint("Keep this copy instead of deleting it"))
         }))
 }
 
@@ -2039,7 +2060,7 @@ fn mode_chips(result: &ModeResult) -> View {
         .flex_wrap()
         .gap(px(6.0))
         .child(chip(
-            format!("{} findings", result.finding_count()),
+            counted(result.finding_count() as u64, "finding", "findings"),
             colors::ACCENT_WASH,
             colors::ACCENT_INK,
         ))
@@ -2049,7 +2070,7 @@ fn mode_chips(result: &ModeResult) -> View {
             colors::MUTED,
         ))
         .child(chip(
-            format!("{} files scanned", result.files_scanned),
+            format!("{} scanned", counted(result.files_scanned, "file", "files")),
             colors::INSET,
             colors::MUTED,
         ))
@@ -2124,5 +2145,5 @@ fn note_card_error(message: &str) -> View {
     card()
         .p(px(space::MD))
         .border_color(colors::DANGER)
-        .child(caption(message.to_owned()))
+        .child(caption(message.to_owned()).text_color(colors::DANGER_TEXT))
 }

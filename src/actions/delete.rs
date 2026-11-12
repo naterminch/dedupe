@@ -1,10 +1,9 @@
 use super::guard::prompt;
 use super::guard::verify_expected;
-use super::{DeleteOutcome, DeleteTarget, DeletionStats, Disposition};
+use super::{ActionError, DeleteOutcome, DeleteTarget, DeletionStats, Disposition};
 use crate::hashing::HashEngine;
 use crate::matching::Group;
 use crate::util::human_bytes;
-use anyhow::Result;
 use console::style;
 use std::fs;
 
@@ -21,25 +20,34 @@ pub fn delete_targets(
     for target in targets {
         match verify_expected(&target.path, &target.expected_hash, target.size, engine) {
             Ok(true) => {
-                let removed: Result<(), String> = match disposition {
+                let removed: Result<(), ActionError> = match disposition {
                     Disposition::Permanent => {
-                        fs::remove_file(&target.path).map_err(|e| e.to_string())
+                        fs::remove_file(&target.path).map_err(|source| ActionError::Remove {
+                            path: target.path.clone(),
+                            source,
+                        })
                     }
-                    Disposition::Trash => trash::delete(&target.path).map_err(|e| e.to_string()),
+                    Disposition::Trash => {
+                        trash::delete(&target.path).map_err(|source| ActionError::Trash {
+                            path: target.path.clone(),
+                            source,
+                        })
+                    }
                 };
                 match removed {
                     Ok(()) => {
                         outcome.deleted.push(target.path.clone());
                         outcome.bytes_freed += target.size;
                     }
-                    Err(e) => {
+                    Err(err) => {
                         eprintln!(
                             "{} {}: {}",
                             style("⚠").yellow(),
                             style("cannot delete").yellow().bold(),
-                            style(format!("{} ({e})", target.path.display())).dim()
+                            style(err.to_string()).dim()
                         );
                         outcome.skipped.push(target.path.clone());
+                        outcome.failures.push((target.path.clone(), err));
                     }
                 }
             }
@@ -54,14 +62,15 @@ pub fn delete_targets(
                 );
                 outcome.skipped.push(target.path.clone());
             }
-            Err(e) => {
+            Err(err) => {
                 eprintln!(
                     "{} {}: {}",
                     style("⚠").yellow(),
                     style("cannot verify, skipping").yellow().bold(),
-                    style(format!("{} ({e})", target.path.display())).dim()
+                    style(err.to_string()).dim()
                 );
                 outcome.skipped.push(target.path.clone());
+                outcome.failures.push((target.path.clone(), err));
             }
         }
     }
@@ -128,6 +137,7 @@ pub fn delete_duplicates(
         stats.files_deleted += outcome.deleted.len() as u64;
         stats.bytes_freed += outcome.bytes_freed;
         stats.files_skipped += outcome.skipped.len() as u64;
+        stats.failures.extend(outcome.failures);
     }
 
     stats

@@ -14,8 +14,8 @@ look; everything visual is the app's own, and it lives in two places:
   `bezel`/`bezel_core`, `heading`/`page_heading`/`panel_title`/`caption`/
   `field_label`, `primary_button`, `secondary_button`, `ghost_button`,
   `danger_button`, `icon_button`, `icon_pill_button`, `icon_secondary_button`,
-  `icon_ghost_button`, `icon_chip`, `toggle_switch`, `chip`, `divider`, `field`,
-  `hint`, `help_dot`, `icon`.
+  `icon_ghost_button`, `quiet_button`, `icon_chip`, `toggle_switch`, `chip`,
+  `divider`, `field`, `hint`, `help_dot`, `icon`.
 
 Scales are finite tokens, not per-call values: `radius::SHELL` (22), `radius::CARD`
 (18) and `radius::CONTROL` (12); `space::{XXS..XXXL}` = 2, 4, 8, 12, 16, 24, 32,
@@ -56,15 +56,24 @@ them, so they are the darkest step in light and the darkest step in dark.
 | `HAIRLINE` | black 12% | white 14% | container and control seams |
 | `ACCENT` | `#0b63d8` | `#74b4ff` | primary actions, focus, links |
 | `ACCENT_INK` | `#0a4696` | `#cfe6ff` | text and glyphs on an accent tint |
-| `KEEP` | `#1d9a4a` | `#32d74b` | the copy a group keeps |
-| `SELECT` | `#c27500` | `#ff9f0a` | a copy ticked for deletion |
-| `DANGER` | `#ff3b30` | `#ff453a` | Delete, and errors |
+| `KEEP` | `#1d9a4a` | `#32d74b` | the copy a group keeps: borders, marks |
+| `KEEP_INK` | `#0f6b31` | `#6ff08b` | the word KEEP on a keep wash |
+| `SELECT` | `#c27500` | `#ff9f0a` | a copy ticked for deletion: borders, marks |
+| `SELECT_INK` | `#8a5200` | `#ffc466` | the word Selected on a tick wash |
+| `DANGER` | `#ff3b30` | `#ff453a` | error borders and other marks |
+| `DANGER_SURFACE` | `#c4221d` | `#c4221d` | the fill of a destructive action |
+| `ON_DANGER` | white | white | the label on that fill |
+| `DANGER_TEXT` | `#c4221d` | `#ff6b5e` | error copy on a plain surface |
 
-An accent tint is a backing, not a label colour: `ACCENT` on
-`ACCENT_WASH_STRONG` measures 3.2:1 in light and 3.5:1 in dark, so anything
-written on that tint takes `ACCENT_INK` instead (5.2:1 on the light tint,
-5.9:1 on the dark one). `ACCENT` itself is only used on a plain surface,
-or as a fill under `ON_ACCENT`.
+A wash is a backing, not a label colour. The tint step only clears 3.2–3.5:1
+(`ACCENT` on `ACCENT_WASH_STRONG`), and the same holds for keep green (3.3:1)
+and tick amber (3.4:1), so anything written on a wash takes that hue's ink:
+`ACCENT_INK`, `KEEP_INK`, `SELECT_INK`. The tint itself is used on a plain
+surface, as a border, or as a fill under its `ON_*` ink. Red follows the same
+split: `DANGER` draws marks and error borders, `DANGER_TEXT` writes the error,
+and `DANGER_SURFACE` under `ON_DANGER` fills a destructive button — white on
+`#ff3b30` measured 3.4:1, which is why the fill is one deeper red in both
+appearances rather than the bright mark colour.
 
 Hue is meaning, not decoration. Blue is reserved for actions and focus; the
 keeper of a group is green so "this one is kept" can never be mistaken for

@@ -25,6 +25,12 @@ pub(crate) fn fit_text(s: &str, max_chars: usize) -> String {
     )
 }
 
+/// A count that reads as a sentence: `1 file` / `3 files`. Status lines and
+/// chips used to say `file(s)`, which hands the reader the grammar.
+pub(crate) fn counted(n: u64, singular: &str, plural: &str) -> String {
+    format!("{n} {}", if n == 1 { singular } else { plural })
+}
+
 /// One-line explanation for each hash algorithm, shown under the selector.
 pub(crate) fn hash_caption(index: Option<usize>) -> &'static str {
     match index.unwrap_or(0) {
@@ -220,6 +226,13 @@ mod tests {
         assert_eq!(file_url_path("file:///a%zz"), None);
         assert_eq!(file_url_path("file:///a%C3"), None);
         assert_eq!(file_url_path("file:///a%FF"), None);
+    }
+
+    #[test]
+    fn counts_read_as_sentences() {
+        assert_eq!(counted(0, "file", "files"), "0 files");
+        assert_eq!(counted(1, "file", "files"), "1 file");
+        assert_eq!(counted(2, "copy", "copies"), "2 copies");
     }
 
     #[test]

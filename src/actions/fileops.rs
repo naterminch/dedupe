@@ -1,4 +1,4 @@
-use anyhow::Result;
+use super::ActionError;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,17 +37,31 @@ pub(super) fn free_dest_path(
 
 /// Move one file, falling back to copy + remove when the atomic rename
 /// fails (cross-device moves). The destination parent is created.
-pub(super) fn move_file(from: &Path, to: &Path) -> Result<(), String> {
+pub(super) fn move_file(from: &Path, to: &Path) -> Result<(), ActionError> {
     if let Some(parent) = to.parent() {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent).map_err(|source| ActionError::Destination {
+            dir: parent.to_path_buf(),
+            file: to.to_path_buf(),
+            source,
+        })?;
     }
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
-        Err(rename_err) => fs::copy(from, to)
-            .and_then(|_| fs::remove_file(from))
-            .map_err(|copy_err| {
-                format!("rename failed ({rename_err}); copy fallback failed ({copy_err})")
+        Err(rename) => match fs::copy(from, to) {
+            // The copy landed, so both paths now hold the file; a failed
+            // cleanup of the original is its own kind of failure.
+            Ok(_) => fs::remove_file(from).map_err(|source| ActionError::CopiedButKept {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+                source,
             }),
+            Err(copy) => Err(ActionError::Move {
+                from: from.to_path_buf(),
+                to: to.to_path_buf(),
+                rename,
+                copy,
+            }),
+        },
     }
 }
 

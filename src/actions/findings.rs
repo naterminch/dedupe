@@ -1,11 +1,10 @@
 use super::guard::prompt;
-use super::{Disposition, FindingDeleteStats};
+use super::{ActionError, Disposition, FindingDeleteStats};
 use crate::hashing::HashEngine;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
 use crate::modes::content_hash;
 use crate::util::human_bytes;
-use anyhow::Result;
 use console::style;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -71,7 +70,7 @@ enum Removal {
     /// Type, size or content no longer match the scan, so the item survives.
     Changed,
     /// The check passed but the file could not be removed.
-    Failed(String),
+    Failed(ActionError),
 }
 
 /// Prove the candidate is unchanged and remove it in the same call, so no
@@ -110,44 +109,42 @@ fn remove_verified(
 fn finding_still_valid(finding: &Finding) -> bool {
     match finding.kind {
         "empty-dir" => {
-            fs::metadata(&finding.path)
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
-                && fs::read_dir(&finding.path)
-                    .map(|mut it| it.next().is_none())
-                    .unwrap_or(false)
+            fs::metadata(&finding.path).is_ok_and(|m| m.is_dir())
+                && fs::read_dir(&finding.path).is_ok_and(|mut it| it.next().is_none())
         }
         "symlink" => {
-            fs::symlink_metadata(&finding.path)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false)
+            fs::symlink_metadata(&finding.path).is_ok_and(|m| m.file_type().is_symlink())
                 && fs::metadata(&finding.path).is_err()
         }
-        "empty" => fs::metadata(&finding.path)
-            .map(|m| m.is_file() && m.len() == 0)
-            .unwrap_or(false),
-        _ => fs::metadata(&finding.path)
-            .map(|m| {
-                if finding.is_dir {
-                    m.is_dir()
-                } else {
-                    m.is_file() && m.len() == finding.size
-                }
-            })
-            .unwrap_or(false),
+        "empty" => fs::metadata(&finding.path).is_ok_and(|m| m.is_file() && m.len() == 0),
+        _ => fs::metadata(&finding.path).is_ok_and(|m| {
+            if finding.is_dir {
+                m.is_dir()
+            } else {
+                m.is_file() && m.len() == finding.size
+            }
+        }),
     }
 }
 
-fn remove_finding_path(finding: &Finding, disposition: Disposition) -> Result<(), String> {
+fn remove_finding_path(finding: &Finding, disposition: Disposition) -> Result<(), ActionError> {
+    let path = &finding.path;
+    let failed = |source| ActionError::Remove {
+        path: path.clone(),
+        source,
+    };
     match disposition {
-        Disposition::Trash => trash::delete(&finding.path).map_err(|e| e.to_string()),
+        Disposition::Trash => trash::delete(path).map_err(|source| ActionError::Trash {
+            path: path.clone(),
+            source,
+        }),
         Disposition::Permanent => {
             if finding.is_dir || finding.kind == "empty-dir" {
-                fs::remove_dir(&finding.path).map_err(|e| e.to_string())
+                fs::remove_dir(path).map_err(failed)
             } else {
-                fs::remove_file(&finding.path)
-                    .or_else(|_| fs::remove_dir(&finding.path))
-                    .map_err(|e| e.to_string())
+                fs::remove_file(path)
+                    .or_else(|_| fs::remove_dir(path))
+                    .map_err(failed)
             }
         }
     }
@@ -229,9 +226,10 @@ pub fn delete_findings(
                     "{} {}: {}",
                     style("⚠").yellow(),
                     style("cannot remove").yellow().bold(),
-                    style(format!("{} ({err})", finding.path.display())).dim()
+                    style(err.to_string()).dim()
                 );
                 stats.skipped += 1;
+                stats.failures.push((finding.path.clone(), err));
             }
         }
     }
@@ -325,9 +323,10 @@ pub fn delete_finding_groups(
                         "{} {}: {}",
                         style("⚠").yellow(),
                         style("cannot remove").yellow().bold(),
-                        style(format!("{} ({err})", path.display())).dim()
+                        style(err.to_string()).dim()
                     );
                     stats.skipped += 1;
+                    stats.failures.push((path.clone(), err));
                 }
             }
         }

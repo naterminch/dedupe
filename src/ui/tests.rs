@@ -394,17 +394,17 @@ fn delete_asks_for_confirmation_before_removing_anything() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
         // Both copies are 4096 bytes, so the button names its exact count.
         app.wait_for("text:Delete 1 (4.10 KB)")?;
         app.press("text:Delete 1 (4.10 KB)")?;
-        app.wait_for("text:Delete 1 file(s)?")?;
-        app.wait_for(r"text:/keeps (one|two)\.txt/")?;
+        app.wait_for("text:Delete 1 file?")?;
+        app.wait_for(r"text:/Keeping (one|two)\.txt/")?;
         app.press("text:Cancel")?;
         // Cancel dismisses it without touching the files.
         let mut closed = false;
         for _ in 0..40 {
-            if !app.shows("Delete 1 file(s)?") {
+            if !app.shows("Delete 1 file?") {
                 closed = true;
                 break;
             }
@@ -459,7 +459,7 @@ fn scan_reports_the_duplicate_groups_it_found() {
         app.press("text:Scan for duplicates")?;
         // The scan pumps on the wall clock (200 ms timer loop), so poll the
         // rendered summary for up to a minute of real time.
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("scan produces the duplicate summary");
@@ -498,7 +498,7 @@ fn scan_renders_media_groups_and_their_thumbnails() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
         // The member rows themselves, not just the summary chip.
         app.wait_for("text:/one\\.png/")
     })();
@@ -536,7 +536,7 @@ fn every_group_starts_expanded() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/2 group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/2 groups/", std::time::Duration::from_secs(60))?;
         // Both groups' rows render with no Expand press in between.
         app.wait_for("text:/a1\\.txt/")?;
         app.wait_for("text:/b1\\.txt/")
@@ -569,7 +569,7 @@ fn video_preview_plays_and_stops() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
         // A video group offers the inline player: both cards have one, and
         // pressing either starts that card's clip.
         app.wait_for("label:Play video")?;
@@ -613,7 +613,7 @@ fn image_cards_have_no_play_button() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
         app.wait_for("text:/one\\.png/")?;
         // Let a wrongly offered control show up before asserting it is absent.
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -652,7 +652,7 @@ fn layout_switch_keeps_the_results_listed() {
         app.press("label:Add folder")?;
         app.wait_for("label:Remove folder")?;
         app.press("text:Scan for duplicates")?;
-        app.wait_for_within("text:/group\\(s\\)/", std::time::Duration::from_secs(60))?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
         app.wait_for("text:/one\\.png/")?;
         // List, then back to Grid: the same two members stay listed.
         app.press("label:List layout")?;
