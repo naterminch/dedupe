@@ -21,6 +21,8 @@ pub struct DeletionStats {
     pub files_deleted: u64,
     pub bytes_freed: u64,
     pub files_skipped: u64,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 /// Where deleted files go.
@@ -91,6 +93,8 @@ pub struct ConsolidateStats {
     pub files_moved: u64,
     pub bytes_moved: u64,
     pub files_skipped: u64,
+    /// Moves that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[derive(Debug, Default)]

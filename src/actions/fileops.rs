@@ -40,7 +40,8 @@ pub(super) fn free_dest_path(
 pub(super) fn move_file(from: &Path, to: &Path) -> Result<(), ActionError> {
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent).map_err(|source| ActionError::Destination {
-            path: parent.to_path_buf(),
+            dir: parent.to_path_buf(),
+            file: to.to_path_buf(),
             source,
         })?;
     }

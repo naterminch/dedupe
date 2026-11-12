@@ -19,7 +19,8 @@ pub fn move_duplicates(
     yes: bool,
 ) -> Result<MoveDuplicateStats, ActionError> {
     fs::create_dir_all(dest).map_err(|source| ActionError::Destination {
-        path: dest.to_path_buf(),
+        dir: dest.to_path_buf(),
+        file: dest.to_path_buf(),
         source,
     })?;
     let mut stats = MoveDuplicateStats::default();

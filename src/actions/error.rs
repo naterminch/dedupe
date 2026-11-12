@@ -13,9 +13,10 @@ use std::path::PathBuf;
 #[derive(Debug, thiserror::Error)]
 pub enum ActionError {
     /// The destination directory for a move could not be created.
-    #[error("could not create {}: {source}", path.display())]
+    #[error("could not create {} for {}: {source}", dir.display(), file.display())]
     Destination {
-        path: PathBuf,
+        dir: PathBuf,
+        file: PathBuf,
         #[source]
         source: io::Error,
     },
@@ -74,17 +75,12 @@ pub enum ActionError {
 }
 
 impl ActionError {
-    /// The path the failure names.
-    ///
-    /// For [`ActionError::Destination`] that is the destination *directory*
-    /// that could not be created; every other variant names the file.
+    /// The file the failure is about.
     #[must_use]
     pub fn path(&self) -> &std::path::Path {
         match self {
-            Self::Destination { path, .. }
-            | Self::Read { path, .. }
-            | Self::Remove { path, .. }
-            | Self::Trash { path, .. } => path,
+            Self::Destination { file, .. } => file,
+            Self::Read { path, .. } | Self::Remove { path, .. } | Self::Trash { path, .. } => path,
             Self::CopiedButKept { from, .. } | Self::Move { from, .. } => from,
         }
     }

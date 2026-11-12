@@ -137,6 +137,7 @@ pub fn delete_duplicates(
         stats.files_deleted += outcome.deleted.len() as u64;
         stats.bytes_freed += outcome.bytes_freed;
         stats.files_skipped += outcome.skipped.len() as u64;
+        stats.failures.extend(outcome.failures);
     }
 
     stats

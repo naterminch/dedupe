@@ -185,6 +185,7 @@ pub fn consolidate_keepers(
         stats.files_moved += outcome.moved.len() as u64;
         stats.bytes_moved += outcome.bytes_moved;
         stats.files_skipped += outcome.skipped.len() as u64;
+        stats.failures.extend(outcome.failures);
     }
 
     stats
