@@ -23,10 +23,11 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{Layout, app, scan_status};
 use crate::ui::widgets::{
-    bezel, bezel_core, caption, card, chevron, chip, danger_button, divider, entering, fading_in,
-    fast_scroll, fast_scroll_by, fast_scroll_max, field_label, ghost_button, hint, icon,
-    icon_button, icon_chip, icon_ghost_button, icon_pill_button, icon_secondary_button, icons,
-    motion, primary_button, quiet_button, secondary_button, selection, timing,
+    PILL_HEIGHT, bezel, bezel_core, caption, card, chevron, chip, danger_button, divider, entering,
+    eyebrow, fading_in, fast_scroll, fast_scroll_by, fast_scroll_max, field_label, focus_ring,
+    ghost_button, heading, help_dot, hint, icon, icon_button, icon_chip, icon_ghost_button,
+    icon_pill_button, icon_secondary_button, icons, motion, panel_title, primary_button,
+    quiet_button, secondary_button, selection, timing,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -143,20 +144,6 @@ pub(crate) fn results() -> View {
         }))
 }
 
-fn kicker(label: impl IntoReactive<SharedString>) -> Text {
-    text(label)
-        .text_size(px(text::CAPTION))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors::MUTED)
-}
-
-fn title(label: impl IntoReactive<SharedString>) -> Text {
-    text(label)
-        .text_size(px(text::HEADING))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(colors::TEXT)
-}
-
 // Where each long list sits, as the wheel last left it. The wheel is the
 // app's over these lists (`fast_scroll`): `scroll_to` takes an absolute
 // offset, so the pane keeps the one it moved to.
@@ -245,7 +232,7 @@ fn header_row() -> View {
                 .min_w(px(0.0))
                 .flex_1()
                 .gap(px(space::XS))
-                .child(title(|| {
+                .child(heading(|| {
                     if app().with(|s| s.has_scanned) {
                         "Review duplicates"
                     } else {
@@ -281,10 +268,11 @@ fn summary_line() -> impl IntoElement {
     })
 }
 
-/// The list's own controls, held in one pill so four unlabelled glyphs read
-/// as one control group instead of four buttons floating at the page edges:
-/// the disclosure pair on the left, the selection pair on the right, one
-/// hairline between them.
+/// The list's own controls, held in one pill so two unlabelled glyphs read as
+/// one control group instead of two buttons floating at the page edges. They
+/// are about reading the whole list — show every group, or fold them away.
+/// Selecting and deleting moved to the action row, where the press decides
+/// something.
 fn list_actions() -> View {
     view()
         .flex_row()
@@ -304,17 +292,6 @@ fn list_actions() -> View {
             icons::COLLAPSE,
             "Collapse all groups",
             || actions::set_all_expanded(false),
-        ))
-        .child(view().w(px(1.0)).h(px(16.0)).bg(colors::BORDER))
-        .child(icon_ghost_button(
-            icons::SELECT_ALL,
-            "Select all duplicates",
-            || app().update(actions::reselect_all_dups),
-        ))
-        .child(icon_ghost_button(
-            icons::CLEAR,
-            "Clear selection",
-            actions::select_none,
         ))
 }
 
@@ -398,7 +375,7 @@ fn scan_options() -> impl IntoElement {
                 .items_center()
                 .gap(px(space::MD))
                 .child(sim_filter())
-                .child(keep_modes()),
+                .child(keep_choice_group()),
         )
         .child(
             toolbar_group()
@@ -473,6 +450,28 @@ fn sim_filter() -> impl IntoElement {
         }))
 }
 
+/// The keeper rule with its name and its explanation.
+///
+/// The five chips decide which copy of a group survives a delete, and they
+/// used to sit in both bars with no label at all: "First / Smallest / Newest"
+/// read as three things to scan for, not as one rule with five answers. The
+/// label is written once here instead of in every bar that shows them, and
+/// the help dot carries the rules themselves, which a first-time user cannot
+/// guess from a single word.
+fn keep_choice_group() -> impl IntoElement {
+    view()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap(px(space::SM))
+        .child(field_label("Keep"))
+        .child(help_dot(KEEP_HINT))
+        .child(keep_modes())
+}
+
+const KEEP_HINT: &str = "Which copy of each group survives a delete. First: the first copy found. \
+Smallest / Newest / Oldest: by file size or date. Best: the highest resolution.";
+
 /// One keeper rule at a time: nsh's toggle group is the view switcher here
 /// (a press releases the others and takes the new rule).
 fn keep_modes() -> View {
@@ -507,9 +506,13 @@ fn keep_chip(label: &'static str, index: usize, active: bool) -> impl IntoElemen
         .bg(fill)
         .border_1()
         .border_color(border)
-        // Picking another rule cross-fades the chosen pill.
+        // Picking another rule cross-fades the chosen pill, and an idle one
+        // answers the pointer and the keyboard like every other control.
         .transition_colors()
         .duration(motion(timing::FAST))
+        .hover(move |s| if active { s } else { s.bg(colors::ELEVATED) })
+        .active(|s| s.opacity(0.9))
+        .focus_visible(focus_ring)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -544,7 +547,9 @@ fn sort_toggle() -> impl IntoElement {
             .border_color(border)
             .transition_colors()
             .duration(motion(timing::FAST))
+            .hover(|s| s.bg(colors::ELEVATED))
             .active(|s| s.opacity(0.9))
+            .focus_visible(focus_ring)
             .child(
                 // A bare "Path" read as another choice in the keeper group
                 // beside it; the chip says what it sorts.
@@ -579,6 +584,13 @@ fn layout_toggle() -> View {
     }))
 }
 
+/// The whole-set decision: how much is ticked, and the one button that acts
+/// on it.
+///
+/// With nothing ticked it offers the missing step by name — `Select all
+/// duplicates` — instead of rendering nothing and leaving the row with only
+/// Back. Selection used to hide behind an unlabelled glyph in the header
+/// pill, which is the one step between reading the list and deleting from it.
 fn delete_bar() -> View {
     view().child(dynamic(|| {
         // The selection and the trash switch decide this bar. A scan tick
@@ -591,11 +603,12 @@ fn delete_bar() -> View {
                     targets.iter().map(|t| t.size).sum::<u64>(),
                     !s.last_trashed.is_empty(),
                     s.trash,
+                    s.groups.len(),
                 )
             })
         });
-        let (count, bytes, can_undo, trash) = targets.get();
-        let mut row = view().flex_row().gap(px(4.0)).items_center();
+        let (count, bytes, can_undo, trash, groups) = targets.get();
+        let mut row = view().flex_row().gap(px(space::SM)).items_center();
         if count > 0 {
             let label = format!("Delete {count} ({})", util::human_bytes(bytes));
             let unit = if count == 1 { "file" } else { "files" };
@@ -610,7 +623,18 @@ fn delete_bar() -> View {
                     util::human_bytes(bytes)
                 )
             };
-            row = row.child(danger_button(label, actions::request_delete).tooltip(hint(tip)));
+            row = row
+                .child(danger_button(label, actions::request_delete).tooltip(hint(tip)))
+                // Clearing is the undo of Select all, so it sits beside the
+                // action it takes the target away from.
+                .child(ghost_button("Clear selection", actions::select_none));
+        } else if groups > 0 {
+            row = row.child(
+                icon_secondary_button(icons::SELECT_ALL, "Select all duplicates", || {
+                    app().update(actions::reselect_all_dups)
+                })
+                .tooltip(hint("Tick every copy that is not a keeper")),
+            );
         }
         if can_undo {
             row = row.child(icon_pill_button(
@@ -899,7 +923,7 @@ fn progress_card() -> View {
                 .items_center()
                 .justify_between()
                 .gap(px(12.0))
-                .child(kicker(phase))
+                .child(panel_title(phase))
                 .child(
                     view()
                         .flex_row()
@@ -1167,9 +1191,24 @@ fn composer() -> View {
         .max_w(px(860.0))
         .gap(px(space::MD))
         .p(px(space::LG))
-        .child(composer_input())
+        // The field and the button that submits it share one row. The + used
+        // to sit in the options row below, where it read as part of the keep
+        // chips instead of as the action of the field above it.
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(space::SM))
+                .w_full()
+                .child(composer_input())
+                .child(icon_secondary_button(
+                    icons::PLUS,
+                    "Add folder",
+                    actions::add_from_input,
+                )),
+        )
         .child(caption(
-            "Drop a folder here, or paste a path and press + to add it.",
+            "Drop a folder on the window, or paste a path and press Add folder.",
         ))
         .child(divider())
         // The row reflows instead of forcing the card past the window edge:
@@ -1182,12 +1221,7 @@ fn composer() -> View {
                 .items_center()
                 .gap(px(space::SM))
                 .w_full()
-                .child(icon_button(
-                    icons::PLUS,
-                    "Add folder",
-                    actions::add_from_input,
-                ))
-                .child(keep_modes())
+                .child(keep_choice_group())
                 .child(view().flex_1().min_w(px(space::SM)))
                 .child(
                     view()
@@ -1211,8 +1245,10 @@ fn composer_input() -> impl IntoElement {
         .placeholder_color(|| color(colors::MUTED))
         .caret_color(|| color(colors::ACCENT))
         .selection_color(|| color(colors::ACCENT))
-        .w_full()
-        .h(px(space::XXL))
+        .flex_1()
+        .min_w(px(0.0))
+        // Pill height, so the field and the Add pill beside it line up.
+        .h(px(PILL_HEIGHT))
         .px(px(space::MD))
         .text_size(px(text::BODY))
         .text_color(colors::TEXT)
@@ -1297,18 +1333,20 @@ fn media_status() -> impl IntoElement {
     dynamic(|| {
         let (checked, ffmpeg, ffprobe) =
             app().with(|s| (s.media_checked, s.ffmpeg_ok, s.ffprobe_ok));
-        if !checked {
-            return chip("Checking ffmpeg…", colors::INSET, colors::MUTED);
-        }
-        match (ffmpeg, ffprobe) {
-            (true, true) => chip(
-                "ffmpeg ready",
-                colors::ACCENT_WASH_STRONG,
-                colors::ACCENT_INK,
-            ),
-            (true, false) => chip("No ffprobe", colors::INSET, colors::MUTED),
-            (false, _) => chip("No ffmpeg", colors::INSET, colors::MUTED),
-        }
+        // What the reader gets, not what the toolchain is called: "ffmpeg
+        // ready" is an implementation detail on a screen about files. Both
+        // states stay on a plain surface — the accent is for actions and
+        // focus, not for a status that needs no press.
+        let status = if !checked {
+            chip("Checking video support…", colors::INSET, colors::MUTED)
+        } else if ffmpeg && ffprobe {
+            chip("Video previews on", colors::INSET, colors::MUTED)
+        } else {
+            chip("No video previews", colors::INSET, colors::MUTED)
+        };
+        status.tooltip(hint(
+            "FFmpeg adds video previews, resolution and duration, and video matching. Image comparison works without it.",
+        ))
     })
 }
 
@@ -2010,8 +2048,8 @@ fn mode_header() -> View {
                 .flex_col()
                 .min_w(px(0.0))
                 .gap(px(4.0))
-                .child(kicker("Cleanup workspace"))
-                .child(title(|| {
+                .child(eyebrow("Cleanup workspace"))
+                .child(heading(|| {
                     app().with(|s| {
                         s.mode_result
                             .as_ref()

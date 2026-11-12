@@ -15,8 +15,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
-    bezel, bezel_core, caption, divider, fast_scroll, heading, help_dot, motion, page_heading,
-    panel_title, secondary_button, selection, timing, toggle_switch,
+    bezel, bezel_core, caption, divider, fast_scroll, focus_ring, heading, help_dot, motion,
+    page_heading, panel_title, secondary_button, selection, timing, toggle_switch,
 };
 use crate::ui_helpers::{counted, find_mode_caption, hash_caption};
 use crate::util;
@@ -260,9 +260,13 @@ fn choice_chip(
         .border_1()
         .border_color(border)
         // Choosing a different option cross-fades the pill instead of
-        // repainting it.
+        // repainting it. The idle pill still answers the pointer and the
+        // keyboard: it looked inert without a hover or a focus ring.
         .transition_colors()
         .duration(motion(timing::FAST))
+        .hover(move |s| if active { s } else { s.bg(colors::ELEVATED) })
+        .active(|s| s.opacity(0.9))
+        .focus_visible(focus_ring)
         .child(
             text(label)
                 .text_size(px(text::CAPTION))

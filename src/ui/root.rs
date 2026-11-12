@@ -142,7 +142,15 @@ fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: 
             .transition_colors()
             .duration(motion(timing::BASE))
             .ease_out()
-            .hover(|s| s.bg(colors::PANE))
+            // The active slot already sits on a pane, so it steps up rather
+            // than standing still when the pointer lands on it.
+            .hover(move |s| {
+                s.bg(if active {
+                    colors::ELEVATED
+                } else {
+                    colors::PANE
+                })
+            })
             .active(|s| s.bg(colors::ELEVATED))
             .focus_visible(focus_ring)
             .disabled_style(|s| s.opacity(0.45))

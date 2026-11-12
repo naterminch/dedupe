@@ -789,12 +789,10 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
                 util::human_bytes(s.bytes_scanned)
             );
         } else {
-            s.status = format!(
-                "{} · {} · {} reclaimable.",
-                counted(s.groups.len() as u64, "group", "groups"),
-                counted(s.dup_files, "duplicate", "duplicates"),
-                util::human_bytes(s.reclaim_bytes)
-            );
+            // The header above the list already reports the groups, the
+            // copies and the reclaimable space; the status line reports the
+            // run itself, so the same sentence is never on screen twice.
+            s.status = "Scan complete.".to_string();
         }
         for e in &out.cache_save_errors {
             s.status.push_str(&format!(" (cache write failed: {e})"));
