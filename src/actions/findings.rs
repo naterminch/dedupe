@@ -110,31 +110,21 @@ fn remove_verified(
 fn finding_still_valid(finding: &Finding) -> bool {
     match finding.kind {
         "empty-dir" => {
-            fs::metadata(&finding.path)
-                .map(|m| m.is_dir())
-                .unwrap_or(false)
-                && fs::read_dir(&finding.path)
-                    .map(|mut it| it.next().is_none())
-                    .unwrap_or(false)
+            fs::metadata(&finding.path).is_ok_and(|m| m.is_dir())
+                && fs::read_dir(&finding.path).is_ok_and(|mut it| it.next().is_none())
         }
         "symlink" => {
-            fs::symlink_metadata(&finding.path)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false)
+            fs::symlink_metadata(&finding.path).is_ok_and(|m| m.file_type().is_symlink())
                 && fs::metadata(&finding.path).is_err()
         }
-        "empty" => fs::metadata(&finding.path)
-            .map(|m| m.is_file() && m.len() == 0)
-            .unwrap_or(false),
-        _ => fs::metadata(&finding.path)
-            .map(|m| {
-                if finding.is_dir {
-                    m.is_dir()
-                } else {
-                    m.is_file() && m.len() == finding.size
-                }
-            })
-            .unwrap_or(false),
+        "empty" => fs::metadata(&finding.path).is_ok_and(|m| m.is_file() && m.len() == 0),
+        _ => fs::metadata(&finding.path).is_ok_and(|m| {
+            if finding.is_dir {
+                m.is_dir()
+            } else {
+                m.is_file() && m.len() == finding.size
+            }
+        }),
     }
 }
 

@@ -177,7 +177,7 @@ pub fn run_scan(
             needs_ffprobe_note: false,
             needs_ffmpeg_note: false,
             cache_save_errors: Vec::new(),
-            reference_dirs: reference_dirs.clone(),
+            reference_dirs,
             cancelled,
             mode_result: Some(mode_result),
         });
