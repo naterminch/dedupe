@@ -9,7 +9,7 @@
 
 use crate::cancel::CancelToken;
 use crate::cli::Cli;
-use crate::modes::glob_match;
+use crate::glob::glob_match;
 use crate::scan::{self, FileEntry};
 use std::collections::HashSet;
 use std::fs;
@@ -43,8 +43,10 @@ impl Limits {
 
 /// Receives what the walk keeps, skips or cannot read.
 ///
-/// Every method has a default, so a caller overrides only the categories it
-/// collects; the duplicate scan, for example, has no use for directories.
+/// [`Sink::file`] and [`Sink::error`] are required because a walk that keeps or
+/// reports nothing is almost certainly a mistake. The other methods default to
+/// no-ops, so the duplicate scan can ignore directories and links while the
+/// cleanup modes collect them.
 pub trait Sink {
     /// A file that passed every filter.
     fn file(&mut self, entry: FileEntry);
@@ -122,7 +124,10 @@ impl<S: Sink> Walker<'_, S> {
             self.sink.link(path.to_path_buf());
             if fs::metadata(path).is_err() {
                 // A dangling link is worth reporting, but there is nothing to
-                // walk through it.
+                // walk through it. Callers that only collect files (the
+                // duplicate scan) would otherwise see the path vanish silently.
+                self.sink
+                    .error(format!("symlink target does not exist: {}", path.display()));
                 return;
             }
         }
@@ -131,6 +136,12 @@ impl<S: Sink> Walker<'_, S> {
             return;
         }
         if !path.is_dir() {
+            return;
+        }
+        if excluded(path, self.cli) {
+            // A root the user excluded stays excluded: descending would only
+            // reject its files one by one.
+            self.sink.dirs_skipped(1);
             return;
         }
         self.sink.root(path.to_path_buf());
@@ -340,12 +351,14 @@ mod tests {
     fn missing_path_is_reported_once_and_the_walk_continues() {
         let dir = tmpdir("missing");
         fs::write(dir.join("a.txt"), b"a").unwrap();
-        let cli = Cli::try_parse_from([
-            "dedupe",
-            r"Z:\definitely\not\here-54321",
-            dir.to_str().unwrap(),
-        ])
-        .unwrap();
+        // A path that cannot exist: unique to this run, and never created.
+        let missing = std::env::temp_dir().join(format!(
+            "dedupe-walk-missing-{}-{}",
+            std::process::id(),
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        let cli = Cli::try_parse_from(["dedupe", missing.to_str().unwrap(), dir.to_str().unwrap()])
+            .unwrap();
 
         let sink = walk_dir(&cli);
 

@@ -10,6 +10,7 @@ pub mod audio;
 pub mod cache;
 pub mod cancel;
 pub mod cli;
+pub mod glob;
 pub mod hashing;
 pub mod matching;
 pub mod media;

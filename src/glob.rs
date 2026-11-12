@@ -1,3 +1,6 @@
+//! Glob matcher behind `--ignore`: `**` crosses path separators, `*` and `?`
+//! do not.
+
 use std::collections::HashMap;
 use std::path::Path;
 

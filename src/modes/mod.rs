@@ -2,7 +2,6 @@ mod exif;
 mod extensions;
 mod findings;
 mod folders;
-mod glob;
 mod music;
 mod names;
 mod walk;
@@ -18,8 +17,8 @@ use crate::hashing::HashEngine;
 use crate::scan::FileEntry;
 use std::path::{Path, PathBuf};
 
+pub use crate::glob::glob_match;
 pub use exif::{ExifReport, strip_exif};
-pub use glob::glob_match;
 pub use names::{MatchBucket, match_entries, name_similarity};
 
 pub const AUDIO_EXTS: [&str; 12] = [
