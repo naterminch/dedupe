@@ -117,7 +117,7 @@ fn section_kicker(label: impl IntoReactive<SharedString>) -> Text {
 }
 
 /// The "New chat"-style rows: add, scan and the trash switch, each a full
-/// quiet row with an orange status pill where one exists.
+/// quiet row with a blue status pill where one exists.
 fn quick_actions() -> impl IntoElement {
     view()
         .flex_col()

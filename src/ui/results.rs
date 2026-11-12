@@ -6,13 +6,14 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use nsh_base::{
     SelectItem, checkbox, collapsible, dialog, number_input, progress, select, toggle,
     toggle_group, toolbar, toolbar_group, toolbar_separator,
 };
 use nsh_core::AccessibilityState;
-use nsh_core::element::{BorderCurve, input, video};
+use nsh_core::element::{BorderCurve, ImageSrc, input, video};
 use nsh_core::prelude::*;
 
 use crate::matching::{Group, GroupMember};
@@ -859,10 +860,10 @@ fn progress_card() -> View {
         )
 }
 
-/// The first-run page, restyled as a centered hero: the mascot, the
+/// The first-run page, restyled as a centered hero: the logo, the
 /// question, the option pills, a tip card and the scan composer.
 fn hero() -> View {
-    // The first-run page arrives as one piece: mascot, question and composer
+    // The first-run page arrives as one piece: logo, question and composer
     // rise together instead of appearing fully formed.
     let enter = entering();
     view()
@@ -872,7 +873,7 @@ fn hero() -> View {
         .gap(px(space::XL))
         .pt(px(space::XXL))
         .pb(px(space::XL))
-        .child(icon(icons::MASCOT, 96.0, colors::ACCENT))
+        .child(logo_plinth())
         .child(
             text("What can I dedupe?")
                 .text_size(px(text::PAGE))
@@ -883,6 +884,50 @@ fn hero() -> View {
         .child(tip_card())
         .child(composer())
         .bind_motion(&enter)
+}
+
+/// The hero's mark, seated on its own plinth. The artwork is a white tile, so
+/// dropped straight onto the page it reads as a bright block in the dark
+/// appearance and as nothing at all on the light one. The tray-and-core bezel
+/// frames it instead: the same machined nesting every card in the app uses,
+/// with the tile in the middle, so it looks placed rather than pasted.
+fn logo_plinth() -> View {
+    bezel().flex_shrink_0().child(
+        bezel_core()
+            .w(px(112.0))
+            .h(px(112.0))
+            .items_center()
+            .justify_center()
+            .bg(colors::PANE)
+            .child(hero_logo()),
+    )
+}
+
+/// The app's own logo, embedded in the binary: a single-file install has no
+/// asset directory to load it from. It is decoded once at twice the size the
+/// hero draws and handed over as pixels, so the mark stays crisp on a 2x
+/// display without keeping the 512 px original in memory.
+fn hero_logo() -> impl IntoElement {
+    static LOGO: OnceLock<(u32, u32, Arc<[u8]>)> = OnceLock::new();
+    let (width, height, pixels) = LOGO.get_or_init(|| {
+        const SIDE: u32 = 192;
+        let decoded = ::image::load_from_memory(include_bytes!("../../assets/icons/logo.png"))
+            .expect("the embedded logo is a PNG")
+            .into_rgba8();
+        let scaled = ::image::imageops::resize(
+            &decoded,
+            SIDE,
+            SIDE,
+            ::image::imageops::FilterType::Lanczos3,
+        );
+        let pixels: Arc<[u8]> = scaled.into_raw().into();
+        (SIDE, SIDE, pixels)
+    });
+    image(ImageSrc::rgba(*width, *height, Arc::clone(pixels)))
+        .w(px(96.0))
+        .h(px(96.0))
+        .flex_shrink_0()
+        .object_fit(ResizeMode::Contain)
 }
 
 /// The two dropdowns under the question: what to look for, and where
@@ -1031,7 +1076,7 @@ fn dropdown_trigger(markup: &'static str, label: impl Fn() -> SharedString + 'st
         .child(icon(icons::CHEVRON_DOWN, 13.0, colors::MUTED))
 }
 
-/// The ad-banner slot: what the app wants from you next, with the orange
+/// The ad-banner slot: what the app wants from you next, with the blue
 /// call to action on the right.
 fn tip_card() -> View {
     card().w_full().max_w(px(860.0)).p(px(space::LG)).child(
@@ -1083,7 +1128,7 @@ fn tip_card() -> View {
 
 /// The scan composer: a big input over a control row, like the reference's
 /// prompt card. The + button adds the typed path, the pills pick the keeper
-/// default, the pill on the right sets the similarity floor, and the orange
+/// default, the pill on the right sets the similarity floor, and the blue
 /// button starts the scan.
 ///
 /// It belongs to the first-run page alone: once results are on screen the
@@ -1278,7 +1323,7 @@ fn stat_chips() -> View {
         .child(chip(
             format!("{groups} groups"),
             colors::ACCENT_WASH,
-            colors::ACCENT,
+            colors::ACCENT_INK,
         ))
         .child(chip(
             format!("{dups} duplicates"),
@@ -1451,7 +1496,7 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                                 .child(chip(
                                     util::human_bytes(dup),
                                     colors::ACCENT_WASH,
-                                    colors::ACCENT,
+                                    colors::ACCENT_INK,
                                 ))
                         })),
                 )
@@ -1996,7 +2041,7 @@ fn mode_chips(result: &ModeResult) -> View {
         .child(chip(
             format!("{} findings", result.finding_count()),
             colors::ACCENT_WASH,
-            colors::ACCENT,
+            colors::ACCENT_INK,
         ))
         .child(chip(
             format!("{} reclaimable", util::human_bytes(result.reclaimable())),
@@ -2060,7 +2105,7 @@ fn mode_group_card(group: &crate::modes::FindingGroup) -> View {
                 .child(chip(
                     format!("{} reclaimable", util::human_bytes(group.reclaimable)),
                     colors::ACCENT_WASH,
-                    colors::ACCENT,
+                    colors::ACCENT_INK,
                 )),
         )
         .child(caption(group.detail.clone()))

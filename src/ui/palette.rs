@@ -4,7 +4,7 @@
 //! the surface ramp itself (window → sidebar → card → pane → elevated) and
 //! from the bezel: a tinted outer tray with the card surface nested inside it
 //! on a concentric radius. The dark appearance is a deep warm near-black, the
-//! light one a warm paper, and the accent is a warm amber per appearance.
+//! light one a warm paper, and the accent is the app's blue per appearance.
 
 use nsh_core::element::{AdaptiveColor, Rgba};
 
@@ -62,24 +62,24 @@ pub(crate) mod colors {
         tone(veil(0x1c, 0x1b, 0x18, 255), veil(0xed, 0xee, 0xef, 255));
     pub(crate) const MUTED: AdaptiveColor =
         tone(veil(0x74, 0x70, 0x6a, 255), veil(0x8a, 0x8f, 0x8c, 255));
-    /// A deep burnt amber in light; a soft, warm amber in dark, with
-    /// dark-on-amber contrast for filled controls. The light step is dark
-    /// enough that white label text on a filled pill stays legible.
+    /// A deep blue in light; a soft, bright blue in dark, with dark-on-blue
+    /// contrast for filled controls. The light step is dark enough that white
+    /// label text on a filled pill stays past 5:1.
     pub(crate) const ACCENT: AdaptiveColor =
-        tone(veil(0xb4, 0x55, 0x0f, 255), veil(0xf2, 0xa6, 0x5f, 255));
+        tone(veil(0x0b, 0x63, 0xd8, 255), veil(0x74, 0xb4, 0xff, 255));
     pub(crate) const ON_ACCENT: AdaptiveColor =
-        tone(veil(0xff, 0xff, 0xff, 255), veil(0x1a, 0x14, 0x10, 255));
+        tone(veil(0xff, 0xff, 0xff, 255), veil(0x08, 0x1c, 0x33, 255));
     pub(crate) const ACCENT_WASH: AdaptiveColor =
-        tone(veil(0xb4, 0x55, 0x0f, 20), veil(0xf2, 0xa6, 0x5f, 38));
+        tone(veil(0x0b, 0x63, 0xd8, 18), veil(0x74, 0xb4, 0xff, 34));
     pub(crate) const ACCENT_WASH_STRONG: AdaptiveColor =
-        tone(veil(0xb4, 0x55, 0x0f, 36), veil(0xf2, 0xa6, 0x5f, 32));
+        tone(veil(0x0b, 0x63, 0xd8, 32), veil(0x74, 0xb4, 0xff, 30));
     /// Text and glyphs on an accent tint. `ACCENT` itself only works on a
-    /// plain surface (2.0:1 on the dark tint, 2.9:1 on the light one), so a
-    /// status pill or an active tab uses this instead: a deeper amber in
-    /// light, a pale one in dark, both past 4.5:1 on `ACCENT_WASH_STRONG`.
+    /// plain surface, so a status pill or an active tab uses this instead: a
+    /// deeper blue in light, a pale one in dark, both past 4.5:1 on
+    /// `ACCENT_WASH_STRONG`.
     pub(crate) const ACCENT_INK: AdaptiveColor =
-        tone(veil(0x7a, 0x3a, 0x08, 255), veil(0xff, 0xd9, 0xb4, 255));
-    /// The keeper of a group. Green, deliberately not the accent amber used
+        tone(veil(0x0a, 0x46, 0x96, 255), veil(0xcf, 0xe6, 0xff, 255));
+    /// The keeper of a group. Green, deliberately not the accent blue used
     /// for primary actions, so "this copy is kept" can never be confused
     /// with "this copy is ticked for deletion".
     pub(crate) const KEEP: AdaptiveColor =
