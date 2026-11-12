@@ -3,11 +3,12 @@ use super::{Disposition, FindingDeleteStats};
 use crate::hashing::HashEngine;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
+use crate::modes::content_hash;
 use crate::util::human_bytes;
 use anyhow::Result;
 use console::style;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Whether `path` sits inside one of the reference directories.
 ///
@@ -19,20 +20,52 @@ pub fn is_protected(path: &Path, protected: &[PathBuf]) -> bool {
     if protected.is_empty() {
         return false;
     }
-    let canonical = crate::matching::canonical_member(path);
-    protected.iter().any(|dir| canonical.starts_with(dir))
+    // Both spellings matter: a symlink inside a protected folder points outside
+    // it, and a dangling link cannot be resolved at all. Comparing the path
+    // without following links keeps both of those inside the fence.
+    let lexical = absolute(path);
+    let resolved = crate::matching::canonical_member(path);
+    protected
+        .iter()
+        .any(|dir| lexical.starts_with(dir) || resolved.starts_with(dir))
 }
 
-/// Compare a finding against the hash recorded during the scan.
-///
-/// `true` when nothing was recorded (a directory, a symlink, or a file that
-/// could not be read) or the file still hashes the same: only a real content
-/// change keeps a finding from being deleted.
-fn content_unchanged(finding: &Finding, engine: &HashEngine) -> bool {
-    let Some(expected) = finding.hash.as_deref() else {
-        return true;
+/// `path` as an absolute path with `.` and `..` folded lexically, without
+/// resolving symlinks.
+fn absolute(path: &Path) -> PathBuf {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     };
-    engine.full(&finding.path).is_ok_and(|now| now == expected)
+    let mut out = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Compare a finding against what the scan recorded.
+///
+/// Directories are covered by the type test instead. Anything else has to prove
+/// it still holds the same bytes, and a finding with no recorded hash has no
+/// proof: it is kept rather than removed on trust.
+fn content_unchanged(finding: &Finding, engine: &HashEngine) -> bool {
+    if finding.is_dir {
+        return true;
+    }
+    let Some(expected) = finding.hash.as_deref() else {
+        return false;
+    };
+    content_hash(&finding.path, engine).is_some_and(|now| now == expected)
 }
 
 fn finding_still_valid(finding: &Finding) -> bool {
@@ -227,10 +260,13 @@ pub fn delete_finding_groups(
             let size_ok = fs::metadata(path)
                 .map(|m| m.len() == expected_size)
                 .unwrap_or(false);
-            let content_ok = match group.hashes.get(i).and_then(|hash| hash.as_deref()) {
-                None => true,
-                Some(expected) => engine.full(path).is_ok_and(|now| now == expected),
-            };
+            let content_ok = group
+                .hashes
+                .get(i)
+                .and_then(|hash| hash.as_deref())
+                .is_some_and(|expected| {
+                    content_hash(path, engine).is_some_and(|now| now == expected)
+                });
             if !size_ok || !content_ok {
                 eprintln!(
                     "{} {}: {}",

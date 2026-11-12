@@ -157,7 +157,7 @@ pub fn run_scan(
         // the files hold now. Report-only runs skip this: hashing the top
         // entries of a big-files report would cost more than the scan.
         if cli.delete && !cli.dry_run {
-            modes::attach_content_hashes(&mut mode_result, &engine);
+            modes::attach_content_hashes(&mut mode_result, &engine, cancel);
         }
         let stats = report::ScanStats {
             files_scanned: mode_result.files_scanned as usize,
@@ -177,7 +177,7 @@ pub fn run_scan(
             needs_ffprobe_note: false,
             needs_ffmpeg_note: false,
             cache_save_errors: Vec::new(),
-            reference_dirs: Vec::new(),
+            reference_dirs: reference_dirs.clone(),
             cancelled,
             mode_result: Some(mode_result),
         });

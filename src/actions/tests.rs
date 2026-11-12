@@ -470,6 +470,23 @@ fn finding_with_unchanged_content_is_deleted() {
 }
 
 #[test]
+fn finding_without_recorded_hash_is_kept() {
+    let dir = tmpdir("find-nohash");
+    let path = dir.join("scratch.tmp");
+    fs::write(&path, b"payload").unwrap();
+    let mut finding = finding_for(&path, "temp");
+    finding.hash = None;
+
+    let stats = delete_findings(&[finding], Disposition::Permanent, true, &[], &engine());
+
+    assert_eq!(stats.deleted, 0, "an unverifiable file is not deleted");
+    assert_eq!(stats.skipped, 1);
+    assert!(path.exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn protected_group_members_are_kept() {
     let dir = tmpdir("find-group");
     let backup = dir.join("backup");

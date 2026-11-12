@@ -16,7 +16,7 @@ use crate::cancel::CancelToken;
 use crate::cli::{Cli, FindMode};
 use crate::hashing::HashEngine;
 use crate::scan::FileEntry;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use exif::{ExifReport, strip_exif};
 pub use glob::glob_match;
@@ -92,22 +92,41 @@ impl ModeResult {
 /// Record the content of every deletable item, so deletion can re-hash it and
 /// skip the ones that changed in between.
 ///
+/// What a candidate holds: file bytes, or a symlink's target so a broken link
+/// can still be verified before it is unlinked. `None` for directories and for
+/// anything unreadable, which deletion treats as "cannot prove it unchanged"
+/// and keeps.
+#[must_use]
+pub fn content_hash(path: &Path, engine: &HashEngine) -> Option<String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => std::fs::read_link(path)
+            .ok()
+            .map(|target| engine.bytes(target.to_string_lossy().as_bytes())),
+        Ok(meta) if meta.is_dir() => None,
+        Ok(_) => engine.full(path).ok(),
+        Err(_) => None,
+    }
+}
+
 /// Only a run that is about to delete pays for this: hashing is per finding,
 /// and a report-only scan (or `--dry-run`) must not read the files it merely
-/// lists. Directories and symlinks keep `None`; the type checks before removal
-/// cover those.
-pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine) {
+/// lists. A cancelled scan stops early, leaving the rest unhashed so they are
+/// kept rather than removed unverified.
+pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cancel: &CancelToken) {
     for finding in &mut result.findings {
-        if finding.is_dir {
-            continue;
+        if cancel.is_cancelled() {
+            return;
         }
-        finding.hash = engine.full(&finding.path).ok();
+        finding.hash = content_hash(&finding.path, engine);
     }
     for group in &mut result.groups {
+        if cancel.is_cancelled() {
+            return;
+        }
         group.hashes = group
             .members
             .iter()
-            .map(|path| engine.full(path).ok())
+            .map(|path| content_hash(path, engine))
             .collect();
     }
 }

@@ -449,22 +449,36 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
             .iter()
             .filter(|finding| dedupe::actions::is_protected(&finding.path, &protected))
             .count();
+        let members = result
+            .groups
+            .iter()
+            .map(|group| group.members.len().saturating_sub(1))
+            .sum::<usize>();
+        let kept_members = result
+            .groups
+            .iter()
+            .map(|group| {
+                group
+                    .members
+                    .iter()
+                    .skip(1)
+                    .filter(|path| dedupe::actions::is_protected(path, &protected))
+                    .count()
+            })
+            .sum::<usize>();
         println!(
             "{} Dry run: would delete {} finding(s) and {} duplicate group member(s); nothing was removed.",
             style("◌").cyan().bold(),
             result.findings.len().saturating_sub(kept),
-            result
-                .groups
-                .iter()
-                .map(|g| g.members.len().saturating_sub(1))
-                .sum::<usize>(),
+            members.saturating_sub(kept_members),
         );
-        if kept > 0 {
+        if kept + kept_members > 0 {
             eprintln!(
                 "{} {}",
                 style("⚠").yellow(),
                 style(format!(
-                    "{kept} finding(s) are inside a protected folder and would be kept"
+                    "{} found item(s) are inside a protected folder and would be kept",
+                    kept + kept_members
                 ))
                 .yellow()
                 .bold()
