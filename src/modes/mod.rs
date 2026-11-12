@@ -117,7 +117,14 @@ pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cance
         if cancel.is_cancelled() {
             return;
         }
-        finding.hash = content_hash(&finding.path, engine);
+        finding.hash = if still_same_size(&finding.path, finding.size) {
+            content_hash(&finding.path, engine)
+        } else {
+            // The file already changed since it was classified: hashing it now
+            // would bless the new contents, so record nothing and let the
+            // deletion keep it.
+            None
+        };
     }
     for group in &mut result.groups {
         if cancel.is_cancelled() {
@@ -126,8 +133,26 @@ pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cance
         group.hashes = group
             .members
             .iter()
-            .map(|path| content_hash(path, engine))
+            .zip(&group.sizes)
+            .map(|(path, size)| {
+                if still_same_size(path, *size) {
+                    content_hash(path, engine)
+                } else {
+                    None
+                }
+            })
             .collect();
+    }
+}
+
+/// Whether a candidate still looks like the entry the scan classified. Symlinks
+/// report their own size, so they count as unchanged; a regular file that grew
+/// or shrank between detection and hashing does not.
+fn still_same_size(path: &Path, expected: u64) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => true,
+        Ok(meta) if meta.is_file() => meta.len() == expected,
+        _ => false,
     }
 }
 
