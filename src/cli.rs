@@ -239,49 +239,79 @@ pub struct Cli {
     pub ignore: Vec<String>,
 }
 
+/// Content-hash algorithm behind `--hash`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum HashAlgo {
+    /// BLAKE3: the default, and the fastest of the three.
     Blake3,
+    /// SHA-256: widely recognised, slower than BLAKE3.
     Sha256,
+    /// MD5: for matching hashes from older tools; not collision-safe.
     Md5,
 }
 
+/// Which scan `--find` runs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum FindMode {
+    /// Identical content, hashed and grouped (the default).
     #[default]
     Duplicates,
+    /// Zero-byte files.
     EmptyFiles,
+    /// Directories with nothing in them.
     EmptyDirs,
+    /// The largest files, `--top` of them.
     BigFiles,
+    /// Temporary, backup and editor leftover files.
     TempFiles,
+    /// Symlinks whose target no longer resolves.
     InvalidSymlinks,
+    /// Images and videos that will not open.
     BrokenFiles,
+    /// Files whose extension does not match their content.
     BadExtensions,
+    /// Names that break on Windows, FAT or a sync client.
     BadNames,
+    /// Directories whose contents duplicate another directory's.
     DuplicateFolders,
+    /// Audio files matched by tags or fingerprint, `--similar` of them.
     Music,
 }
 
+/// How candidates are matched for `--match` when not comparing content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum MatchMode {
+    /// Identical content, the default; matched through hashing.
     Content,
+    /// Equal file size.
     Size,
+    /// Equal normalized name, ignoring "copy" suffixes.
     Name,
+    /// Similar names within `--fuzzy`, for renamed copies.
     Fuzzy,
 }
 
+/// Perceptual image fingerprint behind `--image-hash`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ImageHashAlgo {
+    /// Difference hash: robust to scaling, the usual choice.
     Dhash,
+    /// Perceptual hash: more robust to colour shifts, slower.
     Phash,
+    /// Average hash: cheapest, noisiest.
     Ahash,
+    /// Colour histogram hash, for images whose layout differs.
     Color,
+    /// Pick per file: dHash for most, pHash for small images.
     Auto,
 }
 
+/// How `--music-mode` compares audio files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum MusicMode {
+    /// Embedded artist/title/album tags.
     Tags,
+    /// Audio fingerprints, which survive a re-encode.
     Content,
 }
 

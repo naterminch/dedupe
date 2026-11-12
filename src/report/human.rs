@@ -6,6 +6,8 @@ use std::fmt::Write as _;
 
 const DIVIDER: &str = "────────────────────────────────────────────────";
 
+/// Print the duplicate report for a terminal: the summary line, each group's
+/// members, and the hint about deleting.
 pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     let reclaim = reclaimable_bytes(groups);
     let dups = dup_file_count(groups);
@@ -169,6 +171,8 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     }
 }
 
+/// Print a cleanup-mode result for a terminal: summary, findings, then the
+/// groups the mode reported.
 pub fn print_mode_human(ctx: &ReportContext, result: &crate::modes::ModeResult) {
     let title = crate::modes::mode_title(result.mode);
     let reclaim = result.reclaimable();

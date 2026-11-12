@@ -19,14 +19,17 @@ struct JsonReport<'a> {
     groups: &'a [Group],
 }
 
+/// Print the duplicate report as a single line of JSON.
 pub fn print_json(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
     println!("{}", to_json(ctx, stats, groups));
 }
 
+/// Print a cleanup-mode result as a single line of JSON.
 pub fn print_mode_json(ctx: &ReportContext, result: &crate::modes::ModeResult) {
     println!("{}", to_mode_json(ctx, result));
 }
 
+/// Serialize a cleanup-mode result; the GUI's Save button writes this shape.
 #[must_use]
 pub fn to_mode_json(ctx: &ReportContext, result: &crate::modes::ModeResult) -> String {
     let findings: Vec<serde_json::Value> = result
