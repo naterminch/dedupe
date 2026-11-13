@@ -38,9 +38,9 @@ jobs:
     outputs:
       sha: ${{ steps.head.outputs.sha }}
     steps:
-      # softprops/action-gh-release creates a release for a tag that has none,
-      # so a dispatch — which is here to repair an existing release — refuses
-      # tags without one instead of quietly publishing something new.
+      # A dispatch is here to repair an existing release, so it fails fast on a
+      # tag without one instead of spending three builds. The upload cannot
+      # create a release either (`gh release upload` needs one to exist).
       - name: Require an existing release
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -197,14 +197,16 @@ jobs:
           cp assets/dedupe.desktop staging/dedupe.desktop
           tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop
 
+      # `gh release upload` uploads to an existing release and fails when the
+      # tag has none, so a release deleted mid-run is not silently recreated:
+      # the dispatch guard only checks before the build starts, and
+      # softprops/action-gh-release would have created the release here instead.
+      # The archive name is spelled out because the Windows runner's pwsh does
+      # not expand globs, and the macOS step also leaves a bare binary in dist/.
+      # `--clobber` keeps a re-dispatch from failing on the assets it already made.
       - name: Upload to release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
-        with:
-          # Explicit tag: a dispatch has no release event to infer it from.
-          tag_name: ${{ env.TAG }}
-          # Only the archives: the macOS step leaves the bare binary in dist/
-          # next to the .app bundle, and dist/* published that as a stray
-          # `dedupe` asset alongside the three archives.
-          files: |
-            dist/*.zip
-            dist/*.tar.gz
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" "dist/dedupe-$TAG-${{ matrix.target }}.${{ runner.os == 'Windows' && 'zip' || 'tar.gz' }}" --clobber
