@@ -202,4 +202,9 @@ jobs:
         with:
           # Explicit tag: a dispatch has no release event to infer it from.
           tag_name: ${{ env.TAG }}
-          files: dist/*
+          # Only the archives: the macOS step leaves the bare binary in dist/
+          # next to the .app bundle, and dist/* published that as a stray
+          # `dedupe` asset alongside the three archives.
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
