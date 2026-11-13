@@ -8,8 +8,23 @@ on:
   release:
     types: [published]
 
+  # Publishing builds the three binaries asynchronously: a release shows no
+  # downloads until its run finishes, and none at all if that run fails or
+  # never starts (v0.1.1). Dispatching with an existing tag builds that tag
+  # and attaches the three binaries to the release it already has.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to attach the three binaries to (e.g. v0.1.1)
+        required: true
+
 permissions:
   contents: write
+
+env:
+  # The tag this run publishes: a dispatch's input, otherwise the release's
+  # own tag. Archive names and the upload target both come from it.
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
 
 # Serialize release runs so two publishes can't race the version commit.
 concurrency:
@@ -17,23 +32,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  bump-version:
-    name: Bump version to tag
+  prepare:
+    name: Prepare tag
     runs-on: ubuntu-latest
     outputs:
-      sha: ${{ steps.bump.outputs.sha }}
+      sha: ${{ steps.head.outputs.sha }}
     steps:
+      # A published release bumps main and builds the commit it pushes; a
+      # dispatch builds the tag it was given, untouched.
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'release' && 'main' || env.TAG }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Bump Cargo.toml and lockfile to tag version
-        id: bump
+        if: github.event_name == 'release'
         run: |
-          TAG='${{ github.event.release.tag_name }}'
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Release tag must look like v1.2.3 (got '$TAG')" >&2
             exit 1
@@ -61,11 +77,15 @@ jobs:
               commit -m "Bump version to $VER"
             git push origin HEAD:main
           fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # What the OS builds check out: the bump push above, or the dispatch's tag.
+      - name: Resolve commit
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.target }})
-    needs: [bump-version]
+    needs: [prepare]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -80,7 +100,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.sha }}
+          ref: ${{ needs.prepare.outputs.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -102,7 +122,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $name = "dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
+          $name = "dedupe-${env:TAG}-${{ matrix.target }}"
           New-Item -ItemType Directory -Path dist | Out-Null
           Compress-Archive -LiteralPath `
             "target/${{ matrix.target }}/release/dedupe.exe" `
@@ -114,8 +134,8 @@ jobs:
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
-          name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
-          version='${{ github.event.release.tag_name }}'
+          name="dedupe-$TAG-${{ matrix.target }}"
+          version="$TAG"
           app=dist/dedupe.app
           mkdir -p dist "$app/Contents/MacOS"
           cp "target/${{ matrix.target }}/release/dedupe" dist/dedupe
@@ -156,7 +176,7 @@ jobs:
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
-          name="dedupe-${{ github.event.release.tag_name }}-${{ matrix.target }}"
+          name="dedupe-$TAG-${{ matrix.target }}"
           mkdir -p dist staging
           cp "target/${{ matrix.target }}/release/dedupe" staging/dedupe
           cp assets/dedupe.desktop staging/dedupe.desktop
@@ -165,4 +185,6 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          # Explicit tag: a dispatch has no release event to infer it from.
+          tag_name: ${{ env.TAG }}
           files: dist/*
