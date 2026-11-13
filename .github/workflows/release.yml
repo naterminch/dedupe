@@ -45,6 +45,9 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout has run yet, so gh cannot infer the repo from a git
+          # remote; name it explicitly.
+          GH_REPO: ${{ github.repository }}
         run: gh release view "$TAG" > /dev/null
 
       # A published release bumps main and builds the commit it pushes; a
