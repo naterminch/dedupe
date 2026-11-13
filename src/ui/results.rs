@@ -840,7 +840,7 @@ fn setup_rows(duplicates: bool) -> View {
         form_row(
             "Folders",
             Some(
-                "Paste a path and press Add folder, or drop folders on the window. They appear in the sidebar.",
+                "Type a path and press Add folder, browse for one, or drop folders on the window.",
             ),
             view()
                 .flex_row()
@@ -856,6 +856,13 @@ fn setup_rows(duplicates: bool) -> View {
                     icons::PLUS,
                     "Add folder",
                     actions::add_from_input,
+                ))
+                // The native folder picker, for a reader who would rather
+                // pick than type; the same action as the sidebar's Browse.
+                .child(icon_secondary_button(
+                    icons::FOLDER,
+                    "Browse",
+                    actions::browse_folder,
                 )),
         ),
         form_row(
