@@ -38,6 +38,15 @@ jobs:
     outputs:
       sha: ${{ steps.head.outputs.sha }}
     steps:
+      # softprops/action-gh-release creates a release for a tag that has none,
+      # so a dispatch — which is here to repair an existing release — refuses
+      # tags without one instead of quietly publishing something new.
+      - name: Require an existing release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release view "$TAG" > /dev/null
+
       # A published release bumps main and builds the commit it pushes; a
       # dispatch builds the tag it was given, untouched.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -101,6 +110,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ needs.prepare.outputs.sha }}
+          # Building needs no token, so keep one out of .git/config while
+          # cargo runs this tree's build script.
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
