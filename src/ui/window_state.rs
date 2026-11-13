@@ -9,8 +9,9 @@
 //! - [`start_watching`]: a timer samples the real window frame every so
 //!   often; [`current`] hands the last snapshot to `actions::save_prefs`,
 //!   which persists it in `dedupe.json`.
-//! - [`restore`]: replays a saved frame (and maximized state) right after
-//!   the first launch layout.
+//! - [`restore`]: replays the saved position (and maximized state) right
+//!   after the first launch layout. The saved size needs no replay: it is
+//!   the client size, and `AppOptions.size` already applied it at creation.
 //! - [`exit_when_window_closes`]: ends the process once the window is gone,
 //!   because the platform's message loop stops there without returning.
 //!
@@ -108,11 +109,16 @@ pub(crate) fn restore(saved: Option<WindowGeometry>) {
     // The main window: this runs before any render, so the command addresses
     // the root directly instead of resolving a window from context.
     let window = nsh_core::element::desktop::main_window();
+    // Position and mode only. `AppOptions.size` already applied the saved
+    // client size at creation, so replaying it here would set the *outer*
+    // frame to a client size: the window would reopen one title bar and two
+    // borders smaller than it was left, with a visible shrink just after the
+    // first paint. Its size is not this function's to set.
     window.set_bounds(WindowFrame {
         x: Some(nsh_core::Points(g.x)),
         y: Some(nsh_core::Points(g.y)),
-        width: Some(nsh_core::Points(g.width)),
-        height: Some(nsh_core::Points(g.height)),
+        width: None,
+        height: None,
         animated: Some(false),
     });
     if g.maximized {
@@ -215,9 +221,11 @@ fn sample_real_window() {
 
 #[cfg(all(target_os = "windows", not(test)))]
 fn read_window_frame() -> Option<WindowGeometry> {
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowPlacement, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
+        GetClientRect, GetWindowPlacement, GetWindowRect, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
+        WINDOWPLACEMENT,
     };
 
     let hwnd = our_window()?;
@@ -234,16 +242,74 @@ fn read_window_frame() -> Option<WindowGeometry> {
         }
         let dpi = u32::max(GetDpiForWindow(hwnd), 1);
         let rc = placement.rcNormalPosition;
-        // Placement is in physical pixels while nsh sizes windows in
-        // points (`px = points × dpi / 96` in the platform), so convert
-        // back to the points `set_frame` and `AppOptions.size` expect.
+        // The width and height are the *client* size, because that is what
+        // `AppOptions.size` means when this frame restores at the next
+        // launch. `rcNormalPosition` is the outer frame: storing that would
+        // add the title bar and borders to the window on every launch.
+        let mut client = RECT::default();
+        GetClientRect(hwnd, &mut client).ok()?;
+        let mut outer = RECT::default();
+        GetWindowRect(hwnd, &mut outer).ok()?;
+        let (width_px, height_px) = restored_client_px(
+            (outer.right - outer.left, outer.bottom - outer.top),
+            (client.right - client.left, client.bottom - client.top),
+            (rc.right - rc.left, rc.bottom - rc.top),
+        );
+        // Both are in physical pixels while nsh sizes windows in points
+        // (`px = points × dpi / 96` in the platform), so convert back to the
+        // points `AppOptions.size` expects.
         let to_points = |px: i32| px as f32 * 96.0 / dpi as f32;
         Some(WindowGeometry {
             x: to_points(rc.left),
             y: to_points(rc.top),
-            width: to_points(rc.right - rc.left),
-            height: to_points(rc.bottom - rc.top),
+            width: to_points(width_px),
+            height: to_points(height_px),
             maximized: placement.showCmd as i32 == SW_SHOWMAXIMIZED.0,
         })
+    }
+}
+
+/// The client size a restored-down window will have, from the current outer
+/// and client sizes and the placement's restore-down frame.
+///
+/// While the window is maximized `GetClientRect` reports the work area, not
+/// the size it goes back to: sampling it unchanged would restore the window at
+/// screen size and leave nothing sensible to un-maximize to. The non-client
+/// extents are constant for a given DPI and window style, so they come out of
+/// the current pair and come off the restore-down frame. An un-maximized
+/// window has `normal == outer` and lands back on its client size.
+#[cfg(target_os = "windows")]
+fn restored_client_px(outer: (i32, i32), client: (i32, i32), normal: (i32, i32)) -> (i32, i32) {
+    (
+        (normal.0 - (outer.0 - client.0)).max(1),
+        (normal.1 - (outer.1 - client.1)).max(1),
+    )
+}
+
+#[cfg(all(target_os = "windows", test))]
+mod tests {
+    use super::restored_client_px;
+
+    #[test]
+    fn a_maximized_window_keeps_its_restore_down_size() {
+        // Measured on this machine: a maximized 2576x1408 outer framing a
+        // 2560x1369 client, restoring down to a 1016x739 outer frame.
+        assert_eq!(
+            restored_client_px((2576, 1408), (2560, 1369), (1016, 739)),
+            (1000, 700)
+        );
+    }
+
+    #[test]
+    fn a_normal_window_saves_its_own_client_size() {
+        assert_eq!(
+            restored_client_px((1296, 859), (1280, 820), (1296, 859)),
+            (1280, 820)
+        );
+    }
+
+    #[test]
+    fn a_frame_larger_than_the_placement_never_zeroes_the_window() {
+        assert_eq!(restored_client_px((100, 100), (20, 20), (10, 10)), (1, 1));
     }
 }

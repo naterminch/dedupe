@@ -96,6 +96,31 @@ fn shell_shows_the_core_controls() {
     assert!(app.shows("Folders"), "sidebar heading");
 }
 
+/// The window edge is not a scroll: every view the layout places has to end
+/// inside the client, or the bottom of the app is unreachable. This pins the
+/// 1120x640 viewport the rest of the suite lays out against.
+#[test]
+fn no_view_extends_past_the_window() {
+    let (mut app, _guard) = start();
+    app.wait_for("text:dedupe").expect("header");
+    let overflow: Vec<String> = app
+        .screen()
+        .layout_nodes()
+        .iter()
+        .filter(|node| node.bounds.origin.y.0 + node.bounds.size.height.0 > 640.5)
+        .map(|node| {
+            format!(
+                "{:?} at y={:.1} h={:.1}",
+                node.kind, node.bounds.origin.y.0, node.bounds.size.height.0
+            )
+        })
+        .collect();
+    assert!(
+        overflow.is_empty(),
+        "views placed past the window bottom: {overflow:#?}"
+    );
+}
+
 #[test]
 fn settings_page_opens_and_closes() {
     let (mut app, _guard) = start();

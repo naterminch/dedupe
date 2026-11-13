@@ -101,7 +101,14 @@ fn member_thumb(thumb: &Thumb, path: &Path) -> View {
     match thumb {
         Thumb::Image => frame.child(preview_image(path)),
         Thumb::Poster(poster) => frame.child(preview_image(poster)),
-        Thumb::None => frame.border_1().border_color(colors::BORDER),
+        // A file with no preview (a document, an archive) gets a document
+        // glyph, not an empty outlined box: the box read as a thumbnail that
+        // failed to load.
+        Thumb::None => frame.border_1().border_color(colors::BORDER).child(icon(
+            icons::FILE,
+            18.0,
+            colors::MUTED,
+        )),
         Thumb::PendingVideo => frame.border_1().border_color(colors::BORDER).child(
             text("▶")
                 .text_size(px(text::BODY))
@@ -1521,17 +1528,28 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
             ));
         }
     }
-    // The header counts move with the keeper; they update on their own
-    // instead of taking the group's cards with them.
+    // The header counts follow the ticks, not just the keepers: a group with
+    // nothing selected is not "1 copy to delete", and the reclaimable figure
+    // is what the ticked copies would actually give back. They update on
+    // their own instead of taking the group's cards with them.
     let stats = computed(move || {
         app().with(|s| {
             s.groups
                 .iter()
                 .find(|g| g.index == index)
-                .map_or((1, 0), |g| (g.keep_count(), g.dup_bytes()))
+                .map_or((1, 0, 0), |g| {
+                    let mut copies = 0usize;
+                    let mut bytes = 0u64;
+                    for m in &g.members {
+                        if !m.keep && s.selected.contains(&m.path) {
+                            copies += 1;
+                            bytes += m.size;
+                        }
+                    }
+                    (g.keep_count(), copies, bytes)
+                })
         })
     });
-    let member_count = members.len();
     // `nsh`'s Collapsible owns the disclosure: the whole header is the
     // trigger (one big hit target instead of a 16 pt chevron to aim at), it
     // reports the expanded state to screen readers, and `reveal` springs the
@@ -1573,23 +1591,31 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                                 .text_color(colors::TEXT),
                         )
                         .child(dynamic(move || {
-                            let (keep, reclaim) = stats.get();
-                            let going = member_count.saturating_sub(keep);
-                            view()
+                            let (kept, copies, bytes) = stats.get();
+                            let mut row = view()
                                 .flex_row()
                                 .items_center()
                                 .gap(px(space::SM))
-                                .child(caption(format!(
-                                    "{keep} kept · {} to delete",
-                                    counted(going as u64, "copy", "copies"),
-                                )))
+                                .child(caption(if copies == 0 {
+                                    // Nothing ticked is a state worth naming:
+                                    // the group is intact, not half-deleted.
+                                    format!("{kept} kept · nothing ticked")
+                                } else {
+                                    format!(
+                                        "{kept} kept · {} to delete",
+                                        counted(copies as u64, "copy", "copies"),
+                                    )
+                                }));
+                            if copies > 0 {
                                 // "reclaimable" is the word that turns a bare
                                 // size into a reason to act.
-                                .child(chip(
-                                    format!("{} reclaimable", util::human_bytes(reclaim)),
+                                row = row.child(chip(
+                                    format!("{} reclaimable", util::human_bytes(bytes)),
                                     colors::ACCENT_WASH,
                                     colors::ACCENT_INK,
-                                ))
+                                ));
+                            }
+                            row
                         })),
                 )
                 .content(body),
