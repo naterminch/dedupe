@@ -155,7 +155,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Rail slot moving between pages | background transition | `BASE`, `PANE` |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
-| Text-field focus edge | colour transition | `BASE`, `BORDER` → `ACCENT` |
+| Text-field focus edge | colour transition | `BASE`, `HAIRLINE` → `ACCENT` |
 | Keeper pick and duplicate tick | colour transition on the member surface | `FAST`, `KEEP_WASH` / `SELECT_WASH` |
 | Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
 | Delete dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |
@@ -164,15 +164,16 @@ nsh lands them at their end state when reduce-motion is on.
 
 Two things deliberately do not move: the scrim (a full-window layer must not
 travel) and the results list on a rebuild (it keeps the reader's scroll place,
-so only its opacity changes). Everything else that swaps content fades or rises
-once, instead of blinking.
+so only its opacity changes). The delete bar's count is the third: it changes on
+every tick of a selection, so a fade there would flicker under the pointer.
+Everything else that swaps content fades or rises once, instead of blinking.
 
 ## Known gaps
 
-- The duplicate-group list is built from the current page of groups (up to
-  `GROUP_PAGE`) rather than `virtual_list`. Each group is a variable-height card
-  with its own media previews, so virtualization needs per-cell measurement of
-  nested content first. Feeds and any tabular view must use `virtual_list` from
-  the start.
+- The duplicate-group list and the cleanup findings list are built from one page
+  of results (up to `GROUP_PAGE`, with a "Show more" button) rather than
+  `virtual_list`. Each group is a variable-height card with its own media
+  previews, so virtualization needs per-cell measurement of nested content
+  first. Feeds and any tabular view must use `virtual_list` from the start.
 - Desktop only: no mobile or web target is shipped, so touch targets, sheets and
   the keyboard inset are unexercised.

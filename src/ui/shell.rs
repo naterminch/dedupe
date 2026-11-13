@@ -14,8 +14,8 @@ use crate::ui::actions;
 use crate::ui::palette::{colors, radius, space, text};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, divider, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon,
-    icon_ghost_button, icons, motion, panel_title, timing, toggle_switch,
+    caption, card, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon, icon_ghost_button,
+    icons, motion, panel_title, timing, toggle_switch,
 };
 use crate::ui_helpers::fit_text;
 
@@ -54,7 +54,7 @@ pub(crate) fn sidebar() -> impl IntoElement {
                     view()
                         .px(px(space::SM))
                         .pt(px(space::MD))
-                        .child(section_kicker("Folders")),
+                        .child(eyebrow("Folders")),
                 )
                 .child(folder_list()),
         ))
@@ -110,10 +110,6 @@ fn filter_field() -> impl IntoElement {
             app().update(|s| s.folder_filter = Some(value));
         },
     )
-}
-
-fn section_kicker(label: impl IntoReactive<SharedString>) -> Text {
-    eyebrow(label)
 }
 
 /// The "New chat"-style rows: add, scan and the trash switch, each a full
@@ -250,10 +246,14 @@ fn folder_list() -> impl IntoElement {
         });
         let rows = rows.get();
         if rows.is_empty() {
+            // An empty list is a place to act, not a label: name both ways in.
             view()
+                .flex_col()
+                .gap(px(space::XXS))
                 .px(px(space::SM))
                 .py(px(space::SM))
                 .child(caption("No folders yet"))
+                .child(caption("Drop a folder on the window, or press Browse."))
         } else {
             view().flex_col().gap(px(2.0)).children(
                 rows.into_iter()
@@ -377,54 +377,19 @@ fn row_ghost(
         .tooltip(hint(label))
 }
 
-/// The card at the bottom: what protection does and where to manage it.
-/// Its title is the card's own heading — no scream-label above it.
+/// The card at the bottom: what the lock on a folder row does.
+///
+/// It used to end with an arrow into Settings, which has no protection
+/// control at all — the control led nowhere. A sentence that points at the
+/// real control beats an affordance that cannot do the thing it hints at.
 fn tip_card() -> impl IntoElement {
     view().px(px(space::MD)).pb(px(space::MD)).child(
         card()
             .gap(px(space::XS))
             .p(px(space::MD))
             .child(panel_title("Protect the originals"))
-            .child(caption("Protected folders are never touched by a delete."))
-            .child(divider())
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        view()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(space::XS))
-                            .child(icon(icons::LOCK, 14.0, colors::MUTED))
-                            .child(caption("Protection")),
-                    )
-                    .child(
-                        view()
-                            .flex_col()
-                            .child(
-                                button()
-                                    .on_press(actions::open_settings)
-                                    .accessibility_label("Open settings")
-                                    .flex_row()
-                                    .items_center()
-                                    .justify_center()
-                                    .w(px(26.0))
-                                    .h(px(24.0))
-                                    .bg(colors::PANE)
-                                    .rounded_full()
-                                    .transition_colors()
-                                    .duration(motion(timing::FAST))
-                                    .ease_out()
-                                    .hover(|s| s.bg(colors::ELEVATED))
-                                    .active(|s| s.opacity(0.9))
-                                    .focus_visible(focus_ring)
-                                    .hit_slop(EdgeInsets::all(px(4.0)))
-                                    .child(icon(icons::ARROW_UP_RIGHT, 13.0, colors::TEXT)),
-                            )
-                            .tooltip(hint("Open settings")),
-                    ),
-            ),
+            .child(caption(
+                "Press the lock on a folder row: its copies win the keep decision, and nothing inside it is ever deleted.",
+            )),
     )
 }
