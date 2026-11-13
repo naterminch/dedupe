@@ -35,9 +35,11 @@ terminal.
 
 Run `dedupe` with no arguments (or `dedupe --gui`).
 
-1. Pick a folder on the left and press **Scan**.
-2. Results are grouped by content. Green **KEEP** is the copy that stays, amber
-   **Selected** is ticked for deletion.
+1. Add a folder — **Browse** in the sidebar, paste a path into the **New scan**
+   form, or drop it on the window — then press **Scan for duplicates**.
+2. Results are grouped by content, with the space a delete would free shown as
+   **Reclaimable** beside the title. Green **Keeper** is the copy that stays,
+   amber **Selected** is ticked for deletion.
 3. **Delete** follows your Trash setting: with it on the ticked copies go to the
    system trash, with it off they are deleted permanently. The dialog lists the
    groups and files that will go first — a long selection is summarized with

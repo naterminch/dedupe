@@ -633,8 +633,8 @@ pub(crate) fn stop_scan() {
     });
 }
 
-/// Leave a finished scan for the first-run page, where the composer and the
-/// mode pills set up the next run. Only the results go: the folders and the
+/// Leave a finished scan for the setup page, where the scan form sets up the
+/// next run. Only the results go: the folders and the
 /// prefs stay, so going back costs nothing.
 pub(crate) fn back_to_setup() {
     if app().with_untracked(|s| s.scanning) {
@@ -1075,7 +1075,7 @@ pub(crate) fn apply_sim_input(raw: &str) {
 /// Promote one member to keeper of its group (per-group decision).
 ///
 /// Member order never changes here: the grid keeps every card in place and
-/// only the highlight (KEEP/DUP badge + border) moves. Ticks outside the
+/// only the highlight (the keeper/selected badge and edge) moves. Ticks outside the
 /// group are left alone too — a keeper pick says nothing about the other
 /// groups' selections, and re-ticking them all would churn the whole list.
 pub(crate) fn set_keeper(group_index: usize, path: &Path) {

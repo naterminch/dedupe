@@ -5,14 +5,13 @@
 //! workspace (sidebar + results) and the Settings page. Preferences are
 //! restored once, on the first frame, through `actions::bootstrap`.
 
-use nsh_base::button;
 use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
-use crate::ui::palette::{colors, space};
+use crate::ui::palette::space;
 use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{
-    caption, entering, focus_ring, hint, icon, icon_ghost_button, icons, motion, timing,
+    caption, entering, ground, icon_ghost_button, icons, rail_button, status_strip,
 };
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::ui_helpers::counted;
@@ -42,11 +41,10 @@ pub fn DedupeApp() -> impl IntoElement {
         },
         |_| actions::escape_leaves_settings(),
     );
-    view()
+    ground()
         .flex_row()
         .flex_1()
         .h_full()
-        .bg(colors::BACKGROUND)
         // Folders dropped from Explorer land in the scan list.
         .on_file_drop(|event: &FileDropEvent| actions::drop_folders(&event.uris))
         .child(nav_rail())
@@ -74,8 +72,11 @@ pub fn DedupeApp() -> impl IntoElement {
         }))
 }
 
+/// The icon rail's width: a 36 pt slot with 10 pt either side.
+const RAIL_WIDTH: f32 = 56.0;
+
 /// The left icon rail, shared by every view. The active view carries a
-/// quiet pane-tinted pill, not an accent tint: selection is a place, not a
+/// neutral grey pill, not an accent tint: selection is a place, not a
 /// state. Reacts to the view, so the active slot moves without a rebuild
 /// of the body.
 fn nav_rail() -> View {
@@ -89,19 +90,18 @@ fn nav_rail() -> View {
         view()
             .flex_col()
             .items_center()
-            .w(px(56.0))
+            .w(px(RAIL_WIDTH))
             .h_full()
             .flex_shrink_0()
             .py(px(space::MD))
             .gap(px(space::SM))
-            .bg(colors::BACKGROUND)
-            .child(rail_item(
+            .child(rail_button(
                 icons::HOME,
                 "Scan workspace",
                 view_now == AppView::Main,
                 actions::leave_settings,
             ))
-            .child(rail_item(
+            .child(rail_button(
                 icons::SLIDERS,
                 "Settings",
                 view_now == AppView::Settings,
@@ -117,50 +117,6 @@ fn nav_rail() -> View {
                 actions::toggle_theme,
             )))
     }))
-}
-
-/// One rail button: an icon in a rounded slot; the active view's slot is a
-/// pane-tinted pill. The label lives in the accessibility tree.
-fn rail_item(markup: &'static str, label: &'static str, active: bool, on_press: fn()) -> View {
-    // The rail is icons only, so the pointer gets the name too — not just the
-    // screen reader.
-    view().tooltip(hint(label)).child(
-        button()
-            .on_press(on_press)
-            .accessibility_label(label)
-            .flex_row()
-            .items_center()
-            .justify_center()
-            .w(px(38.0))
-            .h(px(38.0))
-            .rounded(px(12.0))
-            .bg(if active {
-                colors::PANE
-            } else {
-                colors::BACKGROUND
-            })
-            .transition_colors()
-            .duration(motion(timing::BASE))
-            .ease_out()
-            // The active slot already sits on a pane, so it steps up rather
-            // than standing still when the pointer lands on it.
-            .hover(move |s| {
-                s.bg(if active {
-                    colors::ELEVATED
-                } else {
-                    colors::PANE
-                })
-            })
-            .active(|s| s.bg(colors::ELEVATED))
-            .focus_visible(focus_ring)
-            .disabled_style(|s| s.opacity(0.45))
-            .hit_slop(EdgeInsets::all(px(4.0)))
-            .child(icon(
-                markup,
-                20.0,
-                if active { colors::TEXT } else { colors::MUTED },
-            )),
-    )
 }
 
 fn body() -> impl IntoElement {
@@ -199,16 +155,7 @@ fn body() -> impl IntoElement {
 }
 
 fn status_bar() -> impl IntoElement {
-    view()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap(px(space::LG))
-        .px(px(space::XL))
-        .py(px(space::MD))
-        .bg(colors::CARD)
-        .border_t_1()
-        .border_color(colors::HAIRLINE)
+    status_strip()
         .child(caption(|| {
             // A running scan's phase is what the line reports. It lives in the
             // scan signal, so the status line follows a tick without the app
