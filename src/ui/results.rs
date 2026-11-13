@@ -476,8 +476,14 @@ fn keep_choice_group() -> impl IntoElement {
         .child(keep_modes())
 }
 
-const KEEP_HINT: &str = "Which copy of each group survives a delete. First: the first copy found. \
-Smallest / Newest / Oldest: by file size or date. Best: the highest resolution.";
+/// The rules behind the chips, written from the comparators that pick the
+/// keeper ([`crate::matching::KeepMode`]): "first found" is really path
+/// order, and in similar-media groups the smallest chip ranks resolution
+/// first.
+const KEEP_HINT: &str = "Which copy of each group survives a delete. First: the alphabetically \
+first path. Smallest: the smallest file — in similar-media groups the highest resolution wins \
+first. Newest / Oldest: by modified date. Best: the highest resolution, then the longest \
+duration, then the largest file.";
 
 /// One keeper rule at a time: nsh's toggle group is the view switcher here
 /// (a press releases the others and takes the new rule).
@@ -1365,6 +1371,37 @@ fn scan_label() -> &'static str {
     }
 }
 
+/// What the media chip says, from the two probe answers.
+///
+/// Previews need ffmpeg alone: it cuts the posters and plays the clip.
+/// ffprobe only adds the resolution and duration that video matching uses, so
+/// calling its absence "no previews" denied the thumbnails that still work.
+#[must_use]
+pub(crate) fn media_status_text(
+    checked: bool,
+    ffmpeg: bool,
+    ffprobe: bool,
+) -> (&'static str, &'static str) {
+    if !checked {
+        ("Checking video support…", "Looking for FFmpeg on PATH.")
+    } else if ffmpeg && ffprobe {
+        (
+            "Video previews on",
+            "FFmpeg adds video previews; ffprobe adds resolution, duration and video matching. Image comparison works without either.",
+        )
+    } else if ffmpeg {
+        (
+            "Video previews on",
+            "Thumbnails and playback work. Install ffprobe to add resolution, duration and video matching.",
+        )
+    } else {
+        (
+            "No video previews",
+            "FFmpeg adds video previews and video matching. Image comparison works without it.",
+        )
+    }
+}
+
 /// ffmpeg/ffprobe availability as one compact chip in the composer row:
 /// media comparison and metadata quietly depend on them.
 fn media_status() -> impl IntoElement {
@@ -1375,16 +1412,8 @@ fn media_status() -> impl IntoElement {
         // ready" is an implementation detail on a screen about files. Both
         // states stay on a plain surface — the accent is for actions and
         // focus, not for a status that needs no press.
-        let status = if !checked {
-            chip("Checking video support…", colors::INSET, colors::MUTED)
-        } else if ffmpeg && ffprobe {
-            chip("Video previews on", colors::INSET, colors::MUTED)
-        } else {
-            chip("No video previews", colors::INSET, colors::MUTED)
-        };
-        status.tooltip(hint(
-            "FFmpeg adds video previews, resolution and duration, and video matching. Image comparison works without it.",
-        ))
+        let (label, detail) = media_status_text(checked, ffmpeg, ffprobe);
+        chip(label, colors::INSET, colors::MUTED).tooltip(hint(detail))
     })
 }
 
@@ -1541,7 +1570,7 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                     let mut copies = 0usize;
                     let mut bytes = 0u64;
                     for m in &g.members {
-                        if !m.keep && s.selected.contains(&m.path) {
+                        if m.deletable() && s.selected.contains(&m.path) {
                             copies += 1;
                             bytes += m.size;
                         }
@@ -1988,82 +2017,93 @@ fn member_actions(
         .flex_wrap()
         .items_center()
         .gap(px(space::SM))
-        .child(
-            checkbox()
-                .checked(active)
-                .disabled(keep)
-                .on_change(move |_: &bool| actions::toggle_selected(&toggle_path))
-                .px(px(8.0))
-                .py(px(2.0))
-                .flex_row()
-                .items_center()
-                .gap(px(6.0))
-                .rounded(px(radius::CONTROL))
-                .bg(if keep {
-                    colors::KEEP_WASH_STRONG
-                } else if checked {
-                    colors::SELECT_WASH_STRONG
-                } else {
-                    colors::INSET
-                })
-                .border_1()
-                .border_color(if keep {
-                    colors::KEEP
-                } else if checked {
-                    colors::SELECT
-                } else {
-                    colors::BORDER
-                })
-                .indicator_style(|s| {
-                    s.w(px(12.0))
-                        .h(px(12.0))
-                        .rounded(px(3.0))
-                        .flex_row()
-                        .items_center()
-                        .justify_center()
-                        .border_1()
-                        .border_color(if keep {
-                            colors::KEEP
-                        } else if checked {
-                            colors::SELECT
-                        } else {
-                            colors::MUTED
-                        })
-                        .checked(move |s| {
-                            let tint = if keep { colors::KEEP } else { colors::SELECT };
-                            s.bg(tint).border_color(tint)
-                        })
-                })
-                .indicator(
-                    text(if active { "✓" } else { "" })
-                        // Below the caption step on purpose: the glyph sits in
-                        // a 12pt box, so the token size would overflow the
-                        // control it marks. It still scales with the user's
-                        // text size, like every other string here.
-                        .text_size(px(9.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(colors::ON_ACCENT),
-                )
-                .child(
-                    text(label)
-                        .text_size(px(text::CAPTION))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        // The wash is a backing: the words on it take the ink
-                        // step of the same hue so they stay readable.
-                        .text_color(if keep {
-                            colors::KEEP_INK
-                        } else if checked {
-                            colors::SELECT_INK
-                        } else {
-                            colors::MUTED
-                        }),
-                ),
-        )
+        .child(if member.reference && !keep {
+            // A locked copy is never deleted, so it has no tick to give: a
+            // disabled checkbox would promise a choice that does not exist.
+            view().child(
+                chip("Protected", colors::INSET, colors::MUTED)
+                    .tooltip(hint("Inside a locked folder: this copy is never deleted.")),
+            )
+        } else {
+            view().child(
+                checkbox()
+                    .checked(active)
+                    .disabled(keep)
+                    .on_change(move |_: &bool| actions::toggle_selected(&toggle_path))
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .rounded(px(radius::CONTROL))
+                    .bg(if keep {
+                        colors::KEEP_WASH_STRONG
+                    } else if checked {
+                        colors::SELECT_WASH_STRONG
+                    } else {
+                        colors::INSET
+                    })
+                    .border_1()
+                    .border_color(if keep {
+                        colors::KEEP
+                    } else if checked {
+                        colors::SELECT
+                    } else {
+                        colors::BORDER
+                    })
+                    .indicator_style(|s| {
+                        s.w(px(12.0))
+                            .h(px(12.0))
+                            .rounded(px(3.0))
+                            .flex_row()
+                            .items_center()
+                            .justify_center()
+                            .border_1()
+                            .border_color(if keep {
+                                colors::KEEP
+                            } else if checked {
+                                colors::SELECT
+                            } else {
+                                colors::MUTED
+                            })
+                            .checked(move |s| {
+                                let tint = if keep { colors::KEEP } else { colors::SELECT };
+                                s.bg(tint).border_color(tint)
+                            })
+                    })
+                    .indicator(
+                        text(if active { "✓" } else { "" })
+                            // Below the caption step on purpose: the glyph sits in
+                            // a 12pt box, so the token size would overflow the
+                            // control it marks. It still scales with the user's
+                            // text size, like every other string here.
+                            .text_size(px(9.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(colors::ON_ACCENT),
+                    )
+                    .child(
+                        text(label)
+                            .text_size(px(text::CAPTION))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            // The wash is a backing: the words on it take the ink
+                            // step of the same hue so they stay readable.
+                            .text_color(if keep {
+                                colors::KEEP_INK
+                            } else if checked {
+                                colors::SELECT_INK
+                            } else {
+                                colors::MUTED
+                            }),
+                    ),
+            )
+        })
         .child(caption(util::human_bytes(member.size)))
         .child(when(similarity.is_some(), move || {
             caption(similarity.clone().unwrap_or_default())
         }))
-        .child(when(member.reference, || {
+        // A protected duplicate already carries "Protected" in its control;
+        // the keeper keeps the badge that names the folder kind.
+        .child(when(member.reference && keep, || {
             chip("REF", colors::ACCENT_WASH, colors::ACCENT_INK)
         }))
         .child(when(play.is_some(), move || {

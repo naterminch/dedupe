@@ -58,10 +58,7 @@ pub fn group_kind_name(kind: MediaKind) -> &'static str {
 /// that is not a keeper.
 #[must_use]
 pub fn dup_file_count(groups: &[Group]) -> u64 {
-    groups
-        .iter()
-        .map(|g| (g.members.len() - g.keep_count()) as u64)
-        .sum()
+    groups.iter().map(|g| g.dup_count() as u64).sum()
 }
 
 /// Bytes freed by deleting every non-keeper member of every group.

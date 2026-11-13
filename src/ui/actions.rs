@@ -769,15 +769,10 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         s.group_limit = crate::ui::state::GROUP_PAGE;
         // One display ordering for the whole scan (honors the sort toggle).
         sort_groups(s);
-        // Pre-select every duplicate for deletion (KEEP members are never
-        // selectable); the user unchecks what should survive.
-        s.selected = s
-            .groups
-            .iter()
-            .flat_map(|g| g.members.iter())
-            .filter(|m| !m.keep)
-            .map(|m| m.path.clone())
-            .collect();
+        // Pre-select every duplicate for deletion; the user unchecks what
+        // should survive. Keepers and copies in a locked folder are never
+        // selectable, and the rule for which is which lives in one place.
+        reselect_all_dups(s);
         // Every group is open by default: the results are readable without
         // a click, and Collapse all is one press away. Nothing is remembered
         // as closed, so a later re-threshold or "Show more" opens too.
@@ -940,25 +935,22 @@ fn request_expanded_posters() {
 
 // --- Selection and ordering -------------------------------------------------
 
-/// Mark every non-keep member for deletion (fresh intent after a
-/// keeper/mode change).
+/// Mark every deletable duplicate for deletion (fresh intent after a
+/// keeper/mode change). Copies in a locked folder stay unticked: there is no
+/// delete that would take them.
 pub(crate) fn reselect_all_dups(s: &mut AppState) {
     s.selected = s
         .groups
         .iter()
         .flat_map(|g| g.members.iter())
-        .filter(|m| !m.keep)
+        .filter(|m| m.deletable())
         .map(|m| m.path.clone())
         .collect();
 }
 
 /// Recompute the summary counters from the current groups.
 pub(crate) fn recount(s: &mut AppState) {
-    let dups: u64 = s
-        .groups
-        .iter()
-        .map(|g| (g.members.len() - g.keep_count()) as u64)
-        .sum();
+    let dups: u64 = s.groups.iter().map(|g| g.dup_count() as u64).sum();
     s.dup_files = dups;
     s.reclaim_bytes = s.groups.iter().map(|g| g.dup_bytes()).sum();
 }
@@ -1103,9 +1095,12 @@ pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
     for member in group.members.iter_mut() {
         if member.keep {
             // The retiring keeper is a duplicate again, ticked like every
-            // other duplicate in its group.
+            // other duplicate in its group — unless it sits in a locked
+            // folder, where a tick means nothing.
             member.keep = false;
-            s.selected.insert(member.path.clone());
+            if !member.reference {
+                s.selected.insert(member.path.clone());
+            }
         }
         if member.path == path {
             member.keep = true;
@@ -1179,11 +1174,13 @@ pub(crate) fn toggle_play(path: &Path) {
 /// Flip one duplicate's tick (KEEP members are never selectable).
 pub(crate) fn toggle_selected(path: &Path) {
     app().update(|s| {
+        // `deletable`, not `!keep`: a tick on a locked copy would never be
+        // carried out, so it must not be given.
         let is_dup = s
             .groups
             .iter()
             .flat_map(|g| g.members.iter())
-            .any(|m| m.path == path && !m.keep);
+            .any(|m| m.path == path && m.deletable());
         if !is_dup {
             return;
         }
@@ -1256,7 +1253,7 @@ pub(crate) fn pending_targets(s: &AppState) -> Vec<file_actions::DeleteTarget> {
     let mut out = Vec::new();
     for g in &s.groups {
         for m in &g.members {
-            if !m.keep && s.selected.contains(&m.path) {
+            if m.deletable() && s.selected.contains(&m.path) {
                 out.push(file_actions::DeleteTarget {
                     path: m.path.clone(),
                     expected_hash: m.content_hash.clone().unwrap_or_else(|| g.hash.clone()),
@@ -1296,7 +1293,7 @@ pub(crate) fn confirm_groups(s: &AppState) -> (Vec<ConfirmGroup>, usize) {
         let mut count = 0usize;
         let mut bytes = 0u64;
         for m in &g.members {
-            if m.keep || !s.selected.contains(&m.path) {
+            if !m.deletable() || !s.selected.contains(&m.path) {
                 continue;
             }
             count += 1;

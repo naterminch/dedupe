@@ -95,10 +95,12 @@ pub fn delete_duplicates(
     let mut assume_yes = yes;
 
     'groups: for group in groups {
+        // A reference folder is a safety net: none of its copies are ever
+        // targets, including a duplicate that is not the keeper.
         let targets: Vec<DeleteTarget> = group
             .members
             .iter()
-            .filter(|m| !m.keep)
+            .filter(|m| m.deletable())
             .map(|m| DeleteTarget {
                 path: m.path.clone(),
                 // Similar groups share no content hash, so each file is

@@ -199,6 +199,34 @@ fn delete_duplicates_yes_removes_only_non_keep() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// A locked folder can hold both copies of one group. Only one of them can be
+/// the keeper, and the other must survive a delete — `--yes` included.
+#[test]
+fn delete_duplicates_leaves_a_second_locked_copy_alone() {
+    let dir = tmpdir("refpair");
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let keep = backup.join("a.txt");
+    let dup = backup.join("b.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+    fs::write(&dup, b"identical bytes").unwrap();
+
+    let eng = engine();
+    let mut group = keeper_group(keep.clone(), dup.clone(), true);
+    group.members[1].reference = true;
+
+    let stats = delete_duplicates(&[group], &eng, true, Disposition::Permanent);
+
+    assert_eq!(stats.files_deleted, 0);
+    assert_eq!(stats.files_skipped, 0);
+    assert!(
+        keep.exists() && dup.exists(),
+        "a locked folder keeps both copies"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn consolidate_moves_keeper_and_counts_bytes() {
     let dir = tmpdir("consmove");

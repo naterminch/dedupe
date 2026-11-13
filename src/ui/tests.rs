@@ -212,23 +212,46 @@ fn resetting_settings_keeps_the_live_folder_list() {
     assert!(s.folders[0].reference);
 }
 
+/// Posters and playback are ffmpeg's job; ffprobe only adds metadata. A
+/// missing ffprobe must not be reported as "no previews".
 #[test]
-fn select_all_duplicates_skips_keepers() {
+fn the_media_chip_reports_previews_on_ffmpeg_alone() {
+    use crate::ui::results::media_status_text;
+    assert_eq!(media_status_text(true, true, true).0, "Video previews on");
+    assert_eq!(media_status_text(true, true, false).0, "Video previews on");
+    assert_eq!(media_status_text(true, false, true).0, "No video previews");
+    assert_eq!(
+        media_status_text(false, false, false).0,
+        "Checking video support…"
+    );
+    assert!(
+        media_status_text(true, true, false).1.contains("ffprobe"),
+        "the ffmpeg-only tooltip should name the missing tool"
+    );
+}
+
+/// Ticking everything is a delete intent, so the copies a delete would never
+/// take stay unticked.
+#[test]
+fn select_all_duplicates_skips_keepers_and_locked_copies() {
+    let mut locked = member("c", 10, false, None);
+    locked.reference = true;
     let mut s = AppState {
         groups: vec![group(
             1,
             vec![
                 member("a", 10, true, None),
                 member("b", 10, false, None),
-                member("c", 10, false, None),
+                locked,
             ],
         )],
         ..AppState::default()
     };
     actions::reselect_all_dups(&mut s);
-    assert_eq!(s.selected.len(), 2);
+    assert_eq!(s.selected.len(), 1);
     assert!(s.selected.contains(&PathBuf::from("b")));
     assert!(!s.selected.contains(&PathBuf::from("a")));
+    assert!(!s.selected.contains(&PathBuf::from("c")));
 }
 
 #[test]
@@ -312,6 +335,31 @@ fn pending_targets_are_selected_duplicates_only() {
             ],
         )],
         selected: [PathBuf::from("keep"), PathBuf::from("dup")]
+            .into_iter()
+            .collect(),
+        ..AppState::default()
+    };
+    let targets = actions::pending_targets(&s);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].path, PathBuf::from("dup"));
+}
+
+/// Two copies of one group can sit in the same locked folder. Only one of
+/// them can be the keeper, and a tick on the other must still delete nothing.
+#[test]
+fn pending_targets_skip_locked_copies() {
+    let mut locked = member("backup/dup", 10, false, None);
+    locked.reference = true;
+    let s = AppState {
+        groups: vec![group(
+            1,
+            vec![
+                member("keep", 10, true, None),
+                member("dup", 10, false, None),
+                locked,
+            ],
+        )],
+        selected: [PathBuf::from("dup"), PathBuf::from("backup/dup")]
             .into_iter()
             .collect(),
         ..AppState::default()

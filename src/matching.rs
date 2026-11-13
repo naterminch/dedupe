@@ -32,6 +32,21 @@ pub struct GroupMember {
     pub fingerprint_res: Option<(u32, u32)>,
 }
 
+impl GroupMember {
+    /// Whether a delete may remove this copy: it is not the keeper, and it
+    /// does not live in a reference (locked) folder.
+    ///
+    /// Protection is a property of the member, not of the keep flag. A
+    /// reference folder's copies win the automatic keep decision
+    /// ([`ref_pool`]), but two copies of one group can sit inside the same
+    /// locked folder, and only one of them can be the keeper — the other one
+    /// used to look like an ordinary duplicate to every caller.
+    #[must_use]
+    pub fn deletable(&self) -> bool {
+        !self.keep && !self.reference
+    }
+}
+
 /// A set of identical files, ordered with the KEEP member first.
 ///
 /// Serialized manually (see below) so `reclaimable_bytes` is always
@@ -69,12 +84,19 @@ impl Group {
         self.members.iter().filter(|m| m.keep).count()
     }
 
-    /// Bytes that would be freed by deleting every non-keep member.
+    /// Copies a delete would actually remove — protected copies excluded, so
+    /// the count on screen matches what the delete would do.
+    #[must_use]
+    pub fn dup_count(&self) -> usize {
+        self.members.iter().filter(|m| m.deletable()).count()
+    }
+
+    /// Bytes that would be freed by deleting every deletable member.
     #[must_use]
     pub fn dup_bytes(&self) -> u64 {
         self.members
             .iter()
-            .filter(|m| !m.keep)
+            .filter(|m| m.deletable())
             .map(|m| m.size)
             .sum()
     }
