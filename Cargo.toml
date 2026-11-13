@@ -1,6 +1,6 @@
 [package]
 name = "dedupe"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Find duplicate files (including images and videos) by content hash, with media metadata comparison"
