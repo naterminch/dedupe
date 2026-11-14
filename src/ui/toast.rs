@@ -121,13 +121,16 @@ pub(crate) fn toast_layer() -> impl IntoElement {
                             } else {
                                 colors::BORDER
                             })
+                            // A toast floats over the page, so it is one of
+                            // the few surfaces that casts a shadow.
+                            .shadow_md()
                             .transition_all()
                             .duration(motion(timing::SLOW))
                             .starting_class("translate-y-3 opacity-0")
                             .ending_class("opacity-0")
                             .child(
                                 text(move || message.clone())
-                                    .text_size(px(text::CAPTION))
+                                    .text_size(px(text::BODY))
                                     .text_color(if error {
                                         colors::DANGER_TEXT
                                     } else {

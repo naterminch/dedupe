@@ -6,17 +6,17 @@
 
 use std::cell::Cell;
 
-use nsh_base::{number_input, radio, radio_group, tab, tabs};
 use nsh_core::prelude::*;
 
 use crate::cache;
 use crate::cli::{FindMode, MatchMode};
 use crate::ui::actions;
-use crate::ui::palette::{colors, radius, space, text};
+use crate::ui::palette::space;
 use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
-    bezel, bezel_core, caption, divider, fast_scroll, focus_ring, heading, help_dot, motion,
-    page_heading, panel_title, secondary_button, selection, timing, toggle_switch,
+    SelectItem, caption, card, description, divider, dropdown_trigger, fast_scroll, heading, icons,
+    number_field, number_text, option_select, panel_title, radio_segmented, secondary_button,
+    section_title, side_pane, side_tabs, toggle_switch,
 };
 use crate::ui_helpers::{counted, find_mode_caption, hash_caption};
 use crate::util;
@@ -123,205 +123,153 @@ fn settings_shape() -> SettingsShape {
 }
 
 fn nav() -> View {
-    view()
-        .flex_col()
-        .w(px(280.0))
-        .h_full()
-        .flex_shrink_0()
-        .gap(px(space::SM))
-        .p(px(space::LG))
-        .bg(colors::SIDEBAR)
-        .border_r_1()
-        .border_color(colors::BORDER)
-        .child(heading("Settings"))
-        .gap(px(2.0))
+    side_pane(NAV_WIDTH)
+        .gap(px(space::MD))
+        .px(px(space::SM))
+        .py(px(space::LG))
+        .child(view().px(px(space::SM)).child(section_title("Settings")))
         .child(view().child(dynamic(|| {
             // The chosen tab alone rebuilds these; a scan tick while Settings
             // is open would restart their hover and swallow presses.
             let tab = computed(|| app().with(|s| s.settings_tab));
-            let tab = tab.get();
-            tabs()
-                .w_full()
-                .gap(px(2.0))
-                .indicator_class("inset-x-0")
-                .indicator_style(|s| {
-                    s.rounded(px(radius::CONTROL))
-                        .bg(colors::ACCENT_WASH_STRONG)
-                })
-                .child(nav_item("General", SettingsTab::General, tab))
-                .child(nav_item("Preferences", SettingsTab::Preferences, tab))
+            side_tabs(
+                &[
+                    ("General", SettingsTab::General),
+                    ("Preferences", SettingsTab::Preferences),
+                ],
+                tab.get(),
+                actions::set_settings_tab,
+            )
         })))
 }
 
-fn nav_item(label: &'static str, which: SettingsTab, current: SettingsTab) -> impl IntoElement {
-    let active = which == current;
-    tab()
-        .selected(active)
-        .on_press(move |_: &()| actions::set_settings_tab(which))
-        .accessibility_label(label)
-        .w_full()
-        .px(px(space::MD))
-        .py(px(space::SM))
-        .child(
-            text(label)
-                .text_size(px(text::BODY))
-                .font_weight(if active {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::NORMAL
-                })
-                .text_color(if active {
-                    colors::ACCENT_INK
-                } else {
-                    colors::MUTED
-                }),
-        )
-}
+/// The settings nav's width: its two labels and the title, with room to
+/// spare, and every other point for the page.
+const NAV_WIDTH: f32 = 200.0;
 
-fn page_column(children: Vec<View>) -> View {
+/// A settings page: its title, then its sections in reading order, each
+/// split from the next by a full-width rule.
+fn page_column(
+    title: &'static str,
+    summary: &'static str,
+    sections: Vec<View>,
+    footer: View,
+) -> View {
     let mut column = view()
         .flex_col()
         .w_full()
-        .max_w(px(970.0))
-        .gap(px(space::XXXL))
-        .px(px(space::XXXL))
-        .py(px(space::XXL));
-    for child in children {
-        column = column.child(child);
+        .max_w(px(PAGE_MAX_W))
+        .gap(px(space::XXL))
+        .px(px(space::XXL))
+        .py(px(space::XXL))
+        .child(
+            view()
+                .flex_col()
+                .gap(px(space::XS))
+                .child(heading(title))
+                .child(description(summary)),
+        );
+    for section in sections {
+        column = column.child(divider()).child(section);
     }
-    column
+    column.child(footer)
 }
 
-/// A page's own heading: the title, then one line of what it governs. The
-/// upper-case copy of the title above it said the same word twice.
-fn header(title: &'static str, description: &'static str) -> View {
-    view()
-        .flex_col()
-        .gap(px(space::XS))
-        .child(page_heading(title))
-        .child(caption(description))
-}
+/// The widest a settings page grows: a label column and a panel of a
+/// comfortable measure. Wider, the switches drift away from their titles.
+const PAGE_MAX_W: f32 = 1040.0;
 
+/// The narrowest a row's name and description get before the control wraps
+/// under them, and the narrowest a section's panel gets before it wraps under
+/// its label column.
+const ROW_LABEL_MIN_W: f32 = 240.0;
+const PANEL_MIN_W: f32 = 360.0;
+
+/// The label column of a section: its title and what it governs.
+const SECTION_LABEL_W: f32 = 240.0;
+
+/// One row inside a section's panel: the setting's name over what it does,
+/// the control at the far end. A narrow window stacks the control under its
+/// label rather than pushing the row past the panel's edge.
 fn row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
-    // A narrow window stacks the control under its label rather than pushing
-    // the row past the card's edge.
     view()
         .flex_row()
         .flex_wrap()
         .w_full()
         .items_center()
         .justify_between()
-        .gap(px(16.0))
+        .gap(px(space::LG))
+        .px(px(space::LG))
+        .py(px(space::MD))
         .child(
             view()
-                .flex_row()
-                .items_center()
+                .flex_col()
                 .flex_1()
-                .min_w(px(0.0))
-                .gap(px(space::XS))
+                .min_w(px(ROW_LABEL_MIN_W))
+                .gap(px(space::XXS))
                 .child(panel_title(label))
-                .child(help_dot(hint)),
+                .child(caption(hint)),
         )
         .child(view().flex_shrink_0().child(control))
 }
 
-fn section(title: &'static str, description: &'static str, rows: Vec<View>) -> View {
-    let mut body = view().flex_col().w_full().gap(px(space::SM));
-    for (index, content) in rows.into_iter().enumerate() {
-        if index > 0 {
-            body = body.child(divider());
-        }
-        body = body.child(content);
-    }
-    bezel().w_full().child(
-        bezel_core()
-            .gap(px(space::MD))
-            .p(px(space::LG))
-            .child(panel_title(title))
-            .child(caption(description))
-            .child(body),
-    )
-}
-
-fn choice_chip(
-    label: &'static str,
-    active: bool,
-    on_press: impl Fn() + 'static,
-) -> impl IntoElement {
-    let (fill, border, content) = selection(active);
-    radio()
-        .checked(active)
-        .on_change(move |_: &bool| on_press())
-        .accessibility_label(label)
-        .px(px(space::SM))
-        .py(px(space::XS))
-        .rounded(px(radius::CONTROL))
-        .bg(fill)
-        .border_1()
-        .border_color(border)
-        // Choosing a different option cross-fades the pill instead of
-        // repainting it. The idle pill still answers the pointer and the
-        // keyboard: it looked inert without a hover or a focus ring.
-        .transition_colors()
-        .duration(motion(timing::FAST))
-        .hover(move |s| if active { s } else { s.bg(colors::ELEVATED) })
-        .active(|s| s.opacity(0.9))
-        .focus_visible(focus_ring)
-        .child(
-            text(label)
-                .text_size(px(text::CAPTION))
-                .font_weight(if active {
-                    FontWeight::SEMIBOLD
-                } else {
-                    FontWeight::MEDIUM
-                })
-                .text_color(content),
-        )
-}
-
-fn choices<const N: usize>(
-    options: [&'static str; N],
-    selected: usize,
-    on_pick: impl Fn(usize) + Clone + 'static,
-) -> View {
-    // The wrap row needs a definite width or flex-wrap hugs everything
-    // onto one line; every wrapper below therefore carries `w_full`.
-    let mut row = view()
-        .flex_row()
-        .flex_wrap()
-        .w_full()
-        .min_w(px(0.0))
-        .gap(px(4.0));
-    for (index, label) in options.iter().enumerate() {
-        let pick = on_pick.clone();
-        row = row.child(choice_chip(label, index == selected, move || pick(index)));
-    }
-    view()
-        .w_full()
-        .min_w(px(0.0))
-        .flex_col()
-        .child(radio_group().w_full().child(row))
-}
-
-/// Like [`row`], but for choice chips: the label and hint stack on top and
-/// the chips take the card's full width, so large sets (the 11 scan types)
-/// wrap onto several lines instead of overflowing the card edge.
+/// Like [`row`], but the control takes the panel's full width under its
+/// name: a set of segments that needs the room.
 fn choice_row(label: &'static str, hint: impl IntoReactive<SharedString>, control: View) -> View {
     view()
         .flex_col()
         .w_full()
         .min_w(px(0.0))
         .gap(px(space::SM))
+        .px(px(space::LG))
+        .py(px(space::MD))
         .child(
             view()
-                .flex_row()
-                .items_center()
-                .min_w(px(0.0))
-                .gap(px(space::XS))
+                .flex_col()
+                .gap(px(space::XXS))
                 .child(panel_title(label))
-                .child(help_dot(hint)),
+                .child(caption(hint)),
         )
         .child(control)
+}
+
+/// One section: a label column (title and what it governs) beside the
+/// panel that holds its rows. The column is never empty beside a tall panel:
+/// the description is the section's help.
+fn section(title: &'static str, summary: &'static str, rows: Vec<View>) -> View {
+    let mut panel = card().flex_1().min_w(px(PANEL_MIN_W));
+    for (index, content) in rows.into_iter().enumerate() {
+        if index > 0 {
+            panel = panel.child(view().px(px(space::LG)).child(divider()));
+        }
+        panel = panel.child(content);
+    }
+    view()
+        .flex_row()
+        .flex_wrap()
+        .w_full()
+        .items_start()
+        .gap(px(space::XL))
+        .child(
+            view()
+                .flex_col()
+                .w(px(SECTION_LABEL_W))
+                .flex_shrink_0()
+                .gap(px(space::XS))
+                .pt(px(space::MD))
+                .child(section_title(title))
+                .child(description(summary)),
+        )
+        .child(panel)
+}
+
+/// One of a few options, as a segmented control.
+fn choices<const N: usize>(
+    options: [&'static str; N],
+    selected: usize,
+    on_pick: impl Fn(usize) + Clone + 'static,
+) -> View {
+    radio_segmented(options, selected, on_pick)
 }
 
 /// A setting's control is the switch alone: the row already carries the
@@ -331,6 +279,7 @@ fn toggle(label: &'static str, value: bool, on_press: impl Fn() + 'static) -> Vi
     view().child(toggle_switch(value, label, on_press))
 }
 
+/// A number setting, saved as it changes.
 fn number(
     placeholder: &'static str,
     get: fn() -> String,
@@ -338,33 +287,41 @@ fn number(
     min: f64,
     max: f64,
 ) -> View {
-    view().w(px(150.0)).child(
-        number_input()
-            .value(move || get().trim().parse::<f64>().ok())
-            .min(min)
-            .max(max)
-            .step(1.0)
-            .placeholder(placeholder)
-            .on_change(move |next: &Option<f64>| {
-                set(match next {
-                    Some(value) if value.fract() == 0.0 => format!("{}", *value as i64),
-                    Some(value) => format!("{value}"),
-                    None => String::new(),
-                });
-                actions::save_prefs();
-            })
-            .input_style(|s| s.flex_1().text_center().text_color(colors::TEXT))
-            .decrement_button(text("−").text_color(colors::MUTED))
-            .increment_button(text("+").text_color(colors::MUTED))
-            .decrement_button_style(|s| s.w(px(22.0)).items_center().justify_center())
-            .increment_button_style(|s| s.w(px(22.0)).items_center().justify_center())
-            .flex_row()
-            .h(px(space::XXL))
-            .bg(colors::INSET)
-            .border_1()
-            .border_color(colors::BORDER)
-            .rounded(px(radius::CONTROL)),
+    number_field(
+        placeholder,
+        move || get().trim().parse::<f64>().ok(),
+        move |next| {
+            set(number_text(next));
+            actions::save_prefs();
+        },
+        (min, max),
+        128.0,
     )
+}
+
+/// What to find, as a select: eleven scan types do not fit a segmented
+/// control, and a wrapped one reads as two controls.
+fn find_choice(selected: usize) -> View {
+    let items: Vec<SelectItem> = FIND_LABELS
+        .iter()
+        .map(|label| SelectItem::new(*label, *label))
+        .collect();
+    let label = move || SharedString::from(FIND_LABELS[selected.min(FIND_LABELS.len() - 1)]);
+    view().child(option_select(
+        items,
+        "What to find",
+        move || Some(label()),
+        |picked: &Option<SharedString>| {
+            let Some(picked) = picked.as_deref() else {
+                return;
+            };
+            if let Some(index) = FIND_LABELS.iter().position(|label| *label == picked) {
+                app().update(|s| s.find_index = Some(index));
+                actions::save_prefs();
+            }
+        },
+        dropdown_trigger(icons::SEARCH, label),
+    ))
 }
 
 fn general_page() -> View {
@@ -373,62 +330,65 @@ fn general_page() -> View {
     let trash = app().with(|s| s.trash);
     let remember = app().with(|s| s.remember_folders);
     let wheel_page = app().with(|s| s.wheel_page);
-    page_column(vec![
-        header("General", "Everyday behavior and the local scan cache."),
-        section(
-            "Behavior",
-            "App-wide behavior for scans and deletions.",
-            vec![
-                row(
-                    "Move deleted files to trash",
-                    "Deleted duplicates go to the system trash so they can be restored.",
-                    toggle("Trash", trash, || {
-                        app().update(|s| s.trash = !s.trash);
-                        actions::save_prefs();
-                    }),
-                ),
-                row(
-                    "Remember scan folders",
-                    "Restore the last folder list the next time the app opens.",
-                    toggle("Remember", remember, || {
-                        app().update(|s| s.remember_folders = !s.remember_folders);
-                        actions::save_prefs();
-                    }),
-                ),
-                row(
-                    "Page-sized mouse wheel",
-                    "A wheel notch moves a whole page of the list instead of a few rows. Touchpads keep their own, finer scrolling.",
-                    toggle("Page", wheel_page, || {
-                        app().update(|s| s.wheel_page = !s.wheel_page);
-                        actions::save_prefs();
-                    }),
-                ),
-            ],
-        ),
-        section(
-            "Cache",
-            "Hashes and fingerprints cached between runs in ~/.dedupe/.",
-            vec![row(
-                "Cache on disk",
-                format!(
-                    "{} · {}",
-                    counted(files as u64, "file", "files"),
-                    util::human_bytes(bytes)
-                ),
-                secondary_button("Clear caches", actions::clear_cache),
-            )],
-        ),
-        section(
-            "Reset",
-            "Put the settings on this page and on Preferences back to their defaults.",
-            vec![row(
-                "Reset all settings",
-                "Restores scan defaults, filters, toggles and the theme. Folders and current results stay.",
-                secondary_button("Reset to defaults", actions::reset_settings),
-            )],
-        ),
+    page_column(
+        "General",
+        "Everyday behavior and the local scan cache.",
+        vec![
+            section(
+                "Behavior",
+                "App-wide behavior for scans and deletions.",
+                vec![
+                    row(
+                        "Move deleted files to trash",
+                        "Deleted duplicates go to the system trash so they can be restored.",
+                        toggle("Trash", trash, || {
+                            app().update(|s| s.trash = !s.trash);
+                            actions::save_prefs();
+                        }),
+                    ),
+                    row(
+                        "Remember scan folders",
+                        "Restore the last folder list the next time the app opens.",
+                        toggle("Remember", remember, || {
+                            app().update(|s| s.remember_folders = !s.remember_folders);
+                            actions::save_prefs();
+                        }),
+                    ),
+                    row(
+                        "Page-sized mouse wheel",
+                        "A wheel notch moves a whole page of the list instead of a few rows. Touchpads keep their own, finer scrolling.",
+                        toggle("Page", wheel_page, || {
+                            app().update(|s| s.wheel_page = !s.wheel_page);
+                            actions::save_prefs();
+                        }),
+                    ),
+                ],
+            ),
+            section(
+                "Cache",
+                "Hashes and fingerprints cached between runs in ~/.dedupe/.",
+                vec![row(
+                    "Cache on disk",
+                    format!(
+                        "{} · {}",
+                        counted(files as u64, "file", "files"),
+                        util::human_bytes(bytes)
+                    ),
+                    secondary_button("Clear caches", actions::clear_cache),
+                )],
+            ),
+            section(
+                "Reset",
+                "Put the settings on this page and on Preferences back to their defaults.",
+                vec![row(
+                    "Reset all settings",
+                    "Restores scan defaults, filters, toggles and the theme. Folders and current results stay.",
+                    secondary_button("Reset to defaults", actions::reset_settings),
+                )],
+            ),
+        ],
         view().child(caption(cache_msg)),
-    ])
+    )
 }
 
 fn preferences_page() -> View {
@@ -438,13 +398,10 @@ fn preferences_page() -> View {
     let music = mode == FindMode::Music;
     let exact = app().with(|s| s.exact);
 
-    let mut scan_rows = vec![choice_row(
+    let mut scan_rows = vec![row(
         "What to find",
         find_mode_caption(Some(find_index)),
-        choices(FIND_LABELS, find_index, |index| {
-            app().update(|s| s.find_index = Some(index));
-            actions::save_prefs();
-        }),
+        find_choice(find_index),
     )];
     if mode == FindMode::BigFiles {
         scan_rows.push(row(
@@ -462,26 +419,27 @@ fn preferences_page() -> View {
         ));
     }
 
-    let mut page = page_column(vec![
-        header("Preferences", "Defaults for the next scan."),
-        section(
-            "Scan type",
-            "Choose what the next scan looks for.",
-            scan_rows,
-        ),
-    ]);
-
+    let mut sections = vec![section(
+        "Scan type",
+        "What the next scan looks for.",
+        scan_rows,
+    )];
     if duplicates {
-        page = page.child(duplicates_section());
+        sections.push(duplicates_section());
         if !exact {
-            page = page.child(media_section());
+            sections.push(media_section());
         }
     }
     if music {
-        page = page.child(music_section());
+        sections.push(music_section());
     }
-    page.child(system_section())
-        .child(caption("Changes save automatically to dedupe.json."))
+    sections.push(system_section());
+    page_column(
+        "Preferences",
+        "Defaults for the next scan. Changes save as you make them.",
+        sections,
+        view().child(caption("Saved to dedupe.json in ~/.dedupe/.")),
+    )
 }
 
 fn duplicates_section() -> View {
@@ -638,7 +596,7 @@ fn system_section() -> View {
             choice_row(
                 "Default keep",
                 "Which copy a new scan keeps when duplicates are found.",
-                choices(KEEP_LABELS, keep_index, actions::apply_keep_mode),
+                choices(KEEP_LABELS, keep_index, actions::set_keep_rule),
             ),
             row(
                 "Sort by most reclaimable space",

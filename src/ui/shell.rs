@@ -2,20 +2,20 @@
 //! bottom tip card.
 //!
 //! Folder protection, removal and filtering live on the rows themselves; the
-//! scan controls live in the workspace's composer, so the sidebar stays a
+//! scan controls live in the workspace's setup form, so the sidebar stays a
 //! quiet index of places.
 
 use std::cell::Cell;
 
-use nsh_base::button;
 use nsh_core::prelude::*;
 
 use crate::ui::actions;
-use crate::ui::palette::{colors, radius, space, text};
+use crate::ui::palette::{size, space};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    caption, card, eyebrow, fast_scroll, field, focus_ring, heading, hint, icon, icon_ghost_button,
-    icons, motion, panel_title, timing, toggle_switch,
+    Availability, Ink, RowEmphasis, body, caption, fast_scroll, field, field_label, glyph, hint,
+    icon_ghost_button, icons, list_row, notice, panel_title, row_button, row_icon_button,
+    side_pane, toggle_switch, wordmark,
 };
 use crate::ui_helpers::fit_text;
 
@@ -31,16 +31,17 @@ pub(crate) fn reset_scroll() {
     FOLDERS_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
 }
 
+/// The folder pane's width: a long path stays legible to its last folder at
+/// the default text size, and the work area keeps the surplus.
+const SIDEBAR_WIDTH: f32 = 264.0;
+
+/// About how many characters of a path fit a folder row's caption line at
+/// 12 pt in the pane's width; the front is cut beyond it.
+const FOLDER_PATH_CHARS: usize = 24;
+
 /// The left column of the main flow.
 pub(crate) fn sidebar() -> impl IntoElement {
-    view()
-        .flex_col()
-        .w(px(312.0))
-        .h_full()
-        .flex_shrink_0()
-        .bg(colors::SIDEBAR)
-        .border_r_1()
-        .border_color(colors::BORDER)
+    side_pane(SIDEBAR_WIDTH)
         .child(header_block())
         .child(fast_scroll(
             &FOLDERS_AT,
@@ -53,8 +54,9 @@ pub(crate) fn sidebar() -> impl IntoElement {
                 .child(
                     view()
                         .px(px(space::SM))
-                        .pt(px(space::MD))
-                        .child(eyebrow("Folders")),
+                        .pt(px(space::LG))
+                        .pb(px(space::XS))
+                        .child(field_label("Folders")),
                 )
                 .child(folder_list()),
         ))
@@ -73,12 +75,12 @@ fn header_block() -> impl IntoElement {
                 .flex_row()
                 .items_center()
                 .justify_between()
-                .child(heading("dedupe"))
-                .child(view().flex_row().gap(px(2.0)).child(icon_ghost_button(
+                .child(wordmark())
+                .child(icon_ghost_button(
                     icons::SEARCH,
                     "Filter folders",
                     toggle_filter,
-                ))),
+                )),
         )
         .child(view().child(dynamic(|| {
             // Only the filter opening rebuilds this: reading the app signal
@@ -86,7 +88,7 @@ fn header_block() -> impl IntoElement {
             // under the pointer.
             let open = computed(|| app().with(|s| s.folder_filter.is_some()));
             if open.get() {
-                view().child(filter_field())
+                view().flex_row().child(filter_field())
             } else {
                 view()
             }
@@ -112,17 +114,15 @@ fn filter_field() -> impl IntoElement {
     )
 }
 
-/// The "New chat"-style rows: add, scan and the trash switch, each a full
-/// quiet row with a blue status pill where one exists.
+/// The pane's own actions: browse, clear, and the trash switch.
 fn quick_actions() -> impl IntoElement {
     view()
         .flex_col()
-        .gap(px(2.0))
-        .child(side_row(
+        .gap(px(space::XXS))
+        .child(row_button(
             icons::FOLDER,
             "Browse for a folder",
-            None,
-            RowState::Ready,
+            Availability::Ready,
             actions::browse_folder,
         ))
         // Clearing the list only means something while it has folders.
@@ -130,14 +130,13 @@ fn quick_actions() -> impl IntoElement {
             // Folder changes alone flip this row: a scan tick must not rebuild
             // it under the pointer, or its hover restarts and its press drops.
             let any = computed(|| app().with(|s| !s.folders.is_empty()));
-            side_row(
+            row_button(
                 icons::CLEAR,
                 "Remove all folders",
-                None,
                 if any.get() {
-                    RowState::Ready
+                    Availability::Ready
                 } else {
-                    RowState::Disabled
+                    Availability::Disabled
                 },
                 actions::remove_all_folders,
             )
@@ -146,29 +145,21 @@ fn quick_actions() -> impl IntoElement {
 }
 
 /// The trash setting as the control it is: a switch, the same one Settings
-/// draws for the same field. The row used to be a button with an "On" chip,
-/// which is a second visual language for one state — and a chip that looked
-/// pressable inside a pressable row.
+/// draws for the same field.
 fn trash_row() -> impl IntoElement {
     view().child(dynamic(|| {
         // The switch alone rebuilds this row, not the scan's progress.
         let trash = computed(|| app().with(|s| s.trash));
-        let trash = trash.get();
         view()
             .flex_row()
             .items_center()
             .gap(px(space::SM))
             .w_full()
+            .min_h(px(size::CONTROL))
             .px(px(space::SM))
-            .py(px(space::XS))
-            .child(icon(icons::TRASH, 16.0, colors::MUTED))
-            .child(
-                text("Trash deletes")
-                    .flex_1()
-                    .text_size(px(text::BODY))
-                    .text_color(colors::TEXT),
-            )
-            .child(toggle_switch(trash, "Trash deletes", toggle_trash))
+            .child(glyph(icons::TRASH, Ink::Muted))
+            .child(body("Trash deletes").flex_1())
+            .child(toggle_switch(trash.get(), "Trash deletes", toggle_trash))
     }))
 }
 
@@ -177,64 +168,11 @@ fn toggle_trash() {
     actions::save_prefs();
 }
 
-/// Whether a sidebar row can be pressed right now.
-///
-/// Two variants instead of a bare `bool`: `RowState::Disabled` names the state
-/// the argument means, so `side_row(..)` call sites stay readable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowState {
-    Ready,
-    Disabled,
-}
-
-/// One quiet sidebar action: icon, label and an optional trailing badge.
-///
-/// A [`RowState::Disabled`] row is dimmed, loses its hover and refuses
-/// presses; its accessible name stays either way.
-fn side_row(
-    markup: &'static str,
-    label: &'static str,
-    trailing: Option<View>,
-    state: RowState,
-    on_press: impl Fn() + 'static,
-) -> View {
-    let ready = state == RowState::Ready;
-    let mut row = button()
-        .on_press(on_press)
-        .disabled(!ready)
-        .accessibility_label(label)
-        .flex_row()
-        .items_center()
-        .gap(px(space::SM))
-        .w_full()
-        .px(px(space::SM))
-        .py(px(space::XS))
-        .rounded(px(radius::CONTROL))
-        .opacity(if ready { 1.0 } else { 0.45 })
-        .transition_colors()
-        .duration(motion(timing::FAST))
-        .ease_out()
-        .hover(move |s| if ready { s.bg(colors::PANE) } else { s })
-        .active(|s| s.bg(colors::ELEVATED))
-        .focus_visible(focus_ring)
-        .child(icon(markup, 16.0, colors::MUTED))
-        .child(
-            text(label)
-                .flex_1()
-                .text_size(px(text::BODY))
-                .text_color(colors::TEXT),
-        );
-    if let Some(trailing) = trailing {
-        row = row.child(trailing);
-    }
-    view().child(row)
-}
-
 /// Folders the user typed, dropped or browsed for. The filter, when open,
 /// narrows the list by path; rows address the live list by path so a
 /// filtered view never removes the wrong folder.
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(2.0)).child(dynamic(|| {
+    view().flex_col().gap(px(space::XXS)).child(dynamic(|| {
         // The list and the filter rebuild the rows; a scan tick must not,
         // or the Protect and Remove buttons under the pointer restart their
         // hover and never report a press.
@@ -250,12 +188,11 @@ fn folder_list() -> impl IntoElement {
             view()
                 .flex_col()
                 .gap(px(space::XXS))
-                .px(px(space::SM))
-                .py(px(space::SM))
+                .p(px(space::SM))
                 .child(caption("No folders yet"))
                 .child(caption("Drop a folder on the window, or press Browse."))
         } else {
-            view().flex_col().gap(px(2.0)).children(
+            view().flex_col().gap(px(space::XXS)).children(
                 rows.into_iter()
                     .map(|(path, reference)| folder_row(path, reference)),
             )
@@ -283,113 +220,65 @@ fn filtered_folders() -> Vec<FolderEntry> {
     })
 }
 
-/// One folder row. It takes the row's values rather than a live signal: the
-/// list rebuilds when a folder changes, never on a scan tick.
+/// One folder row: the folder's name in ink over its full path, cut from the
+/// front so the end that tells two folders apart stays. A protected folder's
+/// row is lifted and its lock drawn closed in ink. It takes the row's values
+/// rather than a live signal: the list rebuilds when a folder changes, never
+/// on a scan tick.
 fn folder_row(path: String, reference: bool) -> View {
-    let shown = fit_text(&path, 42);
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(space::XS))
-        .px(px(space::SM))
-        .py(px(space::XS))
-        .rounded(px(radius::CONTROL))
-        .bg(if reference {
-            colors::PANE
+    let folder_name = std::path::Path::new(&path)
+        .file_name()
+        .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+    let shown = fit_text(&path, FOLDER_PATH_CHARS);
+    list_row(if reference {
+        RowEmphasis::Lifted
+    } else {
+        RowEmphasis::Plain
+    })
+    .child(glyph(
+        icons::FOLDER,
+        if reference { Ink::Text } else { Ink::Muted },
+    ))
+    .child(
+        view()
+            .flex_col()
+            .flex_1()
+            .min_w(px(0.0))
+            .child(panel_title(folder_name).truncate())
+            .child(caption(shown).truncate())
+            .tooltip(hint(path.clone())),
+    )
+    .child(row_icon_button(
+        icons::LOCK,
+        if reference {
+            "Unprotect folder"
         } else {
-            colors::SIDEBAR
-        })
-        .transition_colors()
-        .duration(motion(timing::FAST))
-        .hover(|s| s.bg(colors::PANE))
-        .child(icon(
-            icons::FOLDER,
-            15.0,
-            if reference {
-                colors::ACCENT
-            } else {
-                colors::MUTED
-            },
-        ))
-        .child(
-            view()
-                .flex_1()
-                .min_w(px(0.0))
-                .child(
-                    text(shown)
-                        .truncate()
-                        .text_size(px(text::BODY))
-                        .text_color(colors::TEXT),
-                )
-                .tooltip(hint(path.clone())),
-        )
-        .child(row_ghost(
-            icons::LOCK,
-            if reference {
-                "Unprotect folder"
-            } else {
-                "Protect folder"
-            },
-            if reference {
-                colors::ACCENT
-            } else {
-                colors::MUTED
-            },
-            {
-                let path = path.clone();
-                move || actions::toggle_reference_path(&path)
-            },
-        ))
-        .child(row_ghost(icons::CLEAR, "Remove folder", colors::MUTED, {
+            "Protect folder"
+        },
+        if reference { Ink::Text } else { Ink::Muted },
+        {
+            let path = path.clone();
+            move || actions::toggle_reference_path(&path)
+        },
+    ))
+    .child(row_icon_button(
+        icons::CLEAR,
+        "Remove folder",
+        Ink::Muted,
+        {
             let path = path.clone();
             move || actions::remove_folder_path(&path)
-        }))
+        },
+    ))
 }
 
-/// A small borderless icon action for a folder row.
-fn row_ghost(
-    markup: &'static str,
-    label: &'static str,
-    tint: AdaptiveColor,
-    on_press: impl Fn() + 'static,
-) -> View {
-    view()
-        .flex_shrink_0()
-        .child(
-            button()
-                .on_press(on_press)
-                .accessibility_label(label)
-                .flex_row()
-                .items_center()
-                .justify_center()
-                .w(px(26.0))
-                .h(px(24.0))
-                .rounded(px(radius::CONTROL))
-                .transition_colors()
-                .duration(motion(timing::FAST))
-                .ease_out()
-                .hover(|s| s.bg(colors::ELEVATED))
-                .active(|s| s.opacity(0.9))
-                .focus_visible(focus_ring)
-                .hit_slop(EdgeInsets::all(px(4.0)))
-                .child(icon(markup, 14.0, tint)),
-        )
-        .tooltip(hint(label))
-}
-
-/// The card at the bottom: what the lock on a folder row does.
-///
-/// It used to end with an arrow into Settings, which has no protection
-/// control at all — the control led nowhere. A sentence that points at the
-/// real control beats an affordance that cannot do the thing it hints at.
+/// The note at the bottom: what the lock on a folder row does. A sentence
+/// that points at the real control beats an affordance that cannot do the
+/// thing it hints at.
 fn tip_card() -> impl IntoElement {
-    view().px(px(space::MD)).pb(px(space::MD)).child(
-        card()
-            .gap(px(space::XS))
-            .p(px(space::MD))
-            .child(panel_title("Protect the originals"))
-            .child(caption(
-                "Press the lock on a folder row: its copies win the keep decision, and nothing inside it is ever deleted.",
-            )),
+    view().px(px(space::SM)).pb(px(space::MD)).child(
+        notice().child(panel_title("Protect the originals")).child(caption(
+            "Press the lock on a folder row: its copies win the keep decision, and nothing inside it is ever deleted.",
+        )),
     )
 }

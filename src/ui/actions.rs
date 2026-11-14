@@ -13,8 +13,10 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
+use crate::matching::GroupMember;
 use crate::ui::state::{
-    AppState, AppView, FolderEntry, ReportSnapshot, ScanStatus, SettingsTab, app, scan_status,
+    AppState, AppView, Cleared, FolderEntry, ReportSnapshot, ScanStatus, SettingsTab, app,
+    scan_status,
 };
 use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, counted, find_mode, image_hash_algo, is_no_limit, match_mode};
@@ -165,14 +167,17 @@ pub(crate) fn drop_folders(uris: &[String]) {
     add_folder_paths(folders);
 }
 
-/// Escape outside a text input: close the delete confirmation when it is
-/// open, otherwise leave the Settings page when it is open.
+/// Escape outside a text input: close the open confirmation (delete or
+/// consolidate), otherwise leave the Settings page when it is open.
 pub(crate) fn escape_leaves_settings() {
     let was_settings = app().with_untracked(|s| s.view == AppView::Settings);
-    let confirming = app().with_untracked(|s| s.confirm_delete);
+    let confirming = app().with_untracked(|s| s.confirm_delete || s.consolidating);
     app().update(|s| {
         if s.confirm_delete {
             s.confirm_delete = false;
+        } else if s.consolidating {
+            s.consolidating = false;
+            s.consolidate_dest = None;
         } else if s.view == AppView::Settings {
             s.view = AppView::Main;
         }
@@ -633,8 +638,8 @@ pub(crate) fn stop_scan() {
     });
 }
 
-/// Leave a finished scan for the first-run page, where the composer and the
-/// mode pills set up the next run. Only the results go: the folders and the
+/// Leave a finished scan for the setup page, where the scan form sets up the
+/// next run. Only the results go: the folders and the
 /// prefs stay, so going back costs nothing.
 pub(crate) fn back_to_setup() {
     if app().with_untracked(|s| s.scanning) {
@@ -655,6 +660,7 @@ pub(crate) fn back_to_setup() {
         s.base_groups.clear();
         s.mode_result = None;
         s.selected.clear();
+        s.cleared = None;
         s.collapsed.clear();
         s.playing = None;
         s.group_limit = crate::ui::state::GROUP_PAGE;
@@ -723,9 +729,11 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
             s.groups.clear();
             s.base_groups.clear();
             s.selected.clear();
+            s.cleared = None;
             s.collapsed.clear();
             s.playing = None;
             s.consolidate_dest = None;
+            s.consolidating = false;
             s.group_limit = crate::ui::state::GROUP_PAGE;
             s.mode_limit = crate::ui::state::GROUP_PAGE;
             s.dup_files = findings as u64;
@@ -764,7 +772,9 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         // Fresh results: disarm any pending consolidate from last scan and
         // drop a confirmation that previewed those paths.
         s.consolidate_dest = None;
+        s.consolidating = false;
         s.confirm_delete = false;
+        s.cleared = None;
         s.min_sim = s.scan_similarity;
         s.group_limit = crate::ui::state::GROUP_PAGE;
         // One display ordering for the whole scan (honors the sort toggle).
@@ -793,7 +803,12 @@ fn apply_output(generation: u64, out: pipeline::ScanOutput) {
         for e in &out.cache_save_errors {
             s.status.push_str(&format!(" (cache write failed: {e})"));
         }
-        crate::ui::toast::notify(s.status.clone(), false);
+        // The page itself shows the scan's outcome (its groups or the
+        // nothing-found card) and the status line repeats it; only a problem
+        // the page does not show earns a toast.
+        if !out.cache_save_errors.is_empty() {
+            crate::ui::toast::notify(s.status.clone(), true);
+        }
         // Preview strips are per-scan too: paths are gone, so drop frames
         // and in-flight flags.
         s.posters.clear();
@@ -1075,7 +1090,7 @@ pub(crate) fn apply_sim_input(raw: &str) {
 /// Promote one member to keeper of its group (per-group decision).
 ///
 /// Member order never changes here: the grid keeps every card in place and
-/// only the highlight (KEEP/DUP badge + border) moves. Ticks outside the
+/// only the highlight (the keeper/selected badge and edge) moves. Ticks outside the
 /// group are left alone too — a keeper pick says nothing about the other
 /// groups' selections, and re-ticking them all would churn the whole list.
 pub(crate) fn set_keeper(group_index: usize, path: &Path) {
@@ -1094,9 +1109,13 @@ pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
     }
     for member in group.members.iter_mut() {
         if member.keep {
-            // The retiring keeper is a duplicate again, ticked like every
-            // other duplicate in its group — unless it sits in a locked
-            // folder, where a tick means nothing.
+            // "Keep this one instead" keeps one copy per group, so the
+            // retiring keeper becomes a duplicate again, ticked like every
+            // other one in its group — unless it sits in a locked folder,
+            // where a tick means nothing. The swap is never silent: the
+            // tile turns amber with the word Delete, the Reclaimable
+            // figure rises, and the confirmation lists the copy. One untick
+            // ("Keep too") takes it back off the list.
             member.keep = false;
             if !member.reference {
                 s.selected.insert(member.path.clone());
@@ -1110,40 +1129,18 @@ pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
     sync_keep_to_base(s);
     // Keeper swap changes which bytes count as reclaimable.
     recount(s);
+    // The keeper the open confirmation lists has changed: rebuild it even
+    // though the tick count did not move.
+    s.confirm_rev += 1;
     // Keeper change: disarm a pending consolidate (stale paths).
     s.consolidate_dest = None;
 }
 
-/// Apply a new global keep mode to the current results (no rescan).
-pub(crate) fn apply_keep_mode(index: usize) {
-    app().update(|s| {
-        s.keep_index = Some(index);
-        let keep = match index {
-            1 => crate::matching::KeepMode::Smallest,
-            2 => crate::matching::KeepMode::Newest,
-            3 => crate::matching::KeepMode::Oldest,
-            4 => crate::matching::KeepMode::BestQuality,
-            _ => crate::matching::KeepMode::First,
-        };
-        crate::matching::reassign_keepers(&mut s.groups, keep);
-        reselect_all_dups(s);
-        // New keepers everywhere: disarm a pending consolidate (stale paths).
-        s.consolidate_dest = None;
-        let name = [
-            "First found",
-            "Smallest",
-            "Newest",
-            "Oldest",
-            "Best quality",
-        ][index.min(4)];
-        s.status = format!(
-            "Keep mode: {name} applied to {}.",
-            counted(s.groups.len() as u64, "group", "groups")
-        );
-        sync_keep_to_base(s);
-        // New keepers everywhere: re-apply the display order once, here.
-        sort_groups(s);
-    });
+/// Set the keep rule the next scan applies. Results already on screen keep
+/// their keepers and ticks: re-picking them here would silently undo every
+/// choice the user made while reviewing.
+pub(crate) fn set_keep_rule(index: usize) {
+    app().update(|s| s.keep_index = Some(index));
     save_prefs();
 }
 
@@ -1265,48 +1262,50 @@ pub(crate) fn pending_targets(s: &AppState) -> Vec<file_actions::DeleteTarget> {
     out
 }
 
-/// Groups drawn in the delete confirmation before it summarises the rest.
-pub(crate) const CONFIRM_GROUPS: usize = 6;
-/// Files drawn per group in the delete confirmation.
-pub(crate) const CONFIRM_ROWS: usize = 4;
-
-/// One group's line in the delete confirmation: the keeper that stays, the
-/// ticked duplicates that go and the group's total bytes.
-pub(crate) struct ConfirmGroup {
-    pub(crate) index: usize,
-    pub(crate) keeper: String,
-    pub(crate) rows: Vec<PathBuf>,
-    pub(crate) hidden_rows: usize,
+/// What a delete would take right now: the same set as [`pending_targets`],
+/// counted without building it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Ticked {
+    pub(crate) count: usize,
     pub(crate) bytes: u64,
 }
 
-/// Per-group dry run behind the delete confirmation, in display order, plus
-/// the number of further groups with ticked files beyond [`CONFIRM_GROUPS`].
-///
-/// The dialog caps what it lists so a huge selection stays readable; the
-/// counts it shows stay exact (`rows + hidden_rows`).
-pub(crate) fn confirm_groups(s: &AppState) -> (Vec<ConfirmGroup>, usize) {
+pub(crate) fn ticked(s: &AppState) -> Ticked {
+    s.groups
+        .iter()
+        .flat_map(|g| &g.members)
+        .filter(|m| m.deletable() && s.selected.contains(&m.path))
+        .fold(Ticked::default(), |t, m| Ticked {
+            count: t.count + 1,
+            bytes: t.bytes + m.size,
+        })
+}
+
+/// Groups listed in the delete confirmation. Every group with a marked copy
+/// is listed, and every copy within it: the confirmation is the last look
+/// before files go, so it may hide nothing the review screen shows.
+pub(crate) struct ConfirmGroup {
+    pub(crate) index: usize,
+    pub(crate) keeper: String,
+    pub(crate) rows: Vec<GroupMember>,
+    pub(crate) bytes: u64,
+    pub(crate) similarity: Option<f64>,
+}
+
+/// Per-group dry run behind the delete confirmation, in display order.
+pub(crate) fn confirm_groups(s: &AppState) -> Vec<ConfirmGroup> {
     let mut groups = Vec::new();
-    let mut qualifying = 0usize;
     for g in &s.groups {
         let mut rows = Vec::new();
-        let mut count = 0usize;
         let mut bytes = 0u64;
         for m in &g.members {
             if !m.deletable() || !s.selected.contains(&m.path) {
                 continue;
             }
-            count += 1;
             bytes += m.size;
-            if count <= CONFIRM_ROWS {
-                rows.push(m.path.clone());
-            }
+            rows.push(m.clone());
         }
-        if count == 0 {
-            continue;
-        }
-        qualifying += 1;
-        if groups.len() >= CONFIRM_GROUPS {
+        if rows.is_empty() {
             continue;
         }
         let keeper = g
@@ -1324,12 +1323,11 @@ pub(crate) fn confirm_groups(s: &AppState) -> (Vec<ConfirmGroup>, usize) {
             index: g.index,
             keeper,
             rows,
-            hidden_rows: count.saturating_sub(CONFIRM_ROWS),
             bytes,
+            similarity: g.similarity,
         });
     }
-    let hidden_groups = qualifying.saturating_sub(groups.len());
-    (groups, hidden_groups)
+    groups
 }
 
 /// The Delete button's job: open the confirmation for the ticked duplicates.
@@ -1338,7 +1336,7 @@ pub(crate) fn request_delete() {
     let state = app();
     if state.with_untracked(|s| pending_targets(s).is_empty()) {
         state.update(|s| {
-            s.status = "Tick the duplicate copies you want deleted first.".to_string();
+            s.status = "Mark the copies you want deleted first.".to_string();
         });
         return;
     }
@@ -1364,7 +1362,7 @@ pub(crate) fn perform_delete() {
     let targets = state.with_untracked(pending_targets);
     if targets.is_empty() {
         state.update(|s| {
-            s.status = "Tick the duplicate copies you want deleted first.".to_string();
+            s.status = "Mark the copies you want deleted first.".to_string();
         });
         return;
     }
@@ -1372,18 +1370,20 @@ pub(crate) fn perform_delete() {
     let hash = state.with_untracked(|s| s.last_hash);
     state.update(|s| s.status = "Deleting…".to_string());
     app_spawn(async move {
+        let disposition = if trash {
+            file_actions::Disposition::Trash
+        } else {
+            file_actions::Disposition::Permanent
+        };
         let outcome = blocking(move || {
             let engine = hashing::HashEngine::new(hash);
-            let disposition = if trash {
-                file_actions::Disposition::Trash
-            } else {
-                file_actions::Disposition::Permanent
-            };
             file_actions::delete_targets(&targets, &engine, disposition)
         })
         .await;
         let Ok(outcome) = outcome else {
-            app().update(|s| s.status = "Delete failed: worker stopped.".to_string());
+            app().update(|s| {
+                s.status = "The delete stopped unexpectedly; nothing more was removed.".to_string();
+            });
             return;
         };
         app().update(|s| {
@@ -1406,7 +1406,6 @@ pub(crate) fn perform_delete() {
             }
             // Deleted paths are gone: disarm a pending consolidate.
             s.consolidate_dest = None;
-            let verb = if trash { "Moved to trash" } else { "Deleted" };
             // Trash receipts enable one-step undo; permanent deletes cannot
             // be undone, so any stale receipt is dropped.
             if trash {
@@ -1414,21 +1413,79 @@ pub(crate) fn perform_delete() {
             } else {
                 s.last_trashed.clear();
             }
+            if !outcome.deleted.is_empty() {
+                s.cleared = Some(Cleared::add(
+                    s.cleared,
+                    outcome.deleted.len() as u64,
+                    outcome.bytes_freed,
+                    disposition,
+                ));
+            }
             recount(s);
+            let file_name = |p: &Path| {
+                p.file_name().map_or_else(
+                    || p.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                )
+            };
             let failed = match outcome.failures.first() {
-                Some((_, err)) => format!(", {} failed ({err})", outcome.failures.len()),
+                Some((_, err)) => format!(
+                    "; {} could not be removed: {err}",
+                    counted(outcome.failures.len() as u64, "file", "files"),
+                ),
                 None => String::new(),
             };
-            s.status = format!(
-                "{verb} {} ({} freed); {} skipped{failed}.",
-                counted(outcome.deleted.len() as u64, "file", "files"),
-                util::human_bytes(outcome.bytes_freed),
-                outcome.skipped.len()
-            );
-            crate::ui::toast::notify(s.status.clone(), !outcome.failures.is_empty());
+            // A copy that changed since the scan stays exactly where it was:
+            // name the count, the first file, and the reason, so the sentence
+            // is actionable without opening anything.
+            let failed_paths: HashSet<&PathBuf> = outcome.failures.iter().map(|(p, _)| p).collect();
+            let changed: Vec<&PathBuf> = outcome
+                .skipped
+                .iter()
+                .filter(|p| !failed_paths.contains(*p))
+                .collect();
+            let skipped = match changed.first() {
+                Some(path) => format!(
+                    "; {} had changed since the scan, so {} stayed where {} {} — {}",
+                    counted(changed.len() as u64, "file", "files"),
+                    if changed.len() == 1 { "it" } else { "they" },
+                    if changed.len() == 1 { "it" } else { "they" },
+                    if changed.len() == 1 { "is" } else { "are" },
+                    file_name(path),
+                ),
+                None => String::new(),
+            };
+            let files = counted(outcome.deleted.len() as u64, "file", "files");
+            let bytes = util::human_bytes(outcome.bytes_freed);
+            // The trash keeps the space until it is emptied: a trash delete
+            // moves bytes, only a permanent one frees them.
+            s.status = if trash {
+                format!("Moved {files} to the trash ({bytes}){skipped}{failed}.")
+            } else {
+                format!("Deleted {files} ({bytes} freed){skipped}{failed}.")
+            };
+            // With every group gone the cleared card says the same thing on
+            // the page; a toast on top would only repeat it.
+            let problems = !outcome.failures.is_empty() || !outcome.skipped.is_empty();
+            if problems || !s.groups.is_empty() {
+                crate::ui::toast::notify(s.status.clone(), !outcome.failures.is_empty());
+            }
         });
     });
 }
+
+/// Whether this platform can put trashed files back: `trash::os_limited`
+/// (list/restore) exists on Windows and Freedesktop-trash Unix only, so the
+/// app offers Undo there and nowhere else.
+pub(crate) const CAN_RESTORE: bool = cfg!(any(
+    target_os = "windows",
+    all(
+        unix,
+        not(target_os = "macos"),
+        not(target_os = "ios"),
+        not(target_os = "android")
+    )
+));
 
 /// Restore the last trash run (undo). Permanent deletes have no receipt and
 /// cannot be restored. Restored files reappear on disk; press Scan to
@@ -1475,21 +1532,29 @@ pub(crate) fn undo_delete() {
                 Ok(result) => result,
                 Err(e) => Err(format!("restore worker stopped: {e}")),
             };
-            app().update(|s| match restored {
-                Ok(0) => {
-                    s.status = "Nothing to restore — the trash was already emptied.".to_string();
-                    s.last_trashed.clear();
+            app().update(|s| {
+                match restored {
+                    Ok(0) => {
+                        s.status =
+                            "Nothing to restore — the trash was already emptied.".to_string();
+                        s.last_trashed.clear();
+                    }
+                    Ok(n) => {
+                        s.status = format!(
+                            "Restored {}. Scan again to see them in the list.",
+                            counted(n as u64, "file", "files")
+                        );
+                        s.last_trashed.clear();
+                        if s.cleared.is_some() {
+                            s.cleared = Some(Cleared::Restored { files: n as u64 });
+                        }
+                    }
+                    Err(e) => {
+                        s.status = format!("Restore failed: {e}");
+                    }
                 }
-                Ok(n) => {
-                    s.status = format!(
-                        "Restored {}. Press Scan to refresh.",
-                        counted(n as u64, "file", "files")
-                    );
-                    s.last_trashed.clear();
-                }
-                Err(e) => {
-                    s.status = format!("Restore failed: {e}");
-                }
+                // The done card offers the restore, so it follows its outcome.
+                s.results_rev += 1;
             });
         });
     }
@@ -1514,15 +1579,33 @@ pub(crate) fn undo_delete() {
 
 // --- Consolidate ------------------------------------------------------------
 
-/// First click of the two-click consolidate: pick the destination folder,
-/// then preview the planned keeper moves in the status line. The second
-/// click (same button) executes via [`perform_consolidate`].
+/// Consolidate, step one: open the confirmation. It lists the keepers that
+/// would move before anything else is asked; the folder is chosen inside it
+/// ([`pick_consolidate_dir`]) and nothing moves until it is confirmed
+/// ([`confirm_consolidate`]).
+pub(crate) fn open_consolidate() {
+    // The confirmation opens at its top, wherever the wheel left its list
+    // the last time.
+    crate::ui::results::reset_consolidate_scroll();
+    app().update(|s| {
+        s.consolidating = true;
+        s.consolidate_dest = None;
+    });
+}
+
+/// Consolidate, step two: pick the destination folder from the open
+/// confirmation, which then lists every move into it.
 pub(crate) fn pick_consolidate_dir() {
-    let start =
-        app().with_untracked(|s| s.folders.last().map(|f| f.path.clone()).unwrap_or_default());
+    let start = app().with_untracked(|s| {
+        s.consolidate_dest
+            .as_ref()
+            .map(|d| d.display().to_string())
+            .or_else(|| s.folders.last().map(|f| f.path.clone()))
+            .unwrap_or_default()
+    });
     app_spawn(async move {
         let picked = blocking(move || {
-            let mut dlg = rfd::FileDialog::new().set_title("Choose the consolidate folder");
+            let mut dlg = rfd::FileDialog::new().set_title("Choose the folder to consolidate into");
             if !start.is_empty() && Path::new(&start).exists() {
                 dlg = dlg.set_directory(&start);
             }
@@ -1531,39 +1614,35 @@ pub(crate) fn pick_consolidate_dir() {
         .await;
         let Ok(Some(dest)) = picked else { return };
         app().update(|s| {
-            let (moves, skipped) = file_actions::plan_consolidation(&s.groups, &dest);
-            if moves.is_empty() {
-                s.consolidate_dest = None;
-                s.status =
-                    "Nothing to move — every keeper is protected or already in that folder."
-                        .to_string();
-            } else {
-                let bytes: u64 = moves.iter().map(|m| m.target.size).sum();
-                s.consolidate_dest = Some(dest.clone());
-                s.status = format!(
-                    "Consolidate {} keeper(s) ({}) into {}? ({} skipped) Press “Move keepers” again to move them.",
-                    moves.len(),
-                    util::human_bytes(bytes),
-                    dest.display(),
-                    skipped.len(),
-                );
+            // A pick that lands after the dialog closed has nothing to fill.
+            if s.consolidating {
+                s.consolidate_dest = Some(dest);
             }
         });
     });
 }
 
-/// Second click: move every group's keeper into the armed destination. The
-/// plan is rebuilt live so retries after partial moves stay correct;
+/// Close the consolidate confirmation without moving anything.
+pub(crate) fn cancel_consolidate() {
+    app().update(|s| {
+        s.consolidating = false;
+        s.consolidate_dest = None;
+    });
+}
+
+/// Consolidate, step three: the confirmation's Move. The dialog closes
+/// first, then every group's keeper moves into the chosen folder. The plan is
+/// rebuilt here rather than reused, so it matches the groups as they are now;
 /// keepers are re-hashed before moving and member paths plus ticks follow
 /// moved files.
-pub(crate) fn perform_consolidate() {
+pub(crate) fn confirm_consolidate() {
     let state = app();
-    let Some(dest) = state.with_untracked(|s| s.consolidate_dest.clone()) else {
-        state.update(|s| {
-            s.status = "Choose the folder that keepers should be moved into.".to_string();
-        });
-        return;
-    };
+    let mut taken = None;
+    state.update(|s| {
+        s.consolidating = false;
+        taken = s.consolidate_dest.take();
+    });
+    let Some(dest) = taken else { return };
     let (targets, skipped) = state.with_untracked(|s| {
         let (moves, skipped) = file_actions::plan_consolidation(&s.groups, &dest);
         (
@@ -1575,7 +1654,6 @@ pub(crate) fn perform_consolidate() {
         state.update(|s| {
             s.status = "Nothing to move — every keeper is protected or already in that folder."
                 .to_string();
-            s.consolidate_dest = None;
         });
         return;
     }
@@ -1608,14 +1686,13 @@ pub(crate) fn perform_consolidate() {
             // Member paths moved: rebuild the list against the new ones.
             s.results_rev += 1;
             s.playing = None;
-            s.consolidate_dest = None;
             let failed = match outcome.failures.first() {
                 Some((_, err)) => format!(", {} failed ({err})", outcome.failures.len()),
                 None => String::new(),
             };
             s.status = format!(
-                "Consolidated {} keeper(s) ({}) into {}; {} skipped{failed}.",
-                outcome.moved.len(),
+                "Consolidated {} ({}) into {}; {} skipped{failed}.",
+                counted(outcome.moved.len() as u64, "keeper", "keepers"),
                 util::human_bytes(outcome.bytes_moved),
                 dest.display(),
                 outcome.skipped.len() + skipped,
