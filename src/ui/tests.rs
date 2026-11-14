@@ -16,12 +16,13 @@ use nsh_core::prelude::px;
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
+use crate::actions::Disposition;
 use crate::matching::{Group, GroupMember};
 use crate::media::MediaKind;
 use crate::prefs::ENV_LOCK;
 use crate::ui::actions;
 use crate::ui::root::DedupeApp;
-use crate::ui::state::{AppState, FolderEntry};
+use crate::ui::state::{AppState, Cleared, FolderEntry};
 
 /// One headless engine on a temp prefs file, holding [`ENV_LOCK`] for the
 /// whole test (bootstrap loads prefs on mount).
@@ -411,15 +412,20 @@ fn keeper_picks_move_only_the_highlight() {
             .all(|m| m.path == Path::new("c") || !m.keep),
         "only one keeper per group"
     );
-    // The retiring keeper becomes a ticked duplicate; the other group is
-    // untouched, so a pick never re-ticks the whole list.
+    // The retiring keeper becomes a ticked duplicate, exactly like every
+    // other one in its group — the swap is visible (the tile turns amber,
+    // the figure rises) and one untick takes it back off the list. The other
+    // group is untouched, so a pick never re-ticks the whole list.
+    assert!(s.selected.contains(Path::new("a")));
     assert!(s.selected.contains(Path::new("b")));
     assert!(!s.selected.contains(Path::new("c")));
     assert!(s.selected.contains(Path::new("e")));
 }
 
+/// The confirmation lists every marked copy of every group — it is the last
+/// look before files go, so it caps nothing away.
 #[test]
-fn confirm_plan_caps_rows_but_keeps_its_counts_exact() {
+fn confirm_plan_lists_every_marked_copy() {
     let mut members = vec![member("keep.txt", 10, true, None)];
     for i in 0..8 {
         members.push(member(&format!("dup-{i}.txt"), 10, false, None));
@@ -433,12 +439,11 @@ fn confirm_plan_caps_rows_but_keeps_its_counts_exact() {
             .collect(),
         ..AppState::default()
     };
-    let (groups, hidden_groups) = actions::confirm_groups(&s);
-    assert_eq!(hidden_groups, 0);
+    let groups = actions::confirm_groups(&s);
     assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].index, 1);
     assert_eq!(groups[0].keeper, "keep.txt");
-    assert_eq!(groups[0].rows.len(), actions::CONFIRM_ROWS);
-    assert_eq!(groups[0].hidden_rows, 8 - actions::CONFIRM_ROWS);
+    assert_eq!(groups[0].rows.len(), 8);
     assert_eq!(groups[0].bytes, 80);
 }
 
@@ -471,13 +476,15 @@ fn delete_asks_for_confirmation_before_removing_anything() {
         // Both copies are 4096 bytes, so the button names its exact count.
         app.wait_for("text:Delete 1 (4.10 KB)")?;
         app.press("text:Delete 1 (4.10 KB)")?;
-        app.wait_for("text:Delete 1 file?")?;
+        // Trash is the default delete: the confirmation names the move and
+        // the way back.
+        app.wait_for("text:Move 1 file to the trash?")?;
         app.wait_for(r"text:/Keeping (one|two)\.txt/")?;
         app.press("text:Cancel")?;
         // Cancel dismisses it without touching the files.
         let mut closed = false;
         for _ in 0..40 {
-            if !app.shows("Delete 1 file?") {
+            if !app.shows("Move 1 file to the trash?") {
                 closed = true;
                 break;
             }
@@ -736,4 +743,47 @@ fn layout_switch_keeps_the_results_listed() {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("the layout switch keeps the results listed");
+}
+
+/// Deletes since a scan add up, trashed and freed bytes are counted apart
+/// (the trash still holds its share until it is emptied), and a restore
+/// starts the count again.
+#[test]
+fn cleared_adds_rounds_and_restarts_after_a_restore() {
+    let first = Cleared::add(None, 2, 100, Disposition::Trash);
+    assert_eq!(
+        first,
+        Cleared::Removed {
+            files: 2,
+            trashed: 100,
+            freed: 0
+        }
+    );
+    let second = Cleared::add(Some(first), 1, 50, Disposition::Trash);
+    assert_eq!(
+        second,
+        Cleared::Removed {
+            files: 3,
+            trashed: 150,
+            freed: 0
+        }
+    );
+    let mixed = Cleared::add(Some(second), 1, 10, Disposition::Permanent);
+    assert_eq!(
+        mixed,
+        Cleared::Removed {
+            files: 4,
+            trashed: 150,
+            freed: 10
+        }
+    );
+    let restored = Cleared::Restored { files: 3 };
+    assert_eq!(
+        Cleared::add(Some(restored), 1, 5, Disposition::Trash),
+        Cleared::Removed {
+            files: 1,
+            trashed: 5,
+            freed: 0
+        }
+    );
 }

@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use nsh_core::prelude::*;
 
+use crate::actions::Disposition;
 use crate::cancel::CancelToken;
 use crate::cli::HashAlgo;
 use crate::matching::Group;
@@ -56,6 +57,57 @@ pub(crate) enum SettingsTab {
     #[default]
     General,
     Preferences,
+}
+
+/// What the deletes since the last scan removed, kept so the results page can
+/// say what happened once every group is gone, instead of reading as a scan
+/// that found nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cleared {
+    /// Copies the deletes took. Trashed bytes still take disk space until
+    /// the trash is emptied; only permanently deleted bytes are free.
+    Removed {
+        files: u64,
+        trashed: u64,
+        freed: u64,
+    },
+    /// Undo put copies back from the trash; the numbers wait for a scan.
+    Restored { files: u64 },
+}
+
+impl Cleared {
+    /// This delete added to what earlier ones since the scan removed: two
+    /// rounds that clear the list count what both of them took. A restore
+    /// starts the count again.
+    #[must_use]
+    pub(crate) fn add(
+        before: Option<Self>,
+        files: u64,
+        bytes: u64,
+        disposition: Disposition,
+    ) -> Self {
+        let (files_before, trashed, freed) = match before {
+            Some(Self::Removed {
+                files,
+                trashed,
+                freed,
+            }) => (files, trashed, freed),
+            Some(Self::Restored { .. }) | None => (0, 0, 0),
+        };
+        let files = files_before + files;
+        match disposition {
+            Disposition::Trash => Self::Removed {
+                files,
+                trashed: trashed + bytes,
+                freed,
+            },
+            Disposition::Permanent => Self::Removed {
+                files,
+                trashed,
+                freed: freed + bytes,
+            },
+        }
+    }
 }
 
 /// Owned report data carried into the async save task.
@@ -132,6 +184,11 @@ pub(crate) struct AppState {
     /// on it, so keeper picks and ticks — which change no structure — never
     /// rebuild or reorder the list.
     pub(crate) results_rev: u64,
+    /// Bumped whenever the delete confirmation's plan changes shape in a way
+    /// the tick count alone cannot express: a keeper pick moves one copy off
+    /// the going list and the retiring keeper onto it, so `selected.len()`
+    /// never moves. The open dialog keys its rebuilds on this too.
+    pub(crate) confirm_rev: u64,
     /// Non-duplicate cleanup scan output (`--find` modes). Mutually
     /// exclusive with `groups`: a mode scan never fills the duplicate list.
     pub(crate) mode_result: Option<ModeResult>,
@@ -167,11 +224,16 @@ pub(crate) struct AppState {
     /// Original paths from the last trash run: enables one-step undo.
     /// Cleared on permanent deletes and after a successful restore.
     pub(crate) last_trashed: Vec<PathBuf>,
-    /// Armed consolidate destination (two-click flow): the first click
-    /// picks the folder and previews the moves in the status line, the
-    /// second click moves. Disarmed by any keeper/group change, since the
-    /// previewed paths would be stale.
+    /// What the deletes since the last scan removed. Reset by a scan and by
+    /// Back; read by the results page once no group is left.
+    pub(crate) cleared: Option<Cleared>,
+    /// The folder picked in the open consolidate confirmation, which then
+    /// lists every planned move. Cleared by Cancel, by the move itself and by
+    /// any keeper/group change, since the planned paths would be stale.
     pub(crate) consolidate_dest: Option<PathBuf>,
+    /// The consolidate confirmation is open. It lists the keepers that would
+    /// move first; the folder is picked inside it.
+    pub(crate) consolidating: bool,
     /// The delete confirmation dialog is open: the ticked duplicates are
     /// shown as a dry run and nothing is removed until it is confirmed.
     pub(crate) confirm_delete: bool,
@@ -240,6 +302,7 @@ impl Default for AppState {
             ffprobe_note: false,
             groups: Vec::new(),
             results_rev: 0,
+            confirm_rev: 0,
             mode_result: None,
             base_groups: Vec::new(),
             scan_similarity: similarity,
@@ -252,7 +315,9 @@ impl Default for AppState {
             layout: Layout::Grid,
             selected: HashSet::new(),
             last_trashed: Vec::new(),
+            cleared: None,
             consolidate_dest: None,
+            consolidating: false,
             confirm_delete: false,
             scan_cancel: CancelToken::new(),
             scan_gen: 0,
