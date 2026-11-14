@@ -308,6 +308,9 @@ impl AppState {
         self.exclude_dir_input = saved.exclude_dir.clone();
         self.exclude_path_input = saved.exclude_path.clone();
         self.similarity_input = saved.similarity.clone();
+        // The home page's similarity pill reads the same setting; seeding it
+        // here keeps the two boxes showing one value from launch or a reset.
+        self.min_sim_input = saved.similarity.clone();
         self.partial_similarity_input = saved.partial_similarity.clone();
         self.fuzzy_threshold_input = saved.fuzzy_threshold.clone();
         self.top_input = saved.top.clone();

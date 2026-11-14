@@ -111,9 +111,9 @@ pub(crate) fn reset_settings() {
         Appearance::Light
     });
     app().update(|s| {
+        // apply_prefs seeds the home page pill from the default similarity,
+        // so the reset leaves the two boxes showing one value.
         s.apply_prefs(&defaults);
-        // The live floor is seeded from the last scan; a reset starts clean.
-        s.min_sim_input.clear();
     });
     save_prefs();
     crate::ui::toast::notify("Settings reset to defaults.".to_owned(), false);
@@ -509,6 +509,9 @@ pub(crate) fn start_scan() {
     state.update(|s| {
         s.last_hash = opts.hash;
         s.scan_similarity = (opts.similarity / 100.0).clamp(0.0, 1.0);
+        // The home page pill shows the threshold this run actually uses, not
+        // a stale value from the last one.
+        s.min_sim_input = format_similarity_pct(opts.similarity);
         s.scanning = true;
         s.scan_gen += 1;
         s.scan_cancel.reset();
@@ -1044,6 +1047,10 @@ pub(crate) fn apply_threshold(s: &mut AppState, t: f64) {
 /// Parse the live floor box: blank restores the scan floor, a number
 /// tightens it, anything below the scan floor is clamped (loosening needs
 /// discarded pairs — rescan instead).
+///
+/// A floor that takes effect is written back into the Settings page's
+/// similarity box, so the pill on the home page and the setting are one
+/// value everywhere the app shows it.
 pub(crate) fn apply_sim_input(raw: &str) {
     app().update(|s| {
         let raw = raw.trim();
@@ -1051,6 +1058,7 @@ pub(crate) fn apply_sim_input(raw: &str) {
             if (s.min_sim - s.scan_similarity).abs() > f64::EPSILON {
                 let floor = s.scan_similarity;
                 apply_threshold(s, floor);
+                s.similarity_input = format_similarity_pct(floor * 100.0);
             }
             return;
         }
@@ -1066,10 +1074,21 @@ pub(crate) fn apply_sim_input(raw: &str) {
                     return;
                 }
                 apply_threshold(s, t);
+                s.similarity_input = format_similarity_pct(v);
             }
             _ => {}
         }
     });
+}
+
+/// Format a similarity percent (0..=100) the way every similarity box shows
+/// it: whole numbers stay whole, fractions keep one decimal place at most.
+fn format_similarity_pct(v: f64) -> String {
+    if v.fract() == 0.0 {
+        format!("{}", v as i64)
+    } else {
+        format!("{v}")
+    }
 }
 
 /// Promote one member to keeper of its group (per-group decision).

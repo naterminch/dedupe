@@ -554,7 +554,12 @@ fn media_section() -> View {
                 "97",
                 || app().with(|s| s.similarity_input.clone()),
                 |value| {
-                    app().update(|s| s.similarity_input = value);
+                    app().update(|s| {
+                        s.similarity_input = value.clone();
+                        // The home page pill shows the same similarity, so
+                        // both boxes carry the one setting forward together.
+                        s.min_sim_input = value;
+                    });
                 },
                 0.0,
                 100.0,
