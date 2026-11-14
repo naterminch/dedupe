@@ -1191,9 +1191,8 @@ fn sim_pill() -> impl IntoElement {
         items,
         "Similarity floor",
         || {
-            Some(SharedString::from(format!(
-                "{}",
-                current_similarity() as i64
+            Some(SharedString::from(actions::format_similarity_pct(
+                current_similarity(),
             )))
         },
         |picked: &Option<SharedString>| {
@@ -1205,7 +1204,10 @@ fn sim_pill() -> impl IntoElement {
             actions::apply_sim_input(&text);
         },
         dropdown_trigger(icons::SLIDERS, || {
-            SharedString::from(format!("{}%", current_similarity() as i64))
+            SharedString::from(format!(
+                "{}%",
+                actions::format_similarity_pct(current_similarity())
+            ))
         }),
     )
 }

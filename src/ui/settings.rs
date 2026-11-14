@@ -512,7 +512,36 @@ fn media_section() -> View {
                 "97",
                 || app().with(|s| s.similarity_input.clone()),
                 |value| {
-                    app().update(|s| s.similarity_input = value);
+                    app().update(|s| {
+                        s.similarity_input = value.clone();
+                        if s.scanning {
+                            // A run already in flight uses its own collected
+                            // threshold; the pill keeps showing that one, so
+                            // only the box holds the typed value for the
+                            // next run.
+                            return;
+                        }
+                        // One value everywhere: mirror into the home pill,
+                        // and bring on-screen results along when the typed
+                        // value qualifies.
+                        s.min_sim_input = value.clone();
+                        if let Ok(t) = value.trim().parse::<f64>()
+                            && (0.0..=100.0).contains(&t)
+                        {
+                            let t = t / 100.0;
+                            if s.base_groups.is_empty() {
+                                // No scan yet: this becomes the
+                                // threshold the next run starts from.
+                                s.scan_similarity = t;
+                                s.min_sim = t;
+                            } else if t >= s.scan_similarity {
+                                // Tighten the live results at once;
+                                // loosening needs a rescan, so they keep
+                                // the old floor until then.
+                                actions::apply_threshold(s, t);
+                            }
+                        }
+                    });
                 },
                 0.0,
                 100.0,
