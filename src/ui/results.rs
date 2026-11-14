@@ -14,16 +14,16 @@ use crate::media;
 use crate::modes::mode_title;
 use crate::ui::actions;
 use crate::ui::palette::{size, space};
-use crate::ui::state::{Layout, app, scan_status};
+use crate::ui::state::{AppState, Cleared, Layout, app, scan_status};
 use crate::ui::widgets::{
     BadgeTone, Decision, Ink, PreviewFill, PreviewGlyph, PreviewSize, SelectItem, action_bar,
     action_group, alert_dialog, amount, badge, body, caption, card, danger_button, description,
     disclosure, divider, dropdown_trigger, entering, error_notice, fading_in, fast_scroll,
     fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, ground, heading,
-    help_dot, hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons,
-    name, notice, number_field, number_text, option_select, panel_title, press_to_play,
-    preview_frame, preview_glyph, preview_image, primary_button, progress_bar, quiet_button,
-    secondary_button, section_title, segmented, tick, tile, video_player,
+    hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name,
+    notice, option_select, panel_title, press_to_play, preview_frame, preview_glyph, preview_image,
+    primary_button, progress_bar, quiet_button, secondary_button, section_title, segmented, tick,
+    tile, video_player,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -133,6 +133,7 @@ thread_local! {
     static RESULTS_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
     static MODE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
     static DELETE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+    static CONSOLIDATE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
 }
 
 /// Puts the delete dialog's list back at its top: it opens anew each time,
@@ -141,11 +142,16 @@ pub(crate) fn reset_delete_scroll() {
     DELETE_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
 }
 
+/// [`reset_delete_scroll`] for the consolidate confirmation's list.
+pub(crate) fn reset_consolidate_scroll() {
+    CONSOLIDATE_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+}
+
 /// Puts the workspace's lists back at their top: leaving the page unmounts
 /// them, so the wheel's remembered offsets would point into a list that opens
 /// at the start again.
 pub(crate) fn reset_lists() {
-    for at in [&RESULTS_AT, &MODE_AT, &DELETE_AT] {
+    for at in [&RESULTS_AT, &MODE_AT, &DELETE_AT, &CONSOLIDATE_AT] {
         at.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
     }
 }
@@ -164,14 +170,19 @@ fn duplicate_workspace() -> View {
             // The toolbar follows the page's shape, not its progress: reading
             // the app signal directly rebuilt these buttons on every scan tick,
             // which restarted their hover and dropped presses.
-            let shape = computed(|| app().with(|s| (s.scanning, s.has_scanned)));
-            let (scanning, has_scanned) = shape.get();
+            let shape =
+                computed(|| app().with(|s| (s.scanning, s.has_scanned, !s.groups.is_empty())));
+            let (scanning, has_scanned, has_groups) = shape.get();
             if scanning || has_scanned {
                 view()
                     .flex_col()
                     .gap(px(space::LG))
                     .child(header_row())
-                    .child(action_row())
+                    .child(if has_groups {
+                        action_row()
+                    } else {
+                        back_only_row()
+                    })
             } else {
                 view()
             }
@@ -215,24 +226,98 @@ fn header_row() -> View {
                 .flex_1()
                 .gap(px(space::XS))
                 .child(heading(|| {
-                    if app().with(|s| s.scanning) {
-                        "Scanning"
-                    } else {
-                        "Review duplicates"
-                    }
+                    app().with(|s| {
+                        if s.scanning {
+                            "Scanning"
+                        } else if s.groups.is_empty() && s.cleared.is_some() {
+                            "Duplicates cleared"
+                        } else {
+                            "Review duplicates"
+                        }
+                    })
                 }))
                 .child(summary_line()),
         )
         .child(dynamic(|| {
-            // The figure is the scan's answer, so it waits for the scan: a
-            // running count of bytes found so far would read as the result.
-            let done = computed(|| app().with(|s| s.has_scanned && !s.scanning));
-            when(done.get(), || {
-                answer_figure("Reclaimable", || {
-                    util::human_bytes(app().with(|s| s.reclaim_bytes))
-                })
-            })
+            let shown = computed(|| app().with(answer));
+            match shown.get() {
+                Answer::Waiting => view(),
+                Answer::Reclaimable => reclaim_figure(),
+                Answer::Removed { trashed, freed } => removed_figure(trashed, freed),
+            }
         }))
+}
+
+/// What the header's figure answers.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// No figure: the scan is running (a count of bytes found so far would
+    /// read as the result), or copies came back from the trash and the
+    /// numbers wait for the next scan.
+    Waiting,
+    /// The space the marked copies would give back.
+    Reclaimable,
+    /// Every group is gone: what the deletes since the scan took, split by
+    /// where it went.
+    Removed { trashed: u64, freed: u64 },
+}
+
+fn answer(s: &AppState) -> Answer {
+    if !s.has_scanned || s.scanning {
+        return Answer::Waiting;
+    }
+    match s.cleared {
+        Some(Cleared::Removed { trashed, freed, .. }) if s.groups.is_empty() => {
+            Answer::Removed { trashed, freed }
+        }
+        Some(Cleared::Restored { .. }) if s.groups.is_empty() => Answer::Waiting,
+        _ => Answer::Reclaimable,
+    }
+}
+
+/// The figure once every group is cleared. Space moved to the trash is not
+/// free until the trash is emptied, so it is never called freed: a trash
+/// delete reads "In the trash", a permanent one "Freed", and a mix names the
+/// freed space with the way to the rest under it.
+fn removed_figure(trashed: u64, freed: u64) -> View {
+    if freed == 0 {
+        return answer_figure("In the trash", move || util::human_bytes(trashed)).child(caption(
+            format!("Empty the trash to get {} back", util::human_bytes(trashed)),
+        ));
+    }
+    let figure = answer_figure("Freed", move || util::human_bytes(freed));
+    if trashed == 0 {
+        figure
+    } else {
+        figure.child(caption(format!(
+            "Empty the trash to get {} more back",
+            util::human_bytes(trashed)
+        )))
+    }
+}
+
+/// The space a delete gives back right now: the marked copies, the same set
+/// the Delete button counts. Unticking a copy lowers it; what the scan found
+/// in all stays readable underneath while the two differ.
+fn reclaim_figure() -> View {
+    answer_figure("Reclaimable", || {
+        util::human_bytes(app().with(|s| actions::ticked(s).bytes))
+    })
+    // The line is always there, blank while everything found is marked: a
+    // tick must not change the header's height and move the list under the
+    // pointer.
+    .child(caption(|| {
+        app().with(|s| {
+            if actions::ticked(s).bytes < s.reclaim_bytes {
+                format!("of {} found", util::human_bytes(s.reclaim_bytes))
+            } else {
+                "\u{a0}".to_string()
+            }
+        })
+    }))
+    .tooltip(hint(
+        "The space the ticked copies would give back if you deleted them now",
+    ))
 }
 
 /// The screen's answer, labelled above it: the largest number on the
@@ -247,21 +332,29 @@ fn answer_figure(label: &'static str, value: impl Fn() -> String + 'static) -> V
 }
 
 /// The one line under the title: what the scan found, in the order a reader
-/// acts on it — how many groups, and how many copies are ticked to go.
+/// acts on it — how many groups, and how many of their copies are marked to
+/// delete. With no group left it says why the list is empty.
 fn summary_line() -> impl IntoElement {
     description(|| {
-        let state = app();
-        if state.with(|s| s.scanning) {
-            "The list appears when the scan finishes.".to_string()
-        } else {
-            let groups = state.with(|s| s.groups.len());
-            let dups = state.with(|s| s.dup_files);
+        app().with(|s| {
+            if s.scanning {
+                return "The list appears when the scan finishes.".to_string();
+            }
+            if s.groups.is_empty() {
+                return match s.cleared {
+                    Some(Cleared::Removed { .. }) => "Nothing left to review",
+                    Some(Cleared::Restored { .. }) => "Nothing to review until the next scan",
+                    None => "No duplicate groups",
+                }
+                .to_string();
+            }
             format!(
-                "{} · {}",
-                counted(groups as u64, "group", "groups"),
-                counted(dups, "duplicate", "duplicates"),
+                "{} · {} of {} marked to delete",
+                counted(s.groups.len() as u64, "group", "groups"),
+                actions::ticked(s).count,
+                counted(s.dup_files, "duplicate", "duplicates"),
             )
-        }
+        })
     })
 }
 
@@ -289,13 +382,22 @@ fn list_actions() -> View {
 /// along the top — Back and Delete together on the left, the whole-set
 /// commands on the right — and the options that only tune the list sit in a
 /// second row, every one of them a segmented control of the same height.
-fn action_row() -> impl IntoElement {
+fn action_row() -> View {
     view()
         .flex_col()
         .w_full()
         .gap(px(space::MD))
         .child(result_actions())
-        .child(scan_options())
+        .child(list_options())
+}
+
+/// The toolbar with no group on the page: only Back, since everything else
+/// acts on groups.
+fn back_only_row() -> View {
+    view().w_full().child(action_bar(
+        "Results actions",
+        vec![action_group().child(back_button())],
+    ))
 }
 
 /// The actions that act on the whole result set: destructive changes to the
@@ -307,28 +409,22 @@ fn result_actions() -> impl IntoElement {
             action_group().child(back_button()).child(delete_bar()),
             action_group()
                 .child(consolidate_button())
-                .child(icon_button(
-                    icons::EXPORT,
-                    "Export JSON report",
-                    actions::save_report,
-                ))
+                .child(
+                    icon_button(icons::EXPORT, "Export report", actions::save_report)
+                        .tooltip(hint("Save a JSON report of the duplicates")),
+                )
                 .child(list_actions()),
         ],
     )
 }
 
-/// The scan options: the similarity floor and the keeper rule on the left,
-/// the sort and layout choices at the far edge. They wrap only when the
-/// keeper's segments run out of room.
-fn scan_options() -> impl IntoElement {
+/// How the list reads: its order and its layout. The rules that decide what
+/// a group is and which copy it keeps belong to the scan, on New scan; here
+/// they would re-pick every keeper and throw away the user's own ticks.
+fn list_options() -> impl IntoElement {
     action_bar(
-        "Scan options",
-        vec![
-            action_group()
-                .child(sim_filter())
-                .child(keep_choice_group()),
-            action_group().child(sort_toggle()).child(layout_toggle()),
-        ],
+        "List options",
+        vec![action_group().child(sort_toggle()).child(layout_toggle())],
     )
 }
 
@@ -354,55 +450,13 @@ fn back_button() -> impl IntoElement {
     })
 }
 
-fn sim_filter() -> impl IntoElement {
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(space::SM))
-        .child(field_label("Similarity"))
-        .child(number_field(
-            "97",
-            || app().with(|s| s.min_sim_input.trim().parse::<f64>().ok()),
-            |next| app().update(|s| s.min_sim_input = number_text(next)),
-            (0.0, 100.0),
-            112.0,
-        ))
-        .child(icon_button(icons::CHECK, "Apply similarity", || {
-            let raw = app().with(|s| s.min_sim_input.clone());
-            actions::apply_sim_input(&raw);
-        }))
-}
-
-/// The keeper rule with its name and its explanation: the segments decide
-/// which copy of a group survives a delete, and the help dot carries the
-/// rules themselves, which a first-time user cannot guess from one word.
-fn keep_choice_group() -> impl IntoElement {
-    view()
-        .flex_row()
-        .flex_wrap()
-        .items_center()
-        .gap(px(space::SM))
-        .child(field_label("Keep"))
-        .child(help_dot(KEEP_HINT))
-        .child(keep_modes())
-}
-
-/// The rules behind the chips, written from the comparators that pick the
-/// keeper ([`crate::matching::KeepMode`]): "first found" is really path
-/// order, and in similar-media groups the smallest chip ranks resolution
-/// first.
-const KEEP_HINT: &str = "Which copy of each group survives a delete. First: the alphabetically \
-first path. Smallest: the smallest file — in similar-media groups the highest resolution wins \
-first. Newest / Oldest: by modified date. Best: the highest resolution, then the longest \
-duration, then the largest file.";
-
 /// One keeper rule at a time, as a segmented control.
 fn keep_modes() -> View {
     view().child(dynamic(|| {
         // The rule alone rebuilds these segments; a scan tick would restart
         // their hover and drop a press mid-flight.
         let current = computed(|| app().with(|s| s.keep_index.unwrap_or(0)));
-        segmented(KEEP_MODES, current.get(), actions::apply_keep_mode)
+        segmented(KEEP_MODES, current.get(), actions::set_keep_rule)
     }))
 }
 
@@ -411,7 +465,7 @@ fn sort_toggle() -> impl IntoElement {
     view().child(dynamic(|| {
         let biggest = computed(|| app().with(|s| s.sort_biggest));
         segmented(
-            ["By path", "Biggest first"],
+            ["Path order", "Biggest first"],
             usize::from(biggest.get()),
             |index| {
                 if app().with_untracked(|s| s.sort_biggest) != (index == 1) {
@@ -465,10 +519,10 @@ fn delete_bar() -> View {
         // rebuilding it replaced the Delete button under the pointer.
         let bar = computed(|| {
             app().with(|s| {
-                let targets = actions::pending_targets(s);
+                let actions::Ticked { count, bytes } = actions::ticked(s);
                 DeleteBar {
-                    count: targets.len(),
-                    bytes: targets.iter().map(|t| t.size).sum(),
+                    count,
+                    bytes,
                     can_undo: !s.last_trashed.is_empty(),
                     trash: s.trash,
                     groups: s.groups.len(),
@@ -484,17 +538,25 @@ fn delete_bar() -> View {
         } = bar.get();
         let mut row = view().flex_row().gap(px(space::SM)).items_center();
         if count > 0 {
-            let label = format!("Delete {count} ({})", util::human_bytes(bytes));
+            // Trash and permanent deletes are different promises: a trashed
+            // copy can come back, a permanent one cannot. The label carries
+            // the difference, not just the tooltip.
             let unit = if count == 1 { "file" } else { "files" };
-            let tip = if trash {
-                format!(
-                    "Move {count} {unit} ({}) to the recycle bin",
-                    util::human_bytes(bytes)
+            let (label, tip) = if trash {
+                (
+                    format!("Delete {count} ({})", util::human_bytes(bytes)),
+                    format!(
+                        "Move {count} {unit} ({}) to the trash",
+                        util::human_bytes(bytes)
+                    ),
                 )
             } else {
-                format!(
-                    "Permanently delete {count} {unit} ({})",
-                    util::human_bytes(bytes)
+                (
+                    format!("Delete {count} permanently ({})", util::human_bytes(bytes)),
+                    format!(
+                        "Permanently delete {count} {unit} ({}). This can't be undone.",
+                        util::human_bytes(bytes)
+                    ),
                 )
             };
             row = row
@@ -510,10 +572,10 @@ fn delete_bar() -> View {
                 .tooltip(hint("Tick every copy that is not a keeper")),
             );
         }
-        if can_undo {
-            row = row.child(icon_button(
+        if can_undo && actions::CAN_RESTORE {
+            row = row.child(icon_secondary_button(
                 icons::UNDO,
-                "Undo delete",
+                "Restore from trash",
                 actions::undo_delete,
             ));
         }
@@ -531,19 +593,18 @@ fn delete_bar() -> View {
 /// about three groups, so the dialog's buttons stay on screen at 640 pt.
 const DELETE_PLAN_MAX_H: f32 = 320.0;
 
-/// About how many characters of a path fit beside "Keep instead" in the
-/// delete dialog; the front is cut beyond it.
-const PLAN_PATH_CHARS: usize = 56;
+/// About how many characters of a path fit beside a copy's thumbnail and
+/// its two keep controls in the delete dialog; the front is cut beyond it.
+const PLAN_PATH_CHARS: usize = 30;
 
 pub(crate) fn delete_confirm() -> View {
-    let (count, bytes, groups, hidden_groups, trash) = app().with(|s| {
+    let (count, bytes, groups, trash) = app().with(|s| {
         let targets = actions::pending_targets(s);
-        let (groups, hidden_groups) = actions::confirm_groups(s);
+        let groups = actions::confirm_groups(s);
         (
             targets.len(),
             targets.iter().map(|t| t.size).sum::<u64>(),
             groups,
-            hidden_groups,
             s.trash,
         )
     });
@@ -551,33 +612,30 @@ pub(crate) fn delete_confirm() -> View {
     // rules between groups stopped short of the panel's own edge.
     let mut body = view().flex_col().w_full().gap(px(space::MD));
     for (position, group) in groups.iter().enumerate() {
-        let going = group.rows.len() + group.hidden_rows;
+        let going = group.rows.len();
         // Each group reads as the pair it is: what stays, then what goes.
         // The old line ran both facts together ("Group #1 - keeps a - deletes
         // 1"), which is a sentence to parse at the moment of confirming a
         // deletion.
+        let similarity = group
+            .similarity
+            .map(|s| format!(" · {:.0}% similar — not exact copies", s * 100.0))
+            .unwrap_or_default();
         let mut section = view()
             .flex_col()
             .gap(px(space::XS))
             .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .child(
-                        panel_title(format!("Keeping {}", group.keeper))
-                            .flex_1()
-                            .truncate(),
-                    )
-                    .child(badge("Keeper", BadgeTone::Keep)),
+                panel_title(format!("Keeping {}", group.keeper))
+                    .flex_1()
+                    .truncate(),
             )
             .child(caption(format!(
-                "{} · {}",
+                "{} · {}{similarity}",
                 counted(going as u64, "copy goes", "copies go"),
                 util::human_bytes(group.bytes),
             )));
-        for path in &group.rows {
-            let full = path.display().to_string();
+        for member in &group.rows {
+            let full = member.path.display().to_string();
             let shown = fit_text(&full, PLAN_PATH_CHARS);
             let truncated = shown != full;
             let cell = caption(shown).flex_1().truncate();
@@ -587,23 +645,25 @@ pub(crate) fn delete_confirm() -> View {
                 cell
             };
             let index = group.index;
-            let keep_path = path.clone();
+            let keep_path = member.path.clone();
+            let untick_path = member.path.clone();
+            let poster = app().with_untracked(|s| s.posters.get(&member.path).cloned());
+            let thumb = thumb_for(member, poster.as_deref());
             section = section.child(
                 view()
                     .flex_row()
                     .items_center()
                     .gap(px(space::SM))
+                    .child(member_preview(&thumb, &member.path, PreviewSize::Thumb))
                     .child(cell)
-                    .child(quiet_button("Keep instead", move || {
+                    .child(caption(util::human_bytes(member.size)))
+                    .child(quiet_button("Keep this one instead", move || {
                         actions::set_keeper(index, &keep_path);
+                    }))
+                    .child(quiet_button("Keep too", move || {
+                        actions::toggle_selected(&untick_path);
                     })),
             );
-        }
-        if group.hidden_rows > 0 {
-            section = section.child(caption(format!(
-                "... and {} more in this group",
-                group.hidden_rows
-            )));
         }
         // One rule between plans: two groups of paths ran together as one
         // block, and the keeper line of the second looked like a repeat of
@@ -613,30 +673,43 @@ pub(crate) fn delete_confirm() -> View {
         }
         body = body.child(section);
     }
-    if hidden_groups > 0 {
-        body = body.child(caption(format!(
-            "... and {} more",
-            counted(hidden_groups as u64, "group", "groups")
-        )));
-    }
     if count == 0 {
         body = body.child(caption("Nothing is ticked for deletion."));
     }
-    let description_text = if count == 0 {
+    let any_similar = groups.iter().any(|g| g.similarity.is_some());
+    let mut description_text = if count == 0 {
         "Ticking a duplicate in a group lists it here.".to_string()
     } else {
         let files = counted(count as u64, "file", "files");
-        let action = if trash {
-            "go to the trash"
+        let outcome = if trash {
+            format!(
+                "{files} ({}) will move to the trash. You can put them back from the trash until it is emptied.",
+                util::human_bytes(bytes)
+            )
         } else {
-            "are deleted permanently"
+            format!(
+                "{files} ({}) will be deleted permanently. This can't be undone.",
+                util::human_bytes(bytes)
+            )
         };
         format!(
-            "{files} ({}) {action}. Keepers stay, and every file is re-hashed before it goes.",
-            util::human_bytes(bytes)
+            "{outcome} Keepers stay, and every file is checked against the scan one last time before it goes."
         )
     };
-    let heading = format!("Delete {}?", counted(count as u64, "file", "files"));
+    if count > 0 && any_similar {
+        description_text.push_str(" Compare the marked copies before you delete: similar files are matched by sight, not byte for byte.");
+    }
+    let files = counted(count as u64, "file", "files");
+    let heading = if trash {
+        format!("Move {files} to the trash?")
+    } else {
+        format!("Delete {files} permanently?")
+    };
+    let confirm_label = if trash {
+        format!("Move {count} to the trash")
+    } else {
+        format!("Delete {count} permanently")
+    };
     alert_dialog(
         heading,
         description_text,
@@ -644,29 +717,122 @@ pub(crate) fn delete_confirm() -> View {
         view()
             .child(secondary_button("Cancel", actions::cancel_delete))
             .child(when(count > 0, move || {
-                danger_button(format!("Delete {count}"), actions::confirm_delete)
+                danger_button(confirm_label.clone(), actions::confirm_delete)
             })),
         actions::cancel_delete,
     )
 }
 
+/// Consolidate: gather one copy of every group into a folder the user picks.
+/// It moves files, so it is named on its button, and the confirmation opens
+/// first ([`consolidate_confirm`]); the folder is picked inside it.
 fn consolidate_button() -> View {
-    view().child(dynamic(|| {
-        let dest = computed(|| app().with(|s| s.consolidate_dest.is_some()));
-        if dest.get() {
-            icon_button(
-                icons::FOLDER_MOVE,
-                "Move keepers into the chosen folder",
-                actions::perform_consolidate,
-            )
-        } else {
-            icon_button(
-                icons::FOLDER,
-                "Choose a folder to consolidate into",
+    icon_secondary_button(icons::FOLDER_MOVE, "Consolidate", actions::open_consolidate)
+        .tooltip(hint("Move one copy of each group into a folder you choose"))
+}
+
+/// Moves drawn in the consolidate confirmation before it summarises the rest.
+const CONSOLIDATE_ROWS: usize = 8;
+
+/// The consolidate confirmation: every keeper that will move, where it comes
+/// from and the name it arrives under when that one is taken. Nothing moves
+/// until "Move N" is pressed. Before a folder is picked it asks for one; the
+/// plan is read when the dialog opens: the list behind a modal cannot change.
+pub(crate) fn consolidate_confirm() -> View {
+    let picked = app().with_untracked(|s| {
+        s.consolidate_dest.clone().map(|dest| {
+            let (moves, skipped) = crate::actions::plan_consolidation(&s.groups, &dest);
+            (dest, moves, skipped.len())
+        })
+    });
+    let Some((dest, moves, skipped)) = picked else {
+        // No folder yet: the dialog asks for one and explains what follows.
+        // The space the plan would hold is shown, so the ask is not blind.
+        let bytes: u64 = app().with_untracked(|s| {
+            s.groups
+                .iter()
+                .flat_map(|g| g.members.iter())
+                .filter(|m| m.keep)
+                .map(|m| m.size)
+                .sum()
+        });
+        return alert_dialog(
+            "Consolidate keepers?".to_string(),
+            format!(
+                "One copy of every group moves into a folder you pick ({} so far). Nothing moves until you have picked the folder and confirmed the list.",
+                util::human_bytes(bytes),
+            ),
+            view().child(secondary_button(
+                "Choose a folder…",
                 actions::pick_consolidate_dir,
+            )),
+            view().child(secondary_button("Cancel", actions::cancel_consolidate)),
+            actions::cancel_consolidate,
+        );
+    };
+    let count = moves.len();
+    let bytes: u64 = moves.iter().map(|m| m.target.size).sum();
+    let mut body = view().flex_col().w_full().gap(px(space::MD));
+    for planned in moves.iter().take(CONSOLIDATE_ROWS) {
+        let target = &planned.target;
+        let file_name = |p: &Path| {
+            p.file_name().map_or_else(
+                || p.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
             )
+        };
+        let from = target
+            .from
+            .parent()
+            .map_or_else(String::new, |p| p.display().to_string());
+        let shown = fit_text(&from, PLAN_PATH_CHARS);
+        let mut row = view()
+            .flex_col()
+            .gap(px(space::XXS))
+            .child(panel_title(file_name(&target.from)).truncate())
+            .child(caption(format!("from {shown}")).truncate());
+        if target.from.file_name() != target.to.file_name() {
+            row = row.child(caption(format!(
+                "arrives as {}: that name is taken",
+                file_name(&target.to)
+            )));
         }
-    }))
+        body = body.child(row);
+    }
+    if count > CONSOLIDATE_ROWS {
+        body = body.child(caption(format!(
+            "... and {} more",
+            counted((count - CONSOLIDATE_ROWS) as u64, "keeper", "keepers")
+        )));
+    }
+    let mut summary = format!(
+        "{} ({}) move into {}. Each is checked against the scan first; a file that changed stays where it is.",
+        counted(count as u64, "keeper", "keepers"),
+        util::human_bytes(bytes),
+        fit_text(&dest.display().to_string(), PLAN_PATH_CHARS),
+    );
+    if skipped > 0 {
+        summary.push_str(&format!(
+            " {} protected or already there, so {} not move.",
+            counted(skipped as u64, "keeper is", "keepers are"),
+            if skipped == 1 { "it does" } else { "they do" },
+        ));
+    }
+    alert_dialog(
+        format!(
+            "Consolidate {}?",
+            counted(count as u64, "keeper", "keepers")
+        ),
+        summary,
+        fast_scroll_max(&CONSOLIDATE_AT, px(DELETE_PLAN_MAX_H), body),
+        view()
+            .child(secondary_button("Cancel", actions::cancel_consolidate))
+            .child(primary_button(
+                format!("Move {}", counted(count as u64, "keeper", "keepers")),
+                actions::confirm_consolidate,
+            )),
+        actions::cancel_consolidate,
+    )
 }
 
 /// What decides when the results list is rebuilt. It leaves keeper picks and
@@ -691,11 +857,15 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
         ));
     }
     if has_scanned && total == 0 {
-        list = list.child(nothing_found_card(
-            "No duplicates found",
-            "Every file is unique at this similarity. Add another folder or loosen the threshold, then scan again.",
-            true,
-        ));
+        let cleared = app().with_untracked(|s| s.cleared);
+        list = list.child(match cleared {
+            Some(cleared) => cleared_card(cleared),
+            None => nothing_found_card(
+                "No duplicates found",
+                "Every file is unique at this similarity. Add another folder or loosen the threshold, then scan again.",
+                true,
+            ),
+        });
     }
     // Structural snapshot, read untracked: nothing here subscribes, so this
     // list only re-runs when the signature above changes.
@@ -1110,6 +1280,69 @@ fn media_status() -> View {
             )
             .child(caption(detail))
     }))
+}
+
+/// Every group is gone because the user cleared them: what went, where to,
+/// and that the keepers are untouched. It is the end of the task, so it reads
+/// as an outcome, never as a scan that found nothing. After a trash delete it
+/// offers the trash's way back while this platform can restore and the last
+/// delete has not been undone yet.
+fn cleared_card(cleared: Cleared) -> View {
+    let (title, detail) = match cleared {
+        Cleared::Restored { files } => (
+            format!("{} restored", counted(files, "copy", "copies")),
+            "They are back where they were. Scan again to review them.".to_string(),
+        ),
+        Cleared::Removed {
+            files,
+            trashed,
+            freed,
+        } => {
+            let title = if freed == 0 {
+                format!("{} moved to the trash", counted(files, "copy", "copies"))
+            } else {
+                format!("{} removed", counted(files, "copy", "copies"))
+            };
+            let detail = if freed == 0 {
+                "Your keepers stay where they were. The copies stay in the trash until you empty it."
+                    .to_string()
+            } else if trashed > 0 {
+                format!(
+                    "Your keepers stay where they were. {} freed; {} more waits in the trash until you empty it.",
+                    util::human_bytes(freed),
+                    util::human_bytes(trashed),
+                )
+            } else {
+                "Your keepers stay where they were.".to_string()
+            };
+            (title, detail)
+        }
+    };
+    let mut buttons = view()
+        .flex_row()
+        .gap(px(space::SM))
+        .child(primary_button("Scan again", actions::start_scan));
+    let can_restore = matches!(cleared, Cleared::Removed { trashed, .. } if trashed > 0)
+        && actions::CAN_RESTORE
+        && app().with_untracked(|s| !s.last_trashed.is_empty());
+    if can_restore {
+        buttons = buttons.child(icon_secondary_button(
+            icons::UNDO,
+            "Restore from trash",
+            actions::undo_delete,
+        ));
+    }
+    card()
+        .gap(px(space::MD))
+        .p(px(space::XL))
+        .child(
+            view()
+                .flex_col()
+                .gap(px(space::XS))
+                .child(section_title(title))
+                .child(description(detail)),
+        )
+        .child(buttons)
 }
 
 /// A scan that found nothing: what to change and where. `rescan` adds the
@@ -1531,6 +1764,13 @@ fn member_row(
 
 /// The controls line both layouts use: the tick, size, similarity, the
 /// protected badge, Play for a clip, and the keeper pick.
+///
+/// One verb pair says where every copy stands: the keeper wears "Keeping"
+/// (a badge, not a checkbox — there is no choice to make about the copy
+/// that stays), a ticked copy reads "Delete", an unticked one "Keep too".
+/// The keeper pick is the one action that moves the mark: it makes this
+/// copy the keeper and puts the retiring keeper on the delete list, where
+/// the amber edge and the Delete word show it at once.
 fn member_actions(
     group_index: usize,
     member: &GroupMember,
@@ -1538,13 +1778,6 @@ fn member_actions(
     checked: bool,
     play: Option<bool>,
 ) -> View {
-    let label = if keep {
-        "Keeper"
-    } else if checked {
-        "Selected"
-    } else {
-        "Select"
-    };
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
@@ -1562,10 +1795,15 @@ fn member_actions(
             // disabled checkbox would promise a choice that does not exist.
             badge("Protected", BadgeTone::Raised)
                 .tooltip(hint("Inside a locked folder: this copy is never deleted."))
+        } else if keep {
+            // The copy the group keeps: a badge, not a checkbox.
+            badge("Keeping", BadgeTone::Keep)
         } else {
-            view().child(tick(label, decision(keep, checked), move || {
-                actions::toggle_selected(&toggle_path)
-            }))
+            view().child(tick(
+                if checked { "Delete" } else { "Keep too" },
+                decision(keep, checked),
+                move || actions::toggle_selected(&toggle_path),
+            ))
         })
         .child(caption(util::human_bytes(member.size)).tabular_nums())
         .child(when(similarity.is_some(), move || {
@@ -1590,10 +1828,12 @@ fn member_actions(
         .child(when(!keep, move || {
             let path = keep_path.clone();
             view()
-                .child(quiet_button("Keep", move || {
+                .child(quiet_button("Keep this one instead", move || {
                     actions::set_keeper(group_index, &path);
                 }))
-                .tooltip(hint("Keep this copy instead of deleting it"))
+                .tooltip(hint(
+                    "Keep this copy instead of the current keeper; the retiring keeper is marked to delete",
+                ))
         }))
 }
 
@@ -1650,13 +1890,16 @@ fn mode_header() -> View {
                 .items_end()
                 .gap(px(space::XL))
                 .child(scan_again_button())
-                .child(answer_figure("Reclaimable", || {
-                    app().with(|s| {
-                        s.mode_result
-                            .as_ref()
-                            .map_or_else(String::new, |r| util::human_bytes(r.reclaimable()))
-                    })
-                })),
+                .child(answer_figure(
+                    "Reclaimable",
+                    || {
+                        app().with(|s| {
+                            s.mode_result
+                                .as_ref()
+                                .map_or_else(String::new, |r| util::human_bytes(r.reclaimable()))
+                        })
+                    },
+                )),
         )
 }
 

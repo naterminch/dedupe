@@ -596,7 +596,7 @@ fn system_section() -> View {
             choice_row(
                 "Default keep",
                 "Which copy a new scan keeps when duplicates are found.",
-                choices(KEEP_LABELS, keep_index, actions::apply_keep_mode),
+                choices(KEEP_LABELS, keep_index, actions::set_keep_rule),
             ),
             row(
                 "Sort by most reclaimable space",

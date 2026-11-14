@@ -413,8 +413,8 @@ pub(crate) fn danger_button(
     action(Tone::Danger, None, None, label, on_press)
 }
 
-/// A compact ink action inside a line of metadata: the keeper pick on a
-/// member, "Keep instead" in the delete plan. Caption-sized, so it sits in
+/// A compact ink action inside a line of metadata: "Keep this one instead"
+/// and "Keep too" in the delete plan. Caption-sized, so it sits in
 /// the line without becoming the row's headline.
 pub(crate) fn quiet_button(
     label: impl IntoReactive<SharedString>,
@@ -597,7 +597,6 @@ pub(crate) mod icons {
     pub(crate) const CLEAR: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 6l12 12M18 6 6 18\"/></svg>";
     pub(crate) const EXPORT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3v11\"/><path d=\"m7 9 5 5 5-5\"/><path d=\"M4 20h16\"/></svg>";
     pub(crate) const UNDO: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 11h10a5 5 0 0 1 0 10h-6\"/><path d=\"m8 7-4 4 4 4\"/></svg>";
-    pub(crate) const CHECK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m5 13 4 4L19 7\"/></svg>";
     pub(crate) const PLAY: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 5.5v13l11-6.5z\" fill=\"currentColor\" stroke=\"none\"/></svg>";
     pub(crate) const STOP: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"6.5\" y=\"6.5\" width=\"11\" height=\"11\" rx=\"2\" fill=\"currentColor\" stroke=\"none\"/></svg>";
     pub(crate) const PLUS: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 5v14M5 12h14\"/></svg>";
@@ -611,7 +610,6 @@ pub(crate) mod icons {
     pub(crate) const TRASH: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M4 7h16\"/><path d=\"M9 7V5h6v2\"/><path d=\"m6 7 1 13h10l1-13\"/><path d=\"M10 11v6\"/><path d=\"M14 11v6\"/></svg>";
     pub(crate) const LOCK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5\" y=\"11\" width=\"14\" height=\"9\" rx=\"2\"/><path d=\"M8 11V8a4 4 0 0 1 8 0v3\"/></svg>";
     pub(crate) const CHEVRON_DOWN: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 9 6 6 6-6\"/></svg>";
-    pub(crate) const HELP: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M9.6 9.2a2.4 2.4 0 1 1 3.6 2.1c-.8.5-1.2.9-1.2 1.7\"/><path d=\"M12 16.5h.01\" stroke-width=\"2.6\"/></svg>";
     pub(crate) const ARROW_LEFT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M19 12H5\"/><path d=\"m11 18-6-6 6-6\"/></svg>";
 }
 
@@ -1592,7 +1590,7 @@ pub(crate) fn progress_bar(fraction: f32, determinate: bool) -> impl IntoElement
 }
 
 /// The confirmation dialog's width: a full Windows path at caption size
-/// beside its "Keep instead" without wrapping.
+/// beside its thumbnail, size and quiet buttons without wrapping.
 const DIALOG_W: f32 = 540.0;
 
 /// A confirmation that interrupts: nsh's dialog owns the modal layer (focus
@@ -1755,15 +1753,6 @@ pub(crate) fn hint(label: impl IntoReactive<SharedString>) -> impl IntoTooltip {
                 .text_size(px(text::CAPTION))
                 .text_color(colors::BACKGROUND),
         )
-}
-
-/// A muted question mark with an explanation in its tooltip, for a toolbar
-/// control whose one word cannot carry its rule (the keeper rule).
-pub(crate) fn help_dot(tip: impl IntoReactive<SharedString>) -> impl IntoElement {
-    view()
-        .flex_shrink_0()
-        .child(icon(icons::HELP, size::ICON_SMALL, colors::MUTED))
-        .tooltip(hint(tip))
 }
 
 #[cfg(test)]

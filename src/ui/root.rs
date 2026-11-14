@@ -59,13 +59,32 @@ pub fn DedupeApp() -> impl IntoElement {
         .child(toast::toast_layer())
         // Above the panes and the toasts: a confirmation must not be buried.
         .child(dynamic(|| {
-            // Only the confirmation opening rebuilds it: a scan tick would
+            // Only a confirmation opening rebuilds it: a scan tick would
             // replace the dialog's buttons between press and release.
-            // The plan follows the ticked duplicates too: ticking one in the
-            // dialog rebuilds it, a scan tick does not.
-            let open = computed(|| app().with(|s| (s.confirm_delete, s.selected.len())));
-            if open.get().0 {
+            // The delete plan follows the ticked duplicates too: ticking one
+            // in the dialog rebuilds it, a scan tick does not.
+            let open = computed(|| {
+                app().with(|s| {
+                    (
+                        s.confirm_delete,
+                        s.selected.len(),
+                        s.consolidating,
+                        s.consolidate_dest.clone(),
+                        // A keeper pick inside the open dialog moves one copy
+                        // off the going list and the retiring keeper onto it,
+                        // so the tick count alone would not rebuild it. The
+                        // poster count is here so a video's thumbnail can
+                        // arrive while the dialog is open.
+                        s.confirm_rev,
+                        s.posters.len(),
+                    )
+                })
+            });
+            let (deleting, _, consolidating, _, _, _) = open.get();
+            if deleting {
                 results::delete_confirm()
+            } else if consolidating {
+                results::consolidate_confirm()
             } else {
                 view()
             }

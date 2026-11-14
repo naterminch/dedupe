@@ -37,19 +37,22 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
 
 1. Add a folder — **Browse** in the sidebar, paste a path into the **New scan**
    form, or drop it on the window — then press **Scan for duplicates**.
-2. Results are grouped by content, with the space a delete would free shown as
-   **Reclaimable** beside the title. Green **Keeper** is the copy that stays,
-   amber **Selected** is ticked for deletion.
+2. Results are grouped by content, with the space the ticked copies would free
+   shown as **Reclaimable** beside the title. A green **Keeping** badge marks
+   the copy that stays, an amber tick reads **Delete** on a copy ticked to go
+   and **Keep too** on one that stays; **Keep this one instead** swaps the
+   keeper (the retiring keeper joins the delete list, one untick takes it back).
 3. **Delete** follows your Trash setting: with it on the ticked copies go to the
-   system trash, with it off they are deleted permanently. The dialog lists the
-   groups and files that will go first — a long selection is summarized with
-   counts. **Stop** cancels a scan instantly.
+   system trash, with it off they are deleted permanently (the button and the
+   dialog both say which). The dialog lists every group and file that will go
+   first, with thumbnails. **Stop** cancels a scan instantly.
 
 Folders can be marked as **protected**: their copies win the keep decision and
 are never deleted, whatever the scan is looking for. The keep rule (First / Smallest / Newest /
-Oldest / Best quality) can be changed without rescanning, and **Consolidate**
-gathers one copy of every group into a folder of your choosing, leaving protected
-keepers where they are. Settings also cover the scan type, match mode, image
+Oldest / Best quality) is chosen on **New scan** and applies to the next scan; a
+keeper can still be swapped by hand in any group. **Consolidate** gathers one copy
+of every group into a folder of your choosing, after a confirmation that lists
+every move, leaving protected keepers where they are. Settings also cover the scan type, match mode, image
 fingerprint and partial clips; light/dark and your preferences persist between
 runs.
 
