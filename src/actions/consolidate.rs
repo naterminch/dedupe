@@ -1,13 +1,12 @@
-use super::fileops::free_dest_path;
 use super::fileops::move_file;
+use super::fileops::{Claimed, free_dest_path};
 use super::guard::prompt;
 use super::guard::verify_expected;
-use super::{ConsolidateOutcome, ConsolidateStats, MoveTarget, PlannedMove};
+use super::{ConsolidateStats, MoveOutcome, MoveTarget, PlannedMove};
 use crate::hashing::HashEngine;
 use crate::matching::{self, Group};
 use crate::util::human_bytes;
 use console::style;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Decide where every group's keeper would go under `dest` (flattened),
@@ -23,7 +22,7 @@ pub fn plan_consolidation(
     dest: &Path,
 ) -> (Vec<PlannedMove>, Vec<(PathBuf, &'static str)>) {
     let dest_canon = matching::canonicalize_refs(&[dest.display().to_string()]);
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
+    let mut claimed = Claimed::default();
     let mut moves = Vec::new();
     let mut skipped = Vec::new();
     for group in groups {
@@ -54,7 +53,7 @@ pub fn plan_consolidation(
             ));
             continue;
         }
-        claimed.insert(to.clone());
+        claimed.insert(&to);
         moves.push(PlannedMove {
             group_index: group.index,
             target: MoveTarget {
@@ -73,15 +72,19 @@ pub fn plan_consolidation(
 
 /// Move `targets` non-interactively, re-hashing each file first.
 ///
-/// Mirrors [`crate::actions::delete_targets`]: a keeper that changed since the scan is
+/// The one move core behind consolidation (keepers into one folder) and
+/// move-aside (duplicates out of the way). Mirrors
+/// [`crate::actions::delete_targets`]: a file that changed since the scan is
 /// skipped (with a warning), never moved.
-pub fn consolidate_targets(targets: &[MoveTarget], engine: &HashEngine) -> ConsolidateOutcome {
-    let mut outcome = ConsolidateOutcome::default();
+pub fn move_targets(targets: &[MoveTarget], engine: &HashEngine) -> MoveOutcome {
+    let mut outcome = MoveOutcome::default();
     for target in targets {
         match verify_expected(&target.from, &target.expected_hash, target.size, engine) {
             Ok(true) => match move_file(&target.from, &target.to) {
-                Ok(()) => {
-                    outcome.moved.push((target.from.clone(), target.to.clone()));
+                // The planned name may have been taken meanwhile: the file
+                // lands on the next free one, and the outcome says which.
+                Ok(landed) => {
+                    outcome.moved.push((target.from.clone(), landed));
                     outcome.bytes_moved += target.size;
                 }
                 Err(err) => {
@@ -181,7 +184,7 @@ pub fn consolidate_keepers(
         }
 
         let owned: Vec<MoveTarget> = targets.iter().map(|t| (*t).clone()).collect();
-        let outcome = consolidate_targets(&owned, engine);
+        let outcome = move_targets(&owned, engine);
         stats.files_moved += outcome.moved.len() as u64;
         stats.bytes_moved += outcome.bytes_moved;
         stats.files_skipped += outcome.skipped.len() as u64;

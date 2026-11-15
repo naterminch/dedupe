@@ -21,7 +21,7 @@ use crate::ui::widgets::{
 use crate::ui_helpers::{counted, find_mode_caption, hash_caption};
 use crate::util;
 
-pub(crate) const FIND_LABELS: [&str; 11] = [
+pub(crate) const FIND_LABELS: [&str; 12] = [
     "Duplicates",
     "Empty files",
     "Empty folders",
@@ -33,6 +33,7 @@ pub(crate) const FIND_LABELS: [&str; 11] = [
     "Bad names",
     "Duplicate folders",
     "Music",
+    "Photo metadata",
 ];
 
 const MATCH_LABELS: [&str; 4] = ["Content", "Size", "Name", "Fuzzy name"];

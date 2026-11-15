@@ -144,6 +144,10 @@ pub struct GuiPrefs {
     /// Send deletions to the system trash rather than removing them.
     #[serde(default = "default_true")]
     pub trash: bool,
+    /// What the delete confirmation does with ticked copies: 0 delete (per
+    /// `trash`), 1 move into a folder, 2 replace with hard links.
+    #[serde(default)]
+    pub removal_index: usize,
     /// List the largest files first in size-ordered results.
     #[serde(default)]
     pub sort_biggest: bool,
@@ -217,6 +221,7 @@ impl Default for GuiPrefs {
             exact: false,
             no_cache: false,
             trash: true,
+            removal_index: 0,
             sort_biggest: false,
             remember_folders: true,
             wheel_page: false,
@@ -388,6 +393,7 @@ mod tests {
             music_by_content: true,
             exact: true,
             trash: false,
+            removal_index: 2,
             sort_biggest: true,
             remember_folders: false,
             wheel_page: true,

@@ -22,7 +22,7 @@ use crate::media::MediaKind;
 use crate::prefs::ENV_LOCK;
 use crate::ui::actions;
 use crate::ui::root::DedupeApp;
-use crate::ui::state::{AppState, Cleared, FolderEntry};
+use crate::ui::state::{AppState, Cleared, FolderEntry, Went};
 
 /// One headless engine on a temp prefs file, holding [`ENV_LOCK`] for the
 /// whole test (bootstrap loads prefs on mount).
@@ -745,45 +745,202 @@ fn layout_switch_keeps_the_results_listed() {
     result.expect("the layout switch keeps the results listed");
 }
 
-/// Deletes since a scan add up, trashed and freed bytes are counted apart
-/// (the trash still holds its share until it is emptied), and a restore
-/// starts the count again.
+/// Deletes since a scan add up, trashed, freed and moved bytes are counted
+/// apart (the trash still holds its share until it is emptied, a move frees
+/// nothing), and a restore starts the count again.
 #[test]
 fn cleared_adds_rounds_and_restarts_after_a_restore() {
-    let first = Cleared::add(None, 2, 100, Disposition::Trash);
+    let first = Cleared::add(None, 2, 100, Disposition::Trash.into());
     assert_eq!(
         first,
         Cleared::Removed {
             files: 2,
             trashed: 100,
-            freed: 0
+            freed: 0,
+            moved: 0,
         }
     );
-    let second = Cleared::add(Some(first), 1, 50, Disposition::Trash);
+    let second = Cleared::add(Some(first), 1, 50, Disposition::Trash.into());
     assert_eq!(
         second,
         Cleared::Removed {
             files: 3,
             trashed: 150,
-            freed: 0
+            freed: 0,
+            moved: 0,
         }
     );
-    let mixed = Cleared::add(Some(second), 1, 10, Disposition::Permanent);
+    let mixed = Cleared::add(Some(second), 1, 10, Disposition::Permanent.into());
     assert_eq!(
         mixed,
         Cleared::Removed {
             files: 4,
             trashed: 150,
-            freed: 10
+            freed: 10,
+            moved: 0,
+        }
+    );
+    let moved = Cleared::add(Some(mixed), 2, 7, Went::Moved);
+    assert_eq!(
+        moved,
+        Cleared::Removed {
+            files: 6,
+            trashed: 150,
+            freed: 10,
+            moved: 7,
         }
     );
     let restored = Cleared::Restored { files: 3 };
     assert_eq!(
-        Cleared::add(Some(restored), 1, 5, Disposition::Trash),
+        Cleared::add(Some(restored), 1, 5, Disposition::Trash.into()),
         Cleared::Removed {
             files: 1,
             trashed: 5,
-            freed: 0
+            freed: 0,
+            moved: 0,
         }
     );
+}
+
+/// Only identical copies can share one file: a hard-link run takes the ticked
+/// copies of exact groups and leaves a similar group's copies alone, counted
+/// so the confirmation can say so.
+#[test]
+fn link_plan_leaves_similar_groups_alone() {
+    let exact = group(
+        1,
+        vec![
+            member("keep.jpg", 10, true, None),
+            member("copy.jpg", 10, false, None),
+        ],
+    );
+    let mut similar = group(
+        2,
+        vec![
+            member("photo.png", 20, true, None),
+            member("photo.jpg", 12, false, Some(0.98)),
+        ],
+    );
+    similar.similarity = Some(0.98);
+    let mut s = AppState {
+        groups: vec![exact, similar],
+        ..AppState::default()
+    };
+    actions::reselect_all_dups(&mut s);
+    let (links, unlinkable) = actions::link_plan(&s);
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0].path, PathBuf::from("copy.jpg"));
+    assert_eq!(links[0].keeper, PathBuf::from("keep.jpg"));
+    assert_eq!(unlinkable, 1);
+}
+
+/// A fixture folder under the temp dir, unique per call.
+fn fixture_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    dir
+}
+
+/// Choosing Hard link in the confirmation renames the act everywhere and,
+/// confirmed, leaves both paths in place as one file on disk.
+#[test]
+fn hard_link_choice_replaces_the_marked_copy() {
+    let (mut app, _guard) = start();
+    let dir = fixture_dir("link-fixture");
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Scan a folder")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Scan a folder", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
+        app.press("text:Delete 1 (4.10 KB)")?;
+        app.wait_for("text:Move 1 file to the trash?")?;
+        app.press("text:Hard link")?;
+        app.wait_for("text:Replace 1 file with hard links?")?;
+        app.press("text:Link 1")?;
+        // The toolbar names the act the dialog was left on.
+        app.wait_for_within(
+            "text:/Replaced 1 file with hard links/",
+            std::time::Duration::from_secs(30),
+        )?;
+        let (one, two) = (dir.join("one.txt"), dir.join("two.txt"));
+        if !(one.is_file() && two.is_file()) {
+            return Err("a hard link keeps both paths".to_string());
+        }
+        if !same_file::is_same_file(&one, &two).map_err(|e| e.to_string())? {
+            return Err("the copy should now be the keeper's file".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("Hard link replaces the marked copy with a link");
+}
+
+/// A cleanup scan's findings can be deleted from the GUI: the bar names the
+/// count, the confirmation names the outcome, and only the finding goes.
+#[test]
+fn cleanup_findings_delete_after_confirmation() {
+    let (mut app, _guard) = start();
+    let dir = fixture_dir("findings-fixture");
+    std::fs::write(dir.join("draft.tmp"), b"leftover bytes").expect("temp file");
+    std::fs::write(dir.join("keep.txt"), b"a real document").expect("kept file");
+    let result = (|| {
+        app.wait_for("text:Scan a folder")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Scan a folder", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        // Temp files, deleted permanently: nothing lands in the real trash.
+        app.press("label:What to find")?;
+        app.press("text:Temp files")?;
+        app.wait_for("text:Deleted items")?;
+        app.press("label:Where deleted files go")?;
+        app.press("text:Delete permanently")?;
+        app.press("text:Run cleanup scan")?;
+        app.wait_for_within(
+            "text:Delete 1 permanently (14 B)",
+            std::time::Duration::from_secs(60),
+        )?;
+        app.press("text:Delete 1 permanently (14 B)")?;
+        app.wait_for("text:Delete 1 item permanently?")?;
+        if !dir.join("draft.tmp").is_file() {
+            return Err("nothing may go before the delete is confirmed".to_string());
+        }
+        app.press("text:Delete 1 permanently")?;
+        app.wait_for_within("text:/Deleted 1 item/", std::time::Duration::from_secs(30))?;
+        if dir.join("draft.tmp").exists() {
+            return Err("the temp file should be deleted".to_string());
+        }
+        if !dir.join("keep.txt").is_file() {
+            return Err("only the finding may go".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("cleanup findings delete after confirmation");
+}
+
+/// The report's file type decides its format, so a CSV export is CSV.
+#[test]
+fn report_format_follows_the_chosen_extension() {
+    use actions::{ReportFormat, report_format};
+    assert_eq!(report_format(Path::new("r.csv")), ReportFormat::Csv);
+    assert_eq!(report_format(Path::new("r.HTML")), ReportFormat::Html);
+    assert_eq!(report_format(Path::new("r.htm")), ReportFormat::Html);
+    assert_eq!(report_format(Path::new("r.json")), ReportFormat::Json);
+    assert_eq!(report_format(Path::new("report")), ReportFormat::Json);
 }

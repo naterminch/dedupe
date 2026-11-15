@@ -6,6 +6,7 @@ mod music;
 mod names;
 mod walk;
 
+use self::exif::photo_metadata;
 use self::extensions::{bad_extensions, bad_names};
 use self::findings::{broken_files, empty_dirs, finding, invalid_symlinks, temp_reason};
 use self::folders::duplicate_folders;
@@ -18,7 +19,7 @@ use crate::scan::FileEntry;
 use std::path::{Path, PathBuf};
 
 pub use crate::glob::glob_match;
-pub use exif::{ExifReport, strip_exif};
+pub use exif::{ExifReport, StripOutcome, strip_exif, strip_metadata};
 pub use names::{MatchBucket, match_entries, name_similarity};
 
 /// Extensions the music mode treats as audio, lowercase and without the dot.
@@ -143,19 +144,27 @@ pub fn content_hash(path: &Path, engine: &HashEngine) -> Option<String> {
     }
 }
 
-/// Record the content of every deletable item, so deletion can re-hash it and
-/// skip the ones that changed in between.
+/// Record the content of every item an action may touch, so deletion (or a
+/// metadata strip) can re-hash it and skip the ones that changed in between.
 ///
 /// Only a run that is about to delete pays for this: hashing is per finding,
 /// and a report-only scan (or `--dry-run`) must not read the files it merely
 /// lists. A cancelled scan stops early, leaving the rest unhashed so they are
 /// kept rather than removed unverified.
 pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cancel: &CancelToken) {
+    // Photo-metadata findings were hashed from the bytes the scan classified
+    // (their size is the metadata's, so the size check below could not tell
+    // a changed photo apart); hashing them again now would bless whatever the
+    // file holds by this time.
+    if result.mode == FindMode::PhotoMetadata {
+        return;
+    }
     for finding in &mut result.findings {
         if cancel.is_cancelled() {
             return;
         }
-        finding.hash = if still_same_size(&finding.path, finding.size) {
+        let unchanged = still_same_size(&finding.path, finding.size);
+        finding.hash = if unchanged {
             content_hash(&finding.path, engine)
         } else {
             // The file already changed since it was classified: hashing it now
@@ -210,6 +219,33 @@ pub fn mode_name(mode: FindMode) -> &'static str {
         FindMode::BadNames => "bad-names",
         FindMode::DuplicateFolders => "duplicate-folders",
         FindMode::Music => "music",
+        FindMode::PhotoMetadata => "photo-metadata",
+    }
+}
+
+/// Whether a mode's findings may be deleted (`--delete`, or the GUI's
+/// delete action).
+///
+/// Duplicate folder trees are report-only: removing a whole tree is a call
+/// the user makes after review. Photo-metadata findings are the user's
+/// photos themselves — the fix is stripping the metadata
+/// ([`strip_metadata`]), never deleting the photo. `Duplicates` deletes
+/// through its own keeper-aware path ([`crate::actions::delete_duplicates`])
+/// and counts as deletable. No wildcard arm: a new mode must decide.
+#[must_use]
+pub fn mode_deletes(mode: FindMode) -> bool {
+    match mode {
+        FindMode::DuplicateFolders | FindMode::PhotoMetadata => false,
+        FindMode::Duplicates
+        | FindMode::EmptyFiles
+        | FindMode::EmptyDirs
+        | FindMode::BigFiles
+        | FindMode::TempFiles
+        | FindMode::InvalidSymlinks
+        | FindMode::BrokenFiles
+        | FindMode::BadExtensions
+        | FindMode::BadNames
+        | FindMode::Music => true,
     }
 }
 
@@ -228,6 +264,7 @@ pub fn mode_title(mode: FindMode) -> &'static str {
         FindMode::BadNames => "Problematic file names",
         FindMode::DuplicateFolders => "Duplicate folder trees",
         FindMode::Music => "Duplicate music",
+        FindMode::PhotoMetadata => "Photo metadata",
     }
 }
 
@@ -315,6 +352,10 @@ pub fn run_mode(cli: &Cli, cancel: &CancelToken) -> ModeResult {
         }
         FindMode::Music => {
             result.groups = music_groups(cli, &tree, &mut result.notes, cancel);
+        }
+        FindMode::PhotoMetadata => {
+            let engine = HashEngine::new(cli.hash);
+            result.findings = photo_metadata(&tree, &engine, &mut result.errors, cancel);
         }
     }
     result.findings.sort_by(|a, b| a.path.cmp(&b.path));

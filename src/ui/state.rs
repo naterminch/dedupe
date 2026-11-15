@@ -59,17 +59,69 @@ pub(crate) enum SettingsTab {
     Preferences,
 }
 
+/// What happens to the copies ticked in the results: the confirmation offers
+/// the three, and the toolbar button names the one last chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Removal {
+    /// To the trash or gone for good, per the trash setting.
+    #[default]
+    Delete,
+    /// Moved into one folder the user picks (the CLI's `--move-dir`).
+    MoveAside,
+    /// Replaced by a hard link to the group's keeper (`--hardlink`).
+    Link,
+}
+
+impl Removal {
+    /// The order the confirmation's segments list them in, which is also the
+    /// index the preferences file stores.
+    pub(crate) const ALL: [Self; 3] = [Self::Delete, Self::MoveAside, Self::Link];
+
+    #[must_use]
+    pub(crate) fn index(self) -> usize {
+        Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    }
+
+    #[must_use]
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self::ALL.get(index).copied().unwrap_or_default()
+    }
+}
+
+/// Where the copies a round of clean-up took went, for [`Cleared::add`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Went {
+    /// In the trash: the space comes back once it is emptied.
+    Trash,
+    /// Deleted for good or replaced by a hard link: the space is free.
+    Freed,
+    /// Moved into another folder: nothing is freed, the copies are out of the
+    /// way.
+    Moved,
+}
+
+impl From<Disposition> for Went {
+    fn from(disposition: Disposition) -> Self {
+        match disposition {
+            Disposition::Trash => Self::Trash,
+            Disposition::Permanent => Self::Freed,
+        }
+    }
+}
+
 /// What the deletes since the last scan removed, kept so the results page can
 /// say what happened once every group is gone, instead of reading as a scan
 /// that found nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cleared {
     /// Copies the deletes took. Trashed bytes still take disk space until
-    /// the trash is emptied; only permanently deleted bytes are free.
+    /// the trash is emptied; only permanently deleted (or hard-linked) bytes
+    /// are free; moved bytes went to another folder.
     Removed {
         files: u64,
         trashed: u64,
         freed: u64,
+        moved: u64,
     },
     /// Undo put copies back from the trash; the numbers wait for a scan.
     Restored { files: u64 },
@@ -80,34 +132,58 @@ impl Cleared {
     /// rounds that clear the list count what both of them took. A restore
     /// starts the count again.
     #[must_use]
-    pub(crate) fn add(
-        before: Option<Self>,
-        files: u64,
-        bytes: u64,
-        disposition: Disposition,
-    ) -> Self {
-        let (files_before, trashed, freed) = match before {
+    pub(crate) fn add(before: Option<Self>, files: u64, bytes: u64, went: Went) -> Self {
+        let (files_before, trashed, freed, moved) = match before {
             Some(Self::Removed {
                 files,
                 trashed,
                 freed,
-            }) => (files, trashed, freed),
-            Some(Self::Restored { .. }) | None => (0, 0, 0),
+                moved,
+            }) => (files, trashed, freed, moved),
+            Some(Self::Restored { .. }) | None => (0, 0, 0, 0),
         };
         let files = files_before + files;
-        match disposition {
-            Disposition::Trash => Self::Removed {
+        match went {
+            Went::Trash => Self::Removed {
                 files,
                 trashed: trashed + bytes,
                 freed,
+                moved,
             },
-            Disposition::Permanent => Self::Removed {
+            Went::Freed => Self::Removed {
                 files,
                 trashed,
                 freed: freed + bytes,
+                moved,
+            },
+            Went::Moved => Self::Removed {
+                files,
+                trashed,
+                freed,
+                moved: moved + bytes,
             },
         }
     }
+}
+
+/// What the findings' act did since the cleanup scan, so the list can say
+/// what happened once it is empty instead of reading as a clean scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FindingsDone {
+    pub(crate) items: u64,
+    pub(crate) bytes: u64,
+    pub(crate) went: FindingsWent,
+}
+
+/// Where the findings a round took went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FindingsWent {
+    Trash,
+    Deleted,
+    /// Photos rewritten without their metadata; they are still there.
+    Stripped,
+    /// Undo put the trashed findings back; the list waits for a scan.
+    Restored,
 }
 
 /// Owned report data carried into the async save task.
@@ -117,6 +193,8 @@ pub(crate) struct ReportSnapshot {
     pub(crate) ffprobe_used: bool,
     pub(crate) stats: ScanStats,
     pub(crate) groups: Vec<Group>,
+    /// The cleanup scan's findings, when the report is of one.
+    pub(crate) mode_result: Option<ModeResult>,
 }
 
 /// Everything a scan or render pass reads and writes.
@@ -237,6 +315,21 @@ pub(crate) struct AppState {
     /// The delete confirmation dialog is open: the ticked duplicates are
     /// shown as a dry run and nothing is removed until it is confirmed.
     pub(crate) confirm_delete: bool,
+    /// What the confirmation does with the ticked copies; remembered, and
+    /// named by the toolbar button that opens it.
+    pub(crate) removal: Removal,
+    /// The folder [`Removal::MoveAside`] moves the copies into, picked inside
+    /// the confirmation. Session-only: a move is a deliberate act per run.
+    pub(crate) move_dest: Option<PathBuf>,
+    /// The cleanup findings' confirmation is open (delete, or remove photo
+    /// metadata). Nothing changes on disk until it is confirmed.
+    pub(crate) confirm_findings: bool,
+    /// A delete, move, link, consolidate or findings act is running. A second
+    /// one waits for it: both would act on the same files, and the later
+    /// outcome would overwrite the earlier one's trash receipt.
+    pub(crate) acting: bool,
+    /// What the findings' act did since the cleanup scan; reset by a scan.
+    pub(crate) findings_done: Option<FindingsDone>,
     /// Cooperative cancellation for the running scan; Stop sets it and the
     /// pipeline polls it at phase boundaries.
     pub(crate) scan_cancel: CancelToken,
@@ -319,6 +412,11 @@ impl Default for AppState {
             consolidate_dest: None,
             consolidating: false,
             confirm_delete: false,
+            removal: Removal::Delete,
+            move_dest: None,
+            confirm_findings: false,
+            acting: false,
+            findings_done: None,
             scan_cancel: CancelToken::new(),
             scan_gen: 0,
         }
@@ -383,7 +481,11 @@ impl AppState {
         self.jobs_input = saved.jobs.clone();
         self.hash_index = Some(saved.hash_index.min(2));
         self.keep_index = Some(saved.keep_index.min(4));
-        self.find_index = Some(saved.find_index.min(10));
+        self.find_index = Some(
+            saved
+                .find_index
+                .min(crate::ui::settings::FIND_LABELS.len() - 1),
+        );
         self.match_index = Some(saved.match_index.min(3));
         self.image_hash_index = Some(saved.image_hash_index.min(4));
         self.partial_clips = saved.partial_clips;
@@ -391,6 +493,7 @@ impl AppState {
         self.exact = saved.exact;
         self.no_cache = saved.no_cache;
         self.trash = saved.trash;
+        self.removal = Removal::from_index(saved.removal_index);
         self.sort_biggest = saved.sort_biggest;
         self.remember_folders = saved.remember_folders;
         self.wheel_page = saved.wheel_page;

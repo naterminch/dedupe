@@ -54,7 +54,11 @@ chosen.
   what to find, scan, review groups with the Reclaimable figure, then delete,
   consolidate, or export.
 - Delete follows the Trash setting: on, files go to the system trash; off, they
-  are deleted permanently. A confirmation dialog lists what will go first.
+  are deleted permanently. A confirmation dialog lists what will go first, and
+  can instead move the copies into a folder or replace identical ones with
+  hard links.
+- Cleanup scans can delete their findings after a confirmation (duplicate
+  folders stay report-only); Photo metadata removes EXIF/XMP from photos.
 - The keep rule (First / Smallest / Newest / Oldest / Best quality) can change
   after a scan without rescanning.
 - Folders can be marked protected: their copies always win the keep decision

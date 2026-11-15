@@ -229,7 +229,9 @@ pub struct Cli {
     pub hardlink: bool,
 
     /// Remove embedded EXIF/metadata from scanned JPEG/PNG images in place
-    /// (with --yes; otherwise lists what would be rewritten).
+    /// (with --yes; otherwise lists what would be rewritten). Images inside
+    /// a --reference-dir are left alone. `--find photo-metadata` lists the
+    /// affected photos.
     #[arg(long)]
     pub strip_exif: bool,
 
@@ -276,6 +278,8 @@ pub enum FindMode {
     DuplicateFolders,
     /// Audio files matched by tags or fingerprint, `--similar` of them.
     Music,
+    /// JPEG and PNG photos carrying EXIF or XMP metadata.
+    PhotoMetadata,
 }
 
 /// How candidates are matched for `--match` when not comparing content.

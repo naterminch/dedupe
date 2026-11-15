@@ -155,8 +155,9 @@ pub fn run_scan(
         let mut mode_result = modes::run_mode(cli, cancel);
         // A deletion has to prove each finding is unchanged, so record what
         // the files hold now. Report-only runs skip this: hashing the top
-        // entries of a big-files report would cost more than the scan.
-        if cli.delete && !cli.dry_run {
+        // entries of a big-files report would cost more than the scan. So do
+        // modes whose findings are never deleted; the CLI refuses those.
+        if cli.delete && !cli.dry_run && modes::mode_deletes(cli.find) {
             modes::attach_content_hashes(&mut mode_result, &engine, cancel);
         }
         let stats = report::ScanStats {

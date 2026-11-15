@@ -1,8 +1,13 @@
-use super::walk::walk_tree;
+use super::Finding;
+use super::findings::finding;
+use super::walk::{Tree, walk_tree};
+use crate::actions::is_protected;
 use crate::cancel::CancelToken;
 use crate::cli::Cli;
+use crate::hashing::HashEngine;
+use crate::util::human_bytes;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What a metadata-stripping pass found and did.
 #[derive(Debug, Default)]
@@ -15,10 +20,44 @@ pub struct ExifReport {
     pub rewritten: u64,
     /// Bytes the rewrites removed, or would remove on a dry run.
     pub bytes_saved: u64,
-    /// Images left alone because reading or rewriting them failed.
+    /// Images left alone: inside a reference dir, or reading or rewriting
+    /// them failed.
     pub skipped: u64,
     /// Whether this run was allowed to write to disk.
     pub applied: bool,
+}
+
+/// What [`strip_metadata`] did, per file, so callers (e.g. the GUI) can
+/// update their own state for exactly the photos that were rewritten.
+#[derive(Debug, Default)]
+pub struct StripOutcome {
+    pub stripped: Vec<PathBuf>,
+    /// Unverified (no recorded hash), changed since the scan, already free
+    /// of metadata, or failed.
+    pub skipped: Vec<PathBuf>,
+    /// Inside a protected folder, so never touched.
+    pub protected: Vec<PathBuf>,
+    /// Reads or rewrites that failed, with the reason.
+    pub failures: Vec<(PathBuf, String)>,
+    pub bytes_saved: u64,
+}
+
+/// Whether `path` names a format the stripper understands, judged by
+/// extension like the rest of the scan.
+fn is_photo(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "jpg" | "jpeg" | "jfif" | "png"
+        )
+    })
+}
+
+/// The image without its EXIF/XMP metadata, or `None` when it carries none
+/// (or is neither a JPEG nor a PNG). Both parsers check the signature, so a
+/// mislabelled file is still handled by the format it actually is.
+fn without_metadata(data: &[u8]) -> Option<Vec<u8>> {
+    strip_jpeg_metadata(data).or_else(|| strip_png_metadata(data))
 }
 
 /// Strip EXIF and XMP metadata from the JPEG and PNG files under the scan
@@ -26,10 +65,13 @@ pub struct ExifReport {
 ///
 /// Writes only when `--yes` is passed and `--dry-run` is not, and rewrites
 /// through a temporary file plus backup so an interrupted write cannot leave a
-/// half-written image.
+/// half-written image. Images inside a `--reference-dir` are never touched:
+/// a reference folder is the user's safety net in every mode.
 #[must_use]
 pub fn strip_exif(cli: &Cli, cancel: &CancelToken) -> ExifReport {
     let tree = walk_tree(cli, cancel);
+    let protected = crate::matching::canonicalize_refs(&cli.reference_dir);
+    let engine = HashEngine::new(cli.hash);
     let applied = cli.yes && !cli.dry_run;
     let mut report = ExifReport {
         applied,
@@ -39,45 +81,148 @@ pub fn strip_exif(cli: &Cli, cancel: &CancelToken) -> ExifReport {
         if cancel.is_cancelled() {
             break;
         }
-        let ext = file
-            .path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let is_png = match ext.as_str() {
-            "jpg" | "jpeg" | "jfif" => false,
-            "png" => true,
-            _ => continue,
-        };
+        if !is_photo(&file.path) {
+            continue;
+        }
         report.images_scanned += 1;
+        if is_protected(&file.path, &protected) {
+            report.skipped += 1;
+            continue;
+        }
         let Ok(data) = fs::read(&file.path) else {
             report.skipped += 1;
             continue;
         };
-        let stripped = if is_png {
-            strip_png_metadata(&data)
-        } else {
-            strip_jpeg_metadata(&data)
-        };
-        let Some(stripped) = stripped else {
+        let Some(stripped) = without_metadata(&data) else {
             continue;
         };
         report.images_with_metadata += 1;
-        let saved = data.len().saturating_sub(stripped.len()) as u64;
+        let saved = metadata_bytes(&data, &stripped);
         if !applied {
             report.bytes_saved += saved;
             continue;
         }
-        match rewrite_in_place(&file.path, &stripped) {
-            Ok(()) => {
+        // The photo must still be the one just read when it is swapped out.
+        let read = engine.bytes(&data);
+        match rewrite_in_place(&file.path, &stripped, Some((&engine, &read))) {
+            Ok(Rewrite::Done) => {
                 report.rewritten += 1;
                 report.bytes_saved += saved;
             }
-            Err(_) => report.skipped += 1,
+            Ok(Rewrite::Changed) | Err(_) => report.skipped += 1,
         }
     }
     report
+}
+
+fn metadata_bytes(data: &[u8], stripped: &[u8]) -> u64 {
+    data.len().saturating_sub(stripped.len()) as u64
+}
+
+/// One finding per photo that carries metadata, sized by what stripping it
+/// would save, so the mode's reclaimable total is the space stripping gives
+/// back. Unreadable photos are reported in `errors`.
+///
+/// Each finding's hash is taken from the very bytes classified here, so a
+/// later strip proves the file is the one the scan saw, not whatever it held
+/// when the hashes were attached.
+pub(super) fn photo_metadata(
+    tree: &Tree,
+    engine: &HashEngine,
+    errors: &mut Vec<String>,
+    cancel: &CancelToken,
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for file in &tree.files {
+        if cancel.is_cancelled() {
+            break;
+        }
+        if !is_photo(&file.path) {
+            continue;
+        }
+        let data = match fs::read(&file.path) {
+            Ok(data) => data,
+            Err(e) => {
+                errors.push(format!("{}: {e}", file.path.display()));
+                continue;
+            }
+        };
+        if let Some(stripped) = without_metadata(&data) {
+            let mut found = finding(
+                file.path.clone(),
+                metadata_bytes(&data, &stripped),
+                "metadata",
+                format!("EXIF/XMP metadata · photo {}", human_bytes(file.size)),
+                false,
+            );
+            found.hash = Some(engine.bytes(&data));
+            out.push(found);
+        }
+    }
+    out
+}
+
+/// Strip the metadata from every photo in `findings` (from
+/// `--find photo-metadata`), non-interactively.
+///
+/// Safety mirrors deletion: a photo inside a protected folder is skipped, and
+/// each file must still hold the bytes recorded in `finding.hash` — a finding
+/// with no recorded hash is never rewritten unverified. The file is read once
+/// and that same buffer is both verified and stripped, so nothing can change
+/// between the check and the rewrite's input.
+#[must_use]
+pub fn strip_metadata(
+    findings: &[Finding],
+    protected: &[PathBuf],
+    engine: &HashEngine,
+) -> StripOutcome {
+    let mut outcome = StripOutcome::default();
+    for finding in findings {
+        let path = &finding.path;
+        if is_protected(path, protected) {
+            outcome.protected.push(path.clone());
+            continue;
+        }
+        let Some(expected) = finding.hash.as_deref() else {
+            outcome.skipped.push(path.clone());
+            continue;
+        };
+        let data = match fs::read(path) {
+            Ok(data) => data,
+            Err(e) => {
+                outcome.skipped.push(path.clone());
+                outcome.failures.push((
+                    path.clone(),
+                    format!("could not read {}: {e}", path.display()),
+                ));
+                continue;
+            }
+        };
+        if engine.bytes(&data) != expected {
+            outcome.skipped.push(path.clone());
+            continue;
+        }
+        let Some(stripped) = without_metadata(&data) else {
+            outcome.skipped.push(path.clone());
+            continue;
+        };
+        match rewrite_in_place(path, &stripped, Some((engine, expected))) {
+            Ok(Rewrite::Done) => {
+                outcome.bytes_saved += metadata_bytes(&data, &stripped);
+                outcome.stripped.push(path.clone());
+            }
+            // Saved by someone else after the check: their version stays.
+            Ok(Rewrite::Changed) => outcome.skipped.push(path.clone()),
+            Err(e) => {
+                outcome.skipped.push(path.clone());
+                outcome.failures.push((
+                    path.clone(),
+                    format!("could not rewrite {}: {e}", path.display()),
+                ));
+            }
+        }
+    }
+    outcome
 }
 
 pub(super) fn strip_jpeg_metadata(data: &[u8]) -> Option<Vec<u8>> {
@@ -168,20 +313,64 @@ pub(super) fn strip_png_metadata(data: &[u8]) -> Option<Vec<u8>> {
     if removed { Some(out) } else { None }
 }
 
-fn rewrite_in_place(path: &Path, data: &[u8]) -> std::io::Result<()> {
+/// Whether a rewrite replaced the photo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rewrite {
+    Done,
+    /// The photo no longer held the bytes the rewrite was made from, so it
+    /// was left exactly as it was.
+    Changed,
+}
+
+/// Replace `path` with `data` through a temporary file beside it, keeping the
+/// original as a backup until the new bytes are in place.
+///
+/// The temporary file is created new (never opened through an existing name,
+/// so a symlink planted at a predictable name is refused rather than
+/// followed). With `expect`, the photo is hashed once more just before it is
+/// swapped out, and a photo saved by someone else since `data` was derived is
+/// left alone.
+fn rewrite_in_place(
+    path: &Path,
+    data: &[u8],
+    expect: Option<(&HashEngine, &str)>,
+) -> std::io::Result<Rewrite> {
+    use std::io::Write;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let pid = std::process::id();
     let mut n = 0u32;
-    let (temp, backup) = loop {
+    let (temp, mut file) = loop {
         let temp = parent.join(format!(".{name}.dedupe-tmp-{pid}-{n}"));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => break (temp, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    if let Err(e) = file.write_all(data).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    drop(file);
+    if let Some((engine, expected)) = expect
+        && engine.full(path).ok().as_deref() != Some(expected)
+    {
+        let _ = fs::remove_file(&temp);
+        return Ok(Rewrite::Changed);
+    }
+    let backup = loop {
         let backup = parent.join(format!(".{name}.dedupe-bak-{pid}-{n}"));
-        if !temp.exists() && !backup.exists() {
-            break (temp, backup);
+        if fs::symlink_metadata(&backup).is_err() {
+            break backup;
         }
         n += 1;
     };
-    fs::write(&temp, data)?;
     if let Err(e) = fs::rename(path, &backup) {
         let _ = fs::remove_file(&temp);
         return Err(e);
@@ -189,7 +378,7 @@ fn rewrite_in_place(path: &Path, data: &[u8]) -> std::io::Result<()> {
     match fs::rename(&temp, path) {
         Ok(()) => {
             let _ = fs::remove_file(&backup);
-            Ok(())
+            Ok(Rewrite::Done)
         }
         Err(e) => {
             let _ = fs::rename(&backup, path);

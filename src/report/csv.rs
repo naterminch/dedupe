@@ -24,8 +24,10 @@ pub fn write_csv(
             ]));
         }
         for group in &result.groups {
-            for member in &group.members {
-                let size = std::fs::metadata(member).map_or(0, |m| m.len());
+            for (n, member) in group.members.iter().enumerate() {
+                // The size the scan recorded: for a folder that is its
+                // content, which the folder's own metadata does not give.
+                let size = group.sizes.get(n).copied().unwrap_or(0);
                 out.push_str(&csv_row(&[
                     crate::modes::mode_name(result.mode),
                     "group",
@@ -66,6 +68,16 @@ fn csv_row(fields: &[&str]) -> String {
         if i > 0 {
             row.push(',');
         }
+        // A spreadsheet runs a cell that opens with one of these as a
+        // formula, and a file name is anyone's to choose: a leading
+        // apostrophe keeps it text.
+        let neutral;
+        let field = if field.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+            neutral = format!("'{field}");
+            neutral.as_str()
+        } else {
+            field
+        };
         if field.contains([',', '"', '\n', '\r']) {
             row.push('"');
             row.push_str(&field.replace('"', "\"\""));

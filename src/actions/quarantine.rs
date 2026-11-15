@@ -1,17 +1,54 @@
-use super::ActionError;
-use super::MoveDuplicateStats;
-use super::fileops::free_dest_path;
-use super::fileops::move_file;
+use super::consolidate::move_targets;
+use super::fileops::{Claimed, free_dest_path};
 use super::guard::prompt;
-use super::guard::verify_expected;
+use super::{ActionError, DeleteTarget, MoveDuplicateStats, MoveTarget};
 use crate::hashing::HashEngine;
-use crate::matching::{self, Group};
+use crate::matching::Group;
 use crate::util::human_bytes;
 use console::style;
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+/// Decide where each of `targets` lands under `dest` (flattened), in input
+/// order, without touching disk beyond existence checks.
+///
+/// Name collisions — against the filesystem and against earlier targets in
+/// this plan — gain a " (2)", " (3)", ... suffix, the same rule as
+/// consolidation, so a move can never overwrite an unrelated file.
+#[must_use]
+pub fn plan_move_aside(targets: &[DeleteTarget], dest: &Path) -> Vec<MoveTarget> {
+    let mut claimed = Claimed::default();
+    targets
+        .iter()
+        .map(|target| {
+            let file_name = target
+                .path
+                .file_name()
+                .unwrap_or_else(|| target.path.as_os_str());
+            let to = free_dest_path(dest, file_name, &claimed);
+            claimed.insert(&to);
+            MoveTarget {
+                from: target.path.clone(),
+                to,
+                expected_hash: target.expected_hash.clone(),
+                size: target.size,
+            }
+        })
+        .collect()
+}
+
+/// Move every deletable member of each group into `dest` instead of deleting
+/// it (see [`plan_move_aside`] and [`move_targets`]).
+///
+/// Keepers and copies inside a reference folder are never moved: a reference
+/// folder is a safety net, so none of its copies are targets.
+///
+/// Unless `yes` is set, the user is prompted per group:
+///   y = move this group, a = move this and all remaining, q = quit.
+///
+/// # Errors
+///
+/// Returns [`ActionError::Destination`] when `dest` cannot be created.
 pub fn move_duplicates(
     groups: &[Group],
     dest: &Path,
@@ -25,15 +62,22 @@ pub fn move_duplicates(
     })?;
     let mut stats = MoveDuplicateStats::default();
     let mut assume_yes = yes;
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
     'groups: for group in groups {
-        let targets: Vec<&matching::GroupMember> =
-            group.members.iter().filter(|m| !m.keep).collect();
+        let targets: Vec<DeleteTarget> = group
+            .members
+            .iter()
+            .filter(|m| m.deletable())
+            .map(|m| DeleteTarget {
+                path: m.path.clone(),
+                expected_hash: m.content_hash.clone().unwrap_or_else(|| group.hash.clone()),
+                size: m.size,
+            })
+            .collect();
         if targets.is_empty() {
             continue;
         }
         if !assume_yes {
-            let bytes: u64 = targets.iter().map(|m| m.size).sum();
+            let bytes: u64 = targets.iter().map(|t| t.size).sum();
             let answer = prompt(&format!(
                 "{} Move {} duplicate(s) ({} reclaimable) from group #{} to {}? {} ",
                 style("?").yellow().bold(),
@@ -53,57 +97,13 @@ pub fn move_duplicates(
                 }
             }
         }
-        for member in targets {
-            let expected = member.content_hash.as_deref().unwrap_or(&group.hash);
-            match verify_expected(&member.path, expected, member.size, engine) {
-                Ok(true) => {}
-                Ok(false) => {
-                    eprintln!(
-                        "{} {}: {}",
-                        style("⚠").yellow(),
-                        style("changed since the scan, skipping (not moved)")
-                            .yellow()
-                            .bold(),
-                        style(member.path.display()).dim()
-                    );
-                    stats.files_skipped += 1;
-                    continue;
-                }
-                Err(err) => {
-                    eprintln!(
-                        "{} {}: {}",
-                        style("⚠").yellow(),
-                        style("cannot verify, skipping").yellow().bold(),
-                        style(err.to_string()).dim()
-                    );
-                    stats.files_skipped += 1;
-                    stats.failures.push((member.path.clone(), err));
-                    continue;
-                }
-            }
-            let file_name = member
-                .path
-                .file_name()
-                .unwrap_or_else(|| member.path.as_os_str());
-            let to = free_dest_path(dest, file_name, &claimed);
-            claimed.insert(to.clone());
-            match move_file(&member.path, &to) {
-                Ok(()) => {
-                    stats.files_moved += 1;
-                    stats.bytes_moved += member.size;
-                }
-                Err(err) => {
-                    eprintln!(
-                        "{} {}: {}",
-                        style("⚠").yellow(),
-                        style("cannot move").yellow().bold(),
-                        style(err.to_string()).dim()
-                    );
-                    stats.files_skipped += 1;
-                    stats.failures.push((member.path.clone(), err));
-                }
-            }
-        }
+        // Planned per group, after earlier groups have landed: their files
+        // now exist under `dest`, so the collision check sees them on disk.
+        let outcome = move_targets(&plan_move_aside(&targets, dest), engine);
+        stats.files_moved += outcome.moved.len() as u64;
+        stats.bytes_moved += outcome.bytes_moved;
+        stats.files_skipped += outcome.skipped.len() as u64;
+        stats.failures.extend(outcome.failures);
     }
     Ok(stats)
 }

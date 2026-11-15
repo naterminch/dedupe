@@ -1,4 +1,4 @@
-//! Typed failures for the delete and move paths.
+//! Typed failures for the delete, move and hard-link paths.
 //!
 //! These errors cross into the GUI, which tells them apart by variant: a trash
 //! call that the desktop refused reads differently from a destination folder
@@ -9,7 +9,7 @@
 use std::io;
 use std::path::PathBuf;
 
-/// What went wrong while removing or moving files.
+/// What went wrong while removing, moving or hard-linking files.
 #[derive(Debug, thiserror::Error)]
 pub enum ActionError {
     /// The destination directory for a move could not be created.
@@ -72,6 +72,54 @@ pub enum ActionError {
         rename: io::Error,
         copy: io::Error,
     },
+
+    /// A duplicate could not be set aside before being replaced by a hard
+    /// link, so it was left untouched.
+    #[error("could not set {} aside for hard-linking: {source}", path.display())]
+    Stage {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// The hard link could not be created (often a different volume); the
+    /// original file was put back.
+    #[error("could not hard-link {} to {}: {source}", path.display(), keeper.display())]
+    Link {
+        path: PathBuf,
+        keeper: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+
+    /// The hard link failed and the original could not be put back either:
+    /// its bytes survive only at `backup`.
+    #[error(
+        "hard link for {} failed ({link}) and the original could not be restored; it is kept at {}: {source}",
+        path.display(),
+        backup.display()
+    )]
+    Restore {
+        path: PathBuf,
+        backup: PathBuf,
+        link: io::Error,
+        #[source]
+        source: io::Error,
+    },
+
+    /// The hard link is in place, but the original's staged copy beside it
+    /// could not be removed, so its space is still taken.
+    #[error(
+        "{} is now a hard link, but its old copy could not be removed from {}: {source}",
+        path.display(),
+        backup.display()
+    )]
+    BackupKept {
+        path: PathBuf,
+        backup: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 impl ActionError {
@@ -80,7 +128,13 @@ impl ActionError {
     pub fn path(&self) -> &std::path::Path {
         match self {
             Self::Destination { file, .. } => file,
-            Self::Read { path, .. } | Self::Remove { path, .. } | Self::Trash { path, .. } => path,
+            Self::Read { path, .. }
+            | Self::Remove { path, .. }
+            | Self::Trash { path, .. }
+            | Self::Stage { path, .. }
+            | Self::Link { path, .. }
+            | Self::Restore { path, .. }
+            | Self::BackupKept { path, .. } => path,
             Self::CopiedButKept { from, .. } | Self::Move { from, .. } => from,
         }
     }

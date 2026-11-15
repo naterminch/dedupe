@@ -53,6 +53,7 @@ pub(crate) fn find_mode(index: Option<usize>) -> cli::FindMode {
         8 => cli::FindMode::BadNames,
         9 => cli::FindMode::DuplicateFolders,
         10 => cli::FindMode::Music,
+        11 => cli::FindMode::PhotoMetadata,
         _ => cli::FindMode::Duplicates,
     }
 }
@@ -94,6 +95,9 @@ pub(crate) fn find_mode_caption(index: Option<usize>) -> &'static str {
         cli::FindMode::BadNames => "Reserved names, invalid characters, trailing dots or spaces.",
         cli::FindMode::DuplicateFolders => "Identical folder trees by content signature.",
         cli::FindMode::Music => "Duplicate tracks by embedded tags or audio fingerprint.",
+        cli::FindMode::PhotoMetadata => {
+            "JPEG and PNG photos carrying EXIF or XMP data: camera, place, dates."
+        }
     }
 }
 
@@ -268,7 +272,7 @@ mod tests {
 
     #[test]
     fn find_mode_captions_cover_every_selector_index() {
-        for index in 0..=10 {
+        for index in 0..=11 {
             assert!(!find_mode_caption(Some(index)).is_empty());
         }
     }

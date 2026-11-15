@@ -69,7 +69,9 @@ pub fn write_html(
                 escape_html(&group.detail),
             );
             for (n, member) in group.members.iter().enumerate() {
-                let size = std::fs::metadata(member).map_or(0, |m| m.len());
+                // The size the scan recorded: for a folder that is its
+                // content, which the folder's own metadata does not give.
+                let size = group.sizes.get(n).copied().unwrap_or(0);
                 let _ = write!(
                     body,
                     "<tr><td class=\"{}\">{}</td><td class=\"path\">{}</td><td>{}</td></tr>",

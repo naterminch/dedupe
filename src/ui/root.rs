@@ -77,14 +77,21 @@ pub fn DedupeApp() -> impl IntoElement {
                         // arrive while the dialog is open.
                         s.confirm_rev,
                         s.posters.len(),
+                        // The removal picked in the delete dialog rewrites its
+                        // title, plan and commit; the findings' dialog opens
+                        // on its own flag.
+                        s.removal,
+                        s.confirm_findings,
                     )
                 })
             });
-            let (deleting, _, consolidating, _, _, _) = open.get();
+            let (deleting, _, consolidating, _, _, _, _, findings) = open.get();
             if deleting {
                 results::delete_confirm()
             } else if consolidating {
                 results::consolidate_confirm()
+            } else if findings {
+                results::findings_confirm()
             } else {
                 view()
             }
