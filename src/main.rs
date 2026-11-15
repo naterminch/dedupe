@@ -247,7 +247,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
                     let mut count = 0u64;
                     let mut bytes = 0u64;
                     for group in &out.groups {
-                        for member in group.members.iter().filter(|m| !m.keep) {
+                        for member in group.members.iter().filter(|m| m.deletable()) {
                             count += 1;
                             bytes += member.size;
                             if !cli.quiet && !cli.json {
@@ -282,17 +282,16 @@ fn run(cli: &cli::Cli) -> Result<()> {
                 }
             } else if cli.hardlink {
                 if cli.dry_run {
-                    let count: u64 = out
-                        .groups
-                        .iter()
-                        .map(|g| g.members.iter().filter(|m| !m.keep).count() as u64)
-                        .sum();
-                    let bytes: u64 = out
-                        .groups
-                        .iter()
-                        .flat_map(|g| g.members.iter().filter(|m| !m.keep))
-                        .map(|m| m.size)
-                        .sum();
+                    // Only what --hardlink would touch: byte-identical groups,
+                    // minus keepers and reference-dir copies.
+                    let linkable = || {
+                        out.groups
+                            .iter()
+                            .filter(|g| dedupe::actions::can_hardlink(g))
+                            .flat_map(|g| g.members.iter().filter(|m| m.deletable()))
+                    };
+                    let count = linkable().count() as u64;
+                    let bytes: u64 = linkable().map(|m| m.size).sum();
                     println!(
                         "{} Dry run: would replace {} duplicate file(s) with hard links ({} saved); nothing was changed.",
                         style("◌").cyan().bold(),
@@ -325,10 +324,7 @@ fn run(cli: &cli::Cli) -> Result<()> {
                     for group in &out.groups {
                         let mut group_count = 0u64;
                         let mut group_bytes = 0u64;
-                        for member in &group.members {
-                            if member.keep {
-                                continue;
-                            }
+                        for member in group.members.iter().filter(|m| m.deletable()) {
                             group_count += 1;
                             group_bytes += member.size;
                             if !cli.quiet && !cli.json {
@@ -427,7 +423,12 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
             "--move-dir and --hardlink apply to duplicate matching, not --find cleanup modes"
         );
     }
-    if result.mode == cli::FindMode::DuplicateFolders {
+    if !dedupe::modes::mode_deletes(result.mode) {
+        if result.mode == cli::FindMode::PhotoMetadata {
+            anyhow::bail!(
+                "--find photo-metadata never deletes photos; use --strip-exif to remove their metadata instead"
+            );
+        }
         if !cli.quiet {
             eprintln!(
                 "{} duplicate folder trees are report-only; remove them manually after review",

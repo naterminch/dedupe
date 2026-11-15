@@ -1,5 +1,5 @@
 use super::guard::prompt;
-use super::{ActionError, Disposition, FindingDeleteStats};
+use super::{ActionError, Disposition, FindingDeleteStats, FindingOutcome};
 use crate::hashing::HashEngine;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
@@ -150,6 +150,118 @@ fn remove_finding_path(finding: &Finding, disposition: Disposition) -> Result<()
     }
 }
 
+/// Remove one candidate through [`remove_verified`] and record what happened,
+/// warning about anything left in place. The per-item core shared by
+/// [`remove_findings`] and the prompting CLI paths.
+fn remove_into(
+    outcome: &mut FindingOutcome,
+    finding: &Finding,
+    expected_hash: Option<&str>,
+    disposition: Disposition,
+    engine: &HashEngine,
+) {
+    match remove_verified(finding, expected_hash, disposition, engine) {
+        Removal::Removed => {
+            outcome.removed.push(finding.path.clone());
+            if !finding.is_dir {
+                outcome.bytes_freed += finding.size;
+            }
+        }
+        Removal::Changed => {
+            eprintln!(
+                "{} {}: {}",
+                style("⚠").yellow(),
+                style("changed since the scan, skipping").yellow().bold(),
+                style(finding.path.display()).dim()
+            );
+            outcome.skipped.push(finding.path.clone());
+        }
+        Removal::Failed(err) => {
+            eprintln!(
+                "{} {}: {}",
+                style("⚠").yellow(),
+                style("cannot remove").yellow().bold(),
+                style(err.to_string()).dim()
+            );
+            outcome.skipped.push(finding.path.clone());
+            outcome.failures.push((finding.path.clone(), err));
+        }
+    }
+}
+
+/// A group member as a finding the removal guard can check: the size the
+/// scan recorded, so the guard checks type and size; the hash travels
+/// separately from the group.
+fn member_finding(group: &FindingGroup, index: usize) -> Finding {
+    Finding {
+        path: group.members[index].clone(),
+        size: group.sizes.get(index).copied().unwrap_or(0),
+        kind: "group",
+        detail: String::new(),
+        is_dir: false,
+        hash: None,
+    }
+}
+
+fn member_hash(group: &FindingGroup, index: usize) -> Option<&str> {
+    group.hashes.get(index).and_then(|hash| hash.as_deref())
+}
+
+/// Remove every finding and every group member except each group's first
+/// (the keeper), non-interactively.
+///
+/// Used directly by the GUI (which collects its own confirmation). Same
+/// safety as [`delete_findings`] and [`delete_finding_groups`]: anything
+/// inside a protected folder is never a candidate, and every item is proven
+/// unchanged since the scan (a file with no recorded hash is kept).
+pub fn remove_findings(
+    findings: &[Finding],
+    groups: &[FindingGroup],
+    disposition: Disposition,
+    protected: &[PathBuf],
+    engine: &HashEngine,
+) -> FindingOutcome {
+    let mut outcome = FindingOutcome::default();
+    for finding in findings {
+        if is_protected(&finding.path, protected) {
+            outcome.protected.push(finding.path.clone());
+        } else {
+            remove_into(
+                &mut outcome,
+                finding,
+                finding.hash.as_deref(),
+                disposition,
+                engine,
+            );
+        }
+    }
+    for group in groups {
+        for (index, path) in group.members.iter().enumerate().skip(1) {
+            if is_protected(path, protected) {
+                outcome.protected.push(path.clone());
+            } else {
+                remove_into(
+                    &mut outcome,
+                    &member_finding(group, index),
+                    member_hash(group, index),
+                    disposition,
+                    engine,
+                );
+            }
+        }
+    }
+    outcome
+}
+
+impl FindingDeleteStats {
+    fn absorb(&mut self, outcome: FindingOutcome) {
+        self.deleted += outcome.removed.len() as u64;
+        self.bytes_freed += outcome.bytes_freed;
+        self.skipped += (outcome.skipped.len() + outcome.protected.len()) as u64;
+        self.failures.extend(outcome.failures);
+    }
+}
+
 pub fn delete_findings(
     findings: &[Finding],
     disposition: Disposition,
@@ -204,35 +316,17 @@ pub fn delete_findings(
             return stats;
         }
     }
+    let mut outcome = FindingOutcome::default();
     for finding in deleteable {
-        match remove_verified(finding, finding.hash.as_deref(), disposition, engine) {
-            Removal::Removed => {
-                stats.deleted += 1;
-                if !finding.is_dir {
-                    stats.bytes_freed += finding.size;
-                }
-            }
-            Removal::Changed => {
-                eprintln!(
-                    "{} {}: {}",
-                    style("⚠").yellow(),
-                    style("changed since the scan, skipping").yellow().bold(),
-                    style(finding.path.display()).dim()
-                );
-                stats.skipped += 1;
-            }
-            Removal::Failed(err) => {
-                eprintln!(
-                    "{} {}: {}",
-                    style("⚠").yellow(),
-                    style("cannot remove").yellow().bold(),
-                    style(err.to_string()).dim()
-                );
-                stats.skipped += 1;
-                stats.failures.push((finding.path.clone(), err));
-            }
-        }
+        remove_into(
+            &mut outcome,
+            finding,
+            finding.hash.as_deref(),
+            disposition,
+            engine,
+        );
     }
+    stats.absorb(outcome);
     stats
 }
 
@@ -248,13 +342,13 @@ pub fn delete_finding_groups(
     'groups: for group in groups {
         // The first member is the keeper; the rest are deletion candidates,
         // minus anything sitting in a protected folder.
-        let mut targets: Vec<(usize, &PathBuf)> = Vec::new();
+        let mut targets: Vec<usize> = Vec::new();
         let mut kept = 0usize;
         for (index, path) in group.members.iter().enumerate().skip(1) {
             if is_protected(path, protected) {
                 kept += 1;
             } else {
-                targets.push((index, path));
+                targets.push(index);
             }
         }
         if kept > 0 {
@@ -291,45 +385,17 @@ pub fn delete_finding_groups(
                 }
             }
         }
-        for (i, path) in targets {
-            let expected_size = group.sizes.get(i).copied().unwrap_or(0);
-            // The synthesized finding carries the size the scan recorded, so
-            // the guard checks type and size; the hash comes from the group.
-            let finding = Finding {
-                path: path.clone(),
-                size: expected_size,
-                kind: "group",
-                detail: String::new(),
-                is_dir: false,
-                hash: None,
-            };
-            let expected_hash = group.hashes.get(i).and_then(|hash| hash.as_deref());
-            match remove_verified(&finding, expected_hash, disposition, engine) {
-                Removal::Removed => {
-                    stats.deleted += 1;
-                    stats.bytes_freed += expected_size;
-                }
-                Removal::Changed => {
-                    eprintln!(
-                        "{} {}: {}",
-                        style("⚠").yellow(),
-                        style("changed since the scan, skipping").yellow().bold(),
-                        style(path.display()).dim()
-                    );
-                    stats.skipped += 1;
-                }
-                Removal::Failed(err) => {
-                    eprintln!(
-                        "{} {}: {}",
-                        style("⚠").yellow(),
-                        style("cannot remove").yellow().bold(),
-                        style(err.to_string()).dim()
-                    );
-                    stats.skipped += 1;
-                    stats.failures.push((path.clone(), err));
-                }
-            }
+        let mut outcome = FindingOutcome::default();
+        for index in targets {
+            remove_into(
+                &mut outcome,
+                &member_finding(group, index),
+                member_hash(group, index),
+                disposition,
+                engine,
+            );
         }
+        stats.absorb(outcome);
     }
     stats
 }

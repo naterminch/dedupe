@@ -189,14 +189,17 @@ pub fn print_mode_human(ctx: &ReportContext, result: &crate::modes::ModeResult) 
         .bold()
     );
     if reclaim > 0 {
+        // Photo metadata is removed with --strip-exif; --delete would refuse.
+        let flag = if result.mode == crate::cli::FindMode::PhotoMetadata {
+            "--strip-exif"
+        } else {
+            "--delete"
+        };
         println!(
             "{}",
-            style(format!(
-                "Reclaimable with --delete: {}",
-                human_bytes(reclaim)
-            ))
-            .yellow()
-            .bold()
+            style(format!("Reclaimable with {flag}: {}", human_bytes(reclaim)))
+                .yellow()
+                .bold()
         );
     }
     if result.cancelled {
@@ -272,7 +275,14 @@ pub fn print_mode_human(ctx: &ReportContext, result: &crate::modes::ModeResult) 
             );
         }
     }
-    if result.mode == crate::cli::FindMode::Music {
+    if result.mode == crate::cli::FindMode::PhotoMetadata {
+        println!();
+        println!(
+            "{} run with {} to remove the metadata in place; the photos themselves are never deleted.",
+            style("Tip:").cyan().bold(),
+            style("--strip-exif --yes").green(),
+        );
+    } else if result.mode == crate::cli::FindMode::Music {
         println!();
         println!(
             "{} run with {} to remove all but the largest track in each group.",

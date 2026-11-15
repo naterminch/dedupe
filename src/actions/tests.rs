@@ -235,7 +235,7 @@ fn consolidate_moves_keeper_and_counts_bytes() {
     let dest = dir.join("vault");
     let to = dest.join("keep.txt");
 
-    let outcome = consolidate_targets(&[move_target_for(&keep, to.clone())], &engine());
+    let outcome = move_targets(&[move_target_for(&keep, to.clone())], &engine());
     assert_eq!(outcome.moved, vec![(keep.clone(), to.clone())]);
     assert!(outcome.skipped.is_empty());
     assert_eq!(outcome.bytes_moved, 15);
@@ -254,7 +254,7 @@ fn consolidate_skips_changed_keeper() {
     fs::write(&keep, b"version two, different").unwrap();
     target.size = fs::metadata(&keep).unwrap().len();
 
-    let outcome = consolidate_targets(&[target], &engine());
+    let outcome = move_targets(&[target], &engine());
     assert!(outcome.moved.is_empty());
     assert_eq!(outcome.skipped, vec![keep.clone()]);
     assert_eq!(outcome.bytes_moved, 0);
@@ -742,5 +742,270 @@ fn protected_group_member_is_counted_as_skipped() {
     );
 
     assert_eq!(stats.skipped, 1, "a protected copy is reported as skipped");
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+fn link_target_for(path: &Path, keeper: &Path) -> LinkTarget {
+    let eng = engine();
+    LinkTarget {
+        path: path.to_path_buf(),
+        expected_hash: eng.full(path).unwrap(),
+        size: fs::metadata(path).unwrap().len(),
+        keeper: keeper.to_path_buf(),
+        keeper_hash: eng.full(keeper).unwrap(),
+        keeper_size: fs::metadata(keeper).unwrap().len(),
+    }
+}
+
+#[test]
+fn link_targets_links_a_byte_identical_copy() {
+    let dir = tmpdir("link-ok");
+    let keep = dir.join("keep.txt");
+    let dup = dir.join("dup.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+    fs::write(&dup, b"identical bytes").unwrap();
+
+    let outcome = link_targets(&[link_target_for(&dup, &keep)], &engine());
+
+    assert_eq!(outcome.linked, vec![dup.clone()]);
+    assert!(outcome.skipped.is_empty());
+    assert!(outcome.failures.is_empty());
+    assert_eq!(outcome.bytes_saved, 15);
+    // One file behind two names: writing through the keeper shows up in the copy.
+    fs::write(&keep, b"changed content").unwrap();
+    assert_eq!(fs::read(&dup).unwrap(), b"changed content");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn link_targets_skips_a_changed_copy_without_failure() {
+    let dir = tmpdir("link-changed");
+    let keep = dir.join("keep.txt");
+    let dup = dir.join("dup.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+    fs::write(&dup, b"identical bytes").unwrap();
+    let target = link_target_for(&dup, &keep);
+    fs::write(&dup, b"edited by user!").unwrap();
+
+    let outcome = link_targets(&[target], &engine());
+
+    assert!(outcome.linked.is_empty());
+    assert_eq!(outcome.skipped, vec![dup.clone()]);
+    assert!(
+        outcome.failures.is_empty(),
+        "a changed file is not a failure"
+    );
+    assert_eq!(fs::read(&dup).unwrap(), b"edited by user!");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn link_targets_skips_copies_of_a_changed_keeper() {
+    let dir = tmpdir("link-keeper-changed");
+    let keep = dir.join("keep.txt");
+    let dup = dir.join("dup.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+    fs::write(&dup, b"identical bytes").unwrap();
+    let target = link_target_for(&dup, &keep);
+    fs::write(&keep, b"keeper changed!").unwrap();
+
+    let outcome = link_targets(&[target], &engine());
+
+    assert!(outcome.linked.is_empty());
+    assert_eq!(outcome.skipped, vec![dup.clone()]);
+    assert_eq!(fs::read(&dup).unwrap(), b"identical bytes");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A target that names its own keeper passes both checks, then loses its
+/// link source the moment it is staged — the one link failure a test can
+/// force portably. The original must come back.
+#[test]
+fn link_targets_restores_the_original_when_linking_fails() {
+    let dir = tmpdir("link-restore");
+    let keep = dir.join("keep.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+
+    let outcome = link_targets(&[link_target_for(&keep, &keep)], &engine());
+
+    assert!(outcome.linked.is_empty());
+    assert_eq!(outcome.skipped, vec![keep.clone()]);
+    assert_eq!(outcome.failures.len(), 1);
+    assert!(matches!(outcome.failures[0].1, ActionError::Link { .. }));
+    assert_eq!(fs::read(&keep).unwrap(), b"identical bytes");
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        1,
+        "no staged backup is left behind"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn can_hardlink_only_byte_identical_groups() {
+    let dir = tmpdir("can-hardlink");
+    let keep = dir.join("keep.txt");
+    let dup = dir.join("dup.txt");
+    fs::write(&keep, b"identical bytes").unwrap();
+    fs::write(&dup, b"identical bytes").unwrap();
+    let group = keeper_group(keep, dup, false);
+    assert!(can_hardlink(&group));
+
+    let mut similar = group.clone();
+    similar.similarity = Some(0.99);
+    assert!(!can_hardlink(&similar));
+
+    for label in ["size:15", "name:keep.txt", "fuzzy:keep"] {
+        let mut labelled = group.clone();
+        labelled.hash = label.to_string();
+        assert!(
+            !can_hardlink(&labelled),
+            "{label} groups are not byte-identical"
+        );
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_move_aside_suffixes_collisions_in_input_order() {
+    let dir = tmpdir("plan-aside");
+    let dest = dir.join("aside");
+    fs::create_dir_all(&dest).unwrap();
+    fs::write(dest.join("photo.jpg"), b"already here").unwrap();
+    let target = |path: PathBuf| DeleteTarget {
+        path,
+        expected_hash: "h".to_string(),
+        size: 1,
+    };
+    let targets = vec![
+        target(dir.join("a").join("photo.jpg")),
+        target(dir.join("b").join("photo.jpg")),
+        target(dir.join("a").join("notes.txt")),
+    ];
+
+    let plan = plan_move_aside(&targets, &dest);
+
+    let to: Vec<PathBuf> = plan.iter().map(|m| m.to.clone()).collect();
+    assert_eq!(
+        to,
+        vec![
+            dest.join("photo (2).jpg"),
+            dest.join("photo (3).jpg"),
+            dest.join("notes.txt"),
+        ]
+    );
+    assert_eq!(plan[1].from, dir.join("b").join("photo.jpg"));
+    assert_eq!(plan[1].expected_hash, "h");
+    assert!(!dir.join("a").exists(), "planning touches nothing");
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A keeper, a plain duplicate and a duplicate inside a reference folder
+/// that is not the keeper.
+fn reference_copy_group(dir: &Path) -> (Group, PathBuf, PathBuf, PathBuf) {
+    let backup = dir.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let keep = dir.join("keep.txt");
+    let dup = dir.join("dup.txt");
+    let guarded = backup.join("guarded.txt");
+    for path in [&keep, &dup, &guarded] {
+        fs::write(path, b"identical bytes").unwrap();
+    }
+    let mut group = keeper_group(keep.clone(), dup.clone(), false);
+    let mut reference = member(guarded.clone(), 15, false, Some(group.hash.clone()));
+    reference.reference = true;
+    group.members.push(reference);
+    (group, keep, dup, guarded)
+}
+
+#[test]
+fn move_duplicates_leaves_reference_copies_alone() {
+    let dir = tmpdir("move-reference");
+    let (group, keep, dup, guarded) = reference_copy_group(&dir);
+    let dest = dir.join("aside");
+
+    let stats = move_duplicates(&[group], &dest, &engine(), true).unwrap();
+
+    assert_eq!(stats.files_moved, 1);
+    assert!(keep.exists());
+    assert!(!dup.exists());
+    assert!(guarded.exists(), "a reference copy is never moved");
+    assert!(!dest.join("guarded.txt").exists());
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn hardlink_duplicates_leaves_reference_copies_alone() {
+    let dir = tmpdir("link-reference");
+    let (group, keep, dup, guarded) = reference_copy_group(&dir);
+
+    let stats = hardlink_duplicates(&[group], &engine(), true);
+
+    assert_eq!(stats.linked, 1);
+    fs::write(&keep, b"changed content").unwrap();
+    assert_eq!(fs::read(&dup).unwrap(), b"changed content");
+    assert_eq!(
+        fs::read(&guarded).unwrap(),
+        b"identical bytes",
+        "a reference copy is never replaced by a link"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn remove_findings_keeps_protected_and_changed_items() {
+    let fixture = protected_findings("remove-findings");
+    let changed = fixture.dir.join("scratch.tmp");
+    fs::write(&changed, b"aaaa").unwrap();
+    let mut findings = fixture.findings.clone();
+    findings.push(finding_for(&changed, "temp"));
+    fs::write(&changed, b"bbbb").unwrap();
+
+    let outcome = remove_findings(
+        &findings,
+        &[],
+        Disposition::Permanent,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert_eq!(outcome.removed, vec![fixture.gone.clone()]);
+    assert_eq!(outcome.protected, vec![fixture.kept.clone()]);
+    assert_eq!(outcome.skipped, vec![changed.clone()]);
+    assert!(outcome.failures.is_empty());
+    assert!(fixture.kept.exists());
+    assert!(!fixture.gone.exists());
+    assert_eq!(fs::read(&changed).unwrap(), b"bbbb");
+
+    let _ = fs::remove_dir_all(&fixture.dir);
+}
+
+#[test]
+fn remove_findings_keeps_group_keeper_and_protected_members() {
+    let fixture = protected_group("remove-groups");
+
+    let outcome = remove_findings(
+        &[],
+        std::slice::from_ref(&fixture.group),
+        Disposition::Permanent,
+        &fixture.protected,
+        &engine(),
+    );
+
+    assert_eq!(outcome.removed, vec![fixture.dup.clone()]);
+    assert_eq!(outcome.protected, vec![fixture.guarded.clone()]);
+    assert_eq!(outcome.bytes_freed, 3);
+    assert!(fixture.keep.exists());
+    assert!(fixture.guarded.exists());
+    assert!(!fixture.dup.exists());
+
     let _ = fs::remove_dir_all(&fixture.dir);
 }

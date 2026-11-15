@@ -45,7 +45,18 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
 3. **Delete** follows your Trash setting: with it on the ticked copies go to the
    system trash, with it off they are deleted permanently (the button and the
    dialog both say which). The dialog lists every group and file that will go
-   first, with thumbnails. **Stop** cancels a scan instantly.
+   first, with thumbnails, and offers two gentler ways for the same copies:
+   **Move to folder** (moves them into a folder you pick, like `--move-dir`) and
+   **Hard link** (replaces each identical copy with a link to its keeper, like
+   `--hardlink`). The toolbar button then names the way you picked. **Stop**
+   cancels a scan instantly.
+4. **Export report…** saves the results as JSON, CSV or HTML, the same reports
+   as `--json`, `--csv` and `--html`.
+
+Cleanup scans (empty files, temp files, …) list their findings with a
+**Delete** button that follows the Trash setting and confirms first; duplicate
+folders stay report-only. **Photo metadata** lists JPEG and PNG photos that
+carry EXIF or XMP data and removes it after a confirmation, like `--strip-exif`.
 
 Folders can be marked as **protected**: their copies win the keep decision and
 are never deleted, whatever the scan is looking for. The keep rule (First / Smallest / Newest /
@@ -79,7 +90,7 @@ Useful flags:
 
 | Flag | What it does |
 | --- | --- |
-| `--find MODE` | Cleanup mode: `empty-files`, `empty-dirs`, `big-files`, `temp-files`, `invalid-symlinks`, `broken-files`, `bad-extensions`, `bad-names`, `duplicate-folders`, `music` |
+| `--find MODE` | Cleanup mode: `empty-files`, `empty-dirs`, `big-files`, `temp-files`, `invalid-symlinks`, `broken-files`, `bad-extensions`, `bad-names`, `duplicate-folders`, `music`, `photo-metadata` (lists photos `--strip-exif` would clean; never deletes them) |
 | `--match` | Group by `content` (default), `size`, `name` or `fuzzy` |
 | `--similarity PCT` | How close two images/videos must be (default 97) |
 | `--image-hash` | `auto` (dHash), `phash`, `ahash` or `color` |

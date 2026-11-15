@@ -299,3 +299,167 @@ fn png_exif_chunk_is_removed() {
     assert!(!out.windows(4).any(|w| w == b"eXIf"));
     assert!(out.windows(4).any(|w| w == b"IEND"));
 }
+
+/// A minimal JPEG whose only extra segment is an APP1 Exif block carrying
+/// `payload` after the `Exif\0\0` header.
+fn jpeg_with_exif(payload: &[u8]) -> Vec<u8> {
+    let mut body = b"Exif\0\0".to_vec();
+    body.extend_from_slice(payload);
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE1];
+    jpeg.extend_from_slice(&((body.len() + 2) as u16).to_be_bytes());
+    jpeg.extend_from_slice(&body);
+    jpeg.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9]);
+    jpeg
+}
+
+fn blake3() -> crate::hashing::HashEngine {
+    crate::hashing::HashEngine::new(crate::cli::HashAlgo::Blake3)
+}
+
+#[test]
+fn photo_metadata_mode_finds_a_jpeg_with_exif() {
+    let root = temp_root("photo-metadata");
+    let jpeg = jpeg_with_exif(b"MM\0*");
+    fs::write(root.join("photo.jpg"), &jpeg).unwrap();
+    fs::write(
+        root.join("plain.jpg"),
+        [0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xD9],
+    )
+    .unwrap();
+    fs::write(root.join("notes.txt"), b"Exif\0\0 not a photo").unwrap();
+
+    let result = run_mode(
+        &cli_for(&root, FindMode::PhotoMetadata, &[]),
+        &CancelToken::new(),
+    );
+
+    assert_eq!(result.findings.len(), 1);
+    let found = &result.findings[0];
+    assert_eq!(found.path, root.join("photo.jpg"));
+    assert_eq!(found.kind, "metadata");
+    assert!(!found.is_dir);
+    assert!(found.detail.contains("EXIF/XMP"));
+    // Marker (2) + length (2) + "Exif\0\0" (6) + payload (4).
+    assert_eq!(found.size, 14);
+    assert_eq!(result.reclaimable(), 14);
+    assert!(!mode_deletes(FindMode::PhotoMetadata));
+    assert!(!mode_deletes(FindMode::DuplicateFolders));
+    assert!(mode_deletes(FindMode::TempFiles));
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn photo_metadata_findings_get_content_hashes() {
+    let root = temp_root("photo-metadata-hash");
+    fs::write(root.join("photo.jpg"), jpeg_with_exif(b"MM\0*")).unwrap();
+    let mut result = run_mode(
+        &cli_for(&root, FindMode::PhotoMetadata, &[]),
+        &CancelToken::new(),
+    );
+
+    attach_content_hashes(&mut result, &blake3(), &CancelToken::new());
+
+    assert_eq!(
+        result.findings[0].hash,
+        Some(blake3().full(&root.join("photo.jpg")).unwrap()),
+        "sized by its metadata, the finding is still hashed"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn strip_metadata_strips_only_verified_unprotected_photos() {
+    let root = temp_root("strip-metadata");
+    let backup = root.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let jpeg = jpeg_with_exif(b"MM\0*");
+    let verified = root.join("verified.jpg");
+    let changed = root.join("changed.jpg");
+    let unhashed = root.join("unhashed.jpg");
+    let guarded = backup.join("guarded.jpg");
+    for path in [&verified, &changed, &unhashed, &guarded] {
+        fs::write(path, &jpeg).unwrap();
+    }
+    let mut result = run_mode(
+        &cli_for(&root, FindMode::PhotoMetadata, &[]),
+        &CancelToken::new(),
+    );
+    attach_content_hashes(&mut result, &blake3(), &CancelToken::new());
+    assert_eq!(result.findings.len(), 4);
+    for finding in &mut result.findings {
+        if finding.path == unhashed {
+            finding.hash = None;
+        }
+    }
+    let edited = jpeg_with_exif(b"II*\0");
+    fs::write(&changed, &edited).unwrap();
+    let protected = vec![fs::canonicalize(&backup).unwrap()];
+
+    let outcome = strip_metadata(&result.findings, &protected, &blake3());
+
+    assert_eq!(outcome.stripped, vec![verified.clone()]);
+    assert_eq!(outcome.bytes_saved, 14);
+    assert!(outcome.failures.is_empty());
+    let mut skipped = outcome.skipped.clone();
+    skipped.sort();
+    let mut expected = vec![changed.clone(), unhashed.clone(), guarded.clone()];
+    expected.sort();
+    assert_eq!(skipped, expected);
+    assert!(
+        !fs::read(&verified)
+            .unwrap()
+            .windows(4)
+            .any(|w| w == b"Exif")
+    );
+    assert_eq!(
+        fs::read(&changed).unwrap(),
+        edited,
+        "a changed photo is left alone"
+    );
+    assert_eq!(
+        fs::read(&unhashed).unwrap(),
+        jpeg,
+        "an unverified photo is left alone"
+    );
+    assert_eq!(
+        fs::read(&guarded).unwrap(),
+        jpeg,
+        "a protected photo is left alone"
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+#[test]
+fn strip_exif_leaves_reference_dir_photos_alone() {
+    let root = temp_root("strip-exif-reference");
+    let backup = root.join("backup");
+    fs::create_dir_all(&backup).unwrap();
+    let jpeg = jpeg_with_exif(b"MM\0*");
+    fs::write(root.join("photo.jpg"), &jpeg).unwrap();
+    fs::write(backup.join("guarded.jpg"), &jpeg).unwrap();
+    let backup_arg = backup.to_string_lossy().into_owned();
+
+    let report = strip_exif(
+        &cli_for(
+            &root,
+            FindMode::Duplicates,
+            &["--strip-exif", "--yes", "--reference-dir", &backup_arg],
+        ),
+        &CancelToken::new(),
+    );
+
+    assert_eq!(report.rewritten, 1);
+    assert_eq!(report.skipped, 1);
+    assert_eq!(fs::read(backup.join("guarded.jpg")).unwrap(), jpeg);
+    assert!(
+        !fs::read(root.join("photo.jpg"))
+            .unwrap()
+            .windows(4)
+            .any(|w| w == b"Exif")
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}

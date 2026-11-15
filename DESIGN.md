@@ -40,7 +40,7 @@ Each screen answers one question with its largest element:
 | --- | --- | --- |
 | New scan | What will this scan look at, and how will it decide? | The setup form: folders, what to find, keep rule, similarity, where deletes go, video support; **Scan** is the one primary action in the title row |
 | Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (30 pt, the one hue) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a green "Keeping" badge) and the ticked copies (an amber tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went |
-| Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; the findings as one ruled list |
+| Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; one toolbar (Delete N, or Remove metadata for photo metadata; Export report…); the findings as one ruled list |
 | Settings | What does each default do? | Two columns: each section's title and purpose beside a panel of rows that say what they change |
 
 ## Tokens
@@ -112,13 +112,29 @@ so "What to find" is an `option_select`.
   a tooltip. The keep, similarity, delete and video rows appear only for a
   duplicate scan; the whole form fits the default 1120×640 window.
 - Results: the title row with the Reclaimable figure; an action toolbar (Back,
-  Delete, Clear selection, Restore from trash | Consolidate, export, expand,
-  collapse); a list toolbar (sort, layout); then one card per group. The keep
+  Delete / Move / Link, Clear selection, Restore from trash | Consolidate,
+  Export report…, expand, collapse); a list toolbar (sort, layout); then one card per group. The keep
   rule and the similarity floor belong to the scan and live on New scan only:
   on this page they would re-pick every keeper and drop the user's ticks. With
   no group left only Back stays, and the list shows the cleared card (what
   went, where to, Scan again, Restore from trash where the OS can restore) or
   "No duplicates found" for a scan that found nothing.
+- What happens to the ticked copies is chosen in the confirmation, where the
+  plan is on screen: a `radio_segmented` of **Delete** (trash or permanent, per
+  the setting), **Move to folder** (the CLI's `--move-dir`) and **Hard link**
+  (`--hardlink`). The choice is remembered, and the toolbar button names it
+  (`Delete 5`, `Move 5`, `Link 5`), so the button and its dialog always make
+  the same promise. Move asks for its folder inside the dialog, as
+  Consolidate does; Hard link marks the groups it cannot link (similar, not
+  identical) in the plan instead of hiding them.
+- Cleanup findings: the title row, then one action bar — the act on the
+  findings (Delete N per the trash setting; Remove metadata for Photo
+  metadata; nothing for Duplicate folders, which stay report-only like the
+  CLI) and Export report…. The act opens an `alert_dialog` that lists the
+  first items, counts the rest, and names what a protected folder keeps.
+- Export report… opens the system save dialog with JSON, CSV and HTML types;
+  the chosen extension picks the format, the same writers as `--json`,
+  `--csv` and `--html`.
 - Settings: a 200 pt nav, then sections split by full-width rules: a 240 pt
   label column (title and purpose) beside a panel whose rows show their own
   descriptions.
@@ -170,7 +186,16 @@ nsh lands them at their end state when reduce-motion is on.
 | Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
 | Delete and Consolidate dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |
 | Delete and Consolidate dialog panel | nsh's modal slide, panel-only (the scrim is a page-layer sibling) | platform `Slide` |
+| Delete dialog: Delete / Move to folder / Hard link picked | segment colour transition; the title, summary, plan notes and commit label swap in place and the panel re-centres at its new height, without animation (the reader's eye stays on the segment just pressed) | `FAST` |
+| Delete dialog: move folder chosen | the folder line's text swaps; the Move commit appears beside Cancel | none — an instant swap of a value, like a field |
+| Findings action bar arriving with the findings | part of the page's `entering()` | `FadeInUp`, 450 ms |
+| Findings confirmation scrim and panel | the same `alert_dialog` as Delete | `FadeIn` 300 ms / platform `Slide` |
+| Findings removed (delete or metadata) | the list rebuilds under `fading_in()`; a toast reports the outcome | `FadeIn`, 300 ms; toast `SLOW` |
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
+
+With reduce-motion on, every line above lands at its end state: the
+transitions take 0 ms through `motion(ms)` and the presets land without
+moving.
 
 Three things deliberately do not move: the scrim (a full-window layer must not
 travel), the results list on a rebuild (it keeps the reader's scroll place, so

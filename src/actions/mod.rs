@@ -9,12 +9,12 @@ mod quarantine;
 
 use std::path::PathBuf;
 
-pub use consolidate::{consolidate_keepers, consolidate_targets, plan_consolidation};
+pub use consolidate::{consolidate_keepers, move_targets, plan_consolidation};
 pub use delete::{delete_duplicates, delete_targets};
 pub use error::ActionError;
-pub use findings::{delete_finding_groups, delete_findings, is_protected};
-pub use hardlink::hardlink_duplicates;
-pub use quarantine::move_duplicates;
+pub use findings::{delete_finding_groups, delete_findings, is_protected, remove_findings};
+pub use hardlink::{can_hardlink, hardlink_duplicates, link_targets};
+pub use quarantine::{move_duplicates, plan_move_aside};
 
 #[derive(Debug, Default)]
 pub struct DeletionStats {
@@ -56,8 +56,8 @@ pub struct DeleteOutcome {
     pub bytes_freed: u64,
 }
 
-/// One keeper the caller wants moved into the consolidate directory, with
-/// the hash it must still match.
+/// One file the caller wants moved — a keeper into the consolidate
+/// directory, or a duplicate set aside — with the hash it must still match.
 ///
 /// The hash is verified immediately before moving: a file that changed
 /// since the scan is never moved.
@@ -77,15 +77,55 @@ pub struct PlannedMove {
     pub target: MoveTarget,
 }
 
-/// Per-file outcome of [`consolidate_targets`], so callers (e.g. the GUI)
-/// can update their own state for exactly the files that were moved.
+/// Per-file outcome of [`move_targets`], so callers (e.g. the GUI) can
+/// update their own state for exactly the files that were moved.
 #[derive(Debug, Default)]
-pub struct ConsolidateOutcome {
+pub struct MoveOutcome {
     pub moved: Vec<(PathBuf, PathBuf)>,
     pub skipped: Vec<PathBuf>,
     /// Moves that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
     pub bytes_moved: u64,
+}
+
+/// One duplicate the caller wants replaced by a hard link to its keeper.
+///
+/// Both files carry the hash they must still match: the duplicate because it
+/// is about to be replaced, the keeper because its bytes are what the
+/// duplicate's path will show from then on.
+#[derive(Debug, Clone)]
+pub struct LinkTarget {
+    pub path: PathBuf,
+    pub expected_hash: String,
+    pub size: u64,
+    pub keeper: PathBuf,
+    pub keeper_hash: String,
+    pub keeper_size: u64,
+}
+
+/// Per-file outcome of [`link_targets`], so callers (e.g. the GUI) can
+/// update their own state for exactly the files that were replaced.
+#[derive(Debug, Default)]
+pub struct LinkOutcome {
+    pub linked: Vec<PathBuf>,
+    pub skipped: Vec<PathBuf>,
+    /// Links that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
+    pub bytes_saved: u64,
+}
+
+/// Per-item outcome of [`remove_findings`], so callers (e.g. the GUI) can
+/// update their own state for exactly the items that were removed.
+#[derive(Debug, Default)]
+pub struct FindingOutcome {
+    pub removed: Vec<PathBuf>,
+    /// Items that changed since the scan, or whose removal failed.
+    pub skipped: Vec<PathBuf>,
+    /// Items inside a protected folder, never candidates.
+    pub protected: Vec<PathBuf>,
+    /// Removals that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
+    pub bytes_freed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -120,6 +160,8 @@ pub struct HardlinkStats {
     pub linked: u64,
     pub bytes_saved: u64,
     pub files_skipped: u64,
+    /// Links that failed, with the reason, so a front end can explain them.
+    pub failures: Vec<(PathBuf, ActionError)>,
 }
 
 #[cfg(test)]

@@ -14,7 +14,9 @@ use crate::media;
 use crate::modes::mode_title;
 use crate::ui::actions;
 use crate::ui::palette::{size, space};
-use crate::ui::state::{AppState, Cleared, Layout, app, scan_status};
+use crate::ui::state::{
+    AppState, Cleared, FindingsDone, FindingsWent, Layout, Removal, app, scan_status,
+};
 use crate::ui::widgets::{
     BadgeTone, Decision, Ink, PreviewFill, PreviewGlyph, PreviewSize, SelectItem, action_bar,
     action_group, alert_dialog, amount, badge, body, caption, card, danger_button, description,
@@ -22,8 +24,8 @@ use crate::ui::widgets::{
     fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, ground, heading,
     hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name,
     notice, option_select, panel_title, press_to_play, preview_frame, preview_glyph, preview_image,
-    primary_button, progress_bar, quiet_button, secondary_button, section_title, segmented, tick,
-    tile, video_player,
+    primary_button, progress_bar, quiet_button, radio_segmented, secondary_button, section_title,
+    segmented, tick, tile, video_player,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -134,6 +136,7 @@ thread_local! {
     static MODE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
     static DELETE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
     static CONSOLIDATE_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
+    static FINDINGS_AT: Cell<(f32, f32, f32)> = const { Cell::new((0.0, f32::NAN, 0.0)) };
 }
 
 /// Puts the delete dialog's list back at its top: it opens anew each time,
@@ -147,11 +150,22 @@ pub(crate) fn reset_consolidate_scroll() {
     CONSOLIDATE_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
 }
 
+/// [`reset_delete_scroll`] for the cleanup findings' confirmation.
+pub(crate) fn reset_findings_scroll() {
+    FINDINGS_AT.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
+}
+
 /// Puts the workspace's lists back at their top: leaving the page unmounts
 /// them, so the wheel's remembered offsets would point into a list that opens
 /// at the start again.
 pub(crate) fn reset_lists() {
-    for at in [&RESULTS_AT, &MODE_AT, &DELETE_AT, &CONSOLIDATE_AT] {
+    for at in [
+        &RESULTS_AT,
+        &MODE_AT,
+        &DELETE_AT,
+        &CONSOLIDATE_AT,
+        &FINDINGS_AT,
+    ] {
         at.with(|cell| cell.set((0.0, f32::NAN, 0.0)));
     }
 }
@@ -243,7 +257,11 @@ fn header_row() -> View {
             match shown.get() {
                 Answer::Waiting => view(),
                 Answer::Reclaimable => reclaim_figure(),
-                Answer::Removed { trashed, freed } => removed_figure(trashed, freed),
+                Answer::Removed {
+                    trashed,
+                    freed,
+                    moved,
+                } => removed_figure(trashed, freed, moved),
             }
         }))
 }
@@ -259,7 +277,11 @@ enum Answer {
     Reclaimable,
     /// Every group is gone: what the deletes since the scan took, split by
     /// where it went.
-    Removed { trashed: u64, freed: u64 },
+    Removed {
+        trashed: u64,
+        freed: u64,
+        moved: u64,
+    },
 }
 
 fn answer(s: &AppState) -> Answer {
@@ -267,9 +289,16 @@ fn answer(s: &AppState) -> Answer {
         return Answer::Waiting;
     }
     match s.cleared {
-        Some(Cleared::Removed { trashed, freed, .. }) if s.groups.is_empty() => {
-            Answer::Removed { trashed, freed }
-        }
+        Some(Cleared::Removed {
+            trashed,
+            freed,
+            moved,
+            ..
+        }) if s.groups.is_empty() => Answer::Removed {
+            trashed,
+            freed,
+            moved,
+        },
         Some(Cleared::Restored { .. }) if s.groups.is_empty() => Answer::Waiting,
         _ => Answer::Reclaimable,
     }
@@ -277,9 +306,14 @@ fn answer(s: &AppState) -> Answer {
 
 /// The figure once every group is cleared. Space moved to the trash is not
 /// free until the trash is emptied, so it is never called freed: a trash
-/// delete reads "In the trash", a permanent one "Freed", and a mix names the
-/// freed space with the way to the rest under it.
-fn removed_figure(trashed: u64, freed: u64) -> View {
+/// delete reads "In the trash", a permanent one (or a hard link) "Freed", and
+/// a mix names the freed space with the way to the rest under it. Copies only
+/// moved into another folder free nothing, so a run of moves alone reads
+/// "Moved aside".
+fn removed_figure(trashed: u64, freed: u64, moved: u64) -> View {
+    if freed == 0 && trashed == 0 {
+        return answer_figure("Moved aside", move || util::human_bytes(moved));
+    }
     if freed == 0 {
         return answer_figure("In the trash", move || util::human_bytes(trashed)).child(caption(
             format!("Empty the trash to get {} back", util::human_bytes(trashed)),
@@ -410,8 +444,8 @@ fn result_actions() -> impl IntoElement {
             action_group()
                 .child(consolidate_button())
                 .child(
-                    icon_button(icons::EXPORT, "Export report", actions::save_report)
-                        .tooltip(hint("Save a JSON report of the duplicates")),
+                    icon_button(icons::EXPORT, "Export report…", actions::save_report)
+                        .tooltip(hint("Export the duplicates as JSON, CSV or HTML")),
                 )
                 .child(list_actions()),
         ],
@@ -428,10 +462,9 @@ fn list_options() -> impl IntoElement {
     )
 }
 
-/// Re-running a finished scan. In the cleanup workspace the findings are
-/// read-only and there is no setup form, so its header carries the next run
-/// itself. Hidden while a scan runs, where the progress card's Stop is the
-/// only scan action.
+/// Re-running a finished scan. The cleanup workspace has no setup form and
+/// no Back, so its header carries the next run itself. Hidden while a scan
+/// runs, where the progress card's Stop is the only scan action.
 fn scan_again_button() -> impl IntoElement {
     dynamic(|| {
         let scanning = computed(|| app().with(|s| s.scanning));
@@ -510,6 +543,7 @@ struct DeleteBar {
     bytes: u64,
     can_undo: bool,
     trash: bool,
+    removal: Removal,
     groups: usize,
 }
 
@@ -525,6 +559,7 @@ fn delete_bar() -> View {
                     bytes,
                     can_undo: !s.last_trashed.is_empty(),
                     trash: s.trash,
+                    removal: s.removal,
                     groups: s.groups.len(),
                 }
             })
@@ -534,6 +569,7 @@ fn delete_bar() -> View {
             bytes,
             can_undo,
             trash,
+            removal,
             groups,
         } = bar.get();
         let mut row = view().flex_row().gap(px(space::SM)).items_center();
@@ -541,26 +577,37 @@ fn delete_bar() -> View {
             // Trash and permanent deletes are different promises: a trashed
             // copy can come back, a permanent one cannot. The label carries
             // the difference, not just the tooltip.
+            // The button names the act its confirmation was last set to, so
+            // pressing it and reading the dialog make one promise.
             let unit = if count == 1 { "file" } else { "files" };
-            let (label, tip) = if trash {
-                (
-                    format!("Delete {count} ({})", util::human_bytes(bytes)),
-                    format!(
-                        "Move {count} {unit} ({}) to the trash",
-                        util::human_bytes(bytes)
-                    ),
+            let size = util::human_bytes(bytes);
+            let button = match removal {
+                Removal::Delete if trash => {
+                    danger_button(format!("Delete {count} ({size})"), actions::request_delete)
+                        .tooltip(hint(format!("Move {count} {unit} ({size}) to the trash")))
+                }
+                Removal::Delete => danger_button(
+                    format!("Delete {count} permanently ({size})"),
+                    actions::request_delete,
                 )
-            } else {
-                (
-                    format!("Delete {count} permanently ({})", util::human_bytes(bytes)),
-                    format!(
-                        "Permanently delete {count} {unit} ({}). This can't be undone.",
-                        util::human_bytes(bytes)
-                    ),
-                )
+                .tooltip(hint(format!(
+                    "Permanently delete {count} {unit} ({size}). This can't be undone."
+                ))),
+                Removal::MoveAside => {
+                    secondary_button(format!("Move {count} ({size})"), actions::request_delete)
+                        .tooltip(hint(format!(
+                            "Move {count} {unit} ({size}) into a folder you choose"
+                        )))
+                }
+                Removal::Link => {
+                    danger_button(format!("Link {count} ({size})"), actions::request_delete)
+                        .tooltip(hint(format!(
+                            "Replace {count} {unit} with hard links to their keepers"
+                        )))
+                }
             };
             row = row
-                .child(danger_button(label, actions::request_delete).tooltip(hint(tip)))
+                .child(button)
                 // Clearing is the undo of Select all, so it sits beside the
                 // action it takes the target away from.
                 .child(ghost_button("Clear selection", actions::select_none));
@@ -598,16 +645,22 @@ const DELETE_PLAN_MAX_H: f32 = 320.0;
 const PLAN_PATH_CHARS: usize = 30;
 
 pub(crate) fn delete_confirm() -> View {
-    let (count, bytes, groups, trash) = app().with(|s| {
-        let targets = actions::pending_targets(s);
-        let groups = actions::confirm_groups(s);
-        (
-            targets.len(),
-            targets.iter().map(|t| t.size).sum::<u64>(),
-            groups,
-            s.trash,
-        )
-    });
+    let (count, bytes, groups, trash, removal, dest, link_count, link_bytes, unlinkable) = app()
+        .with(|s| {
+            let targets = actions::pending_targets(s);
+            let (links, unlinkable) = actions::link_plan(s);
+            (
+                targets.len(),
+                targets.iter().map(|t| t.size).sum::<u64>(),
+                actions::confirm_groups(s),
+                s.trash,
+                s.removal,
+                s.move_dest.clone(),
+                links.len(),
+                links.iter().map(|t| t.size).sum::<u64>(),
+                unlinkable,
+            )
+        });
     // The plan fills the panel: without this the body is content-sized, so the
     // rules between groups stopped short of the panel's own edge.
     let mut body = view().flex_col().w_full().gap(px(space::MD));
@@ -621,6 +674,20 @@ pub(crate) fn delete_confirm() -> View {
             .similarity
             .map(|s| format!(" · {:.0}% similar — not exact copies", s * 100.0))
             .unwrap_or_default();
+        // A hard link needs identical bytes: a similar group is listed, and
+        // says it is left alone, rather than vanishing from the plan.
+        let fate = if removal == Removal::Link && !group.linkable {
+            format!(
+                "{} stay as they are: only identical copies can be linked",
+                counted(going as u64, "copy", "copies")
+            )
+        } else {
+            format!(
+                "{} · {}{similarity}",
+                counted(going as u64, "copy goes", "copies go"),
+                util::human_bytes(group.bytes),
+            )
+        };
         let mut section = view()
             .flex_col()
             .gap(px(space::XS))
@@ -629,11 +696,7 @@ pub(crate) fn delete_confirm() -> View {
                     .flex_1()
                     .truncate(),
             )
-            .child(caption(format!(
-                "{} · {}{similarity}",
-                counted(going as u64, "copy goes", "copies go"),
-                util::human_bytes(group.bytes),
-            )));
+            .child(caption(fate));
         for member in &group.rows {
             let full = member.path.display().to_string();
             let shown = fit_text(&full, PLAN_PATH_CHARS);
@@ -674,54 +737,142 @@ pub(crate) fn delete_confirm() -> View {
         body = body.child(section);
     }
     if count == 0 {
-        body = body.child(caption("Nothing is ticked for deletion."));
-    }
-    let any_similar = groups.iter().any(|g| g.similarity.is_some());
-    let mut description_text = if count == 0 {
-        "Ticking a duplicate in a group lists it here.".to_string()
-    } else {
-        let files = counted(count as u64, "file", "files");
-        let outcome = if trash {
-            format!(
-                "{files} ({}) will move to the trash. You can put them back from the trash until it is emptied.",
-                util::human_bytes(bytes)
-            )
-        } else {
-            format!(
-                "{files} ({}) will be deleted permanently. This can't be undone.",
-                util::human_bytes(bytes)
-            )
-        };
-        format!(
-            "{outcome} Keepers stay, and every file is checked against the scan one last time before it goes."
-        )
-    };
-    if count > 0 && any_similar {
-        description_text.push_str(" Compare the marked copies before you delete: similar files are matched by sight, not byte for byte.");
+        body = body.child(caption("Nothing is ticked."));
     }
     let files = counted(count as u64, "file", "files");
-    let heading = if trash {
-        format!("Move {files} to the trash?")
-    } else {
-        format!("Delete {files} permanently?")
+    let size = util::human_bytes(bytes);
+    let checked = "every file is checked against the scan one last time first";
+    let (heading, summary, commit) = match removal {
+        Removal::Delete => {
+            let any_similar = groups.iter().any(|g| g.similarity.is_some());
+            let mut summary = if trash {
+                format!(
+                    "{files} ({size}) will move to the trash. You can put them back from the trash until it is emptied. Keepers stay, and {checked}."
+                )
+            } else {
+                format!(
+                    "{files} ({size}) will be deleted permanently. This can't be undone. Keepers stay, and {checked}."
+                )
+            };
+            if any_similar {
+                summary.push_str(" Compare the marked copies before you delete: similar files are matched by sight, not byte for byte.");
+            }
+            let (heading, label) = if trash {
+                (
+                    format!("Move {files} to the trash?"),
+                    format!("Move {count} to the trash"),
+                )
+            } else {
+                (
+                    format!("Delete {files} permanently?"),
+                    format!("Delete {count} permanently"),
+                )
+            };
+            let commit = (count > 0).then(|| danger_button(label, actions::confirm_delete));
+            (heading, summary, commit)
+        }
+        Removal::MoveAside => {
+            // The folder line under the choice names the folder; the
+            // summary only says what a move does there.
+            let summary = format!(
+                "{files} ({size}) move into the folder below; a name already taken there gets a number. Nothing is deleted, and {checked}."
+            );
+            let label = format!("Move {count}");
+            let commit = (count > 0 && dest.is_some())
+                .then(|| primary_button(label, actions::confirm_delete));
+            (format!("Move {files} to a folder?"), summary, commit)
+        }
+        Removal::Link => {
+            let linked = counted(link_count as u64, "file", "files");
+            let mut summary = format!(
+                "Each becomes a hard link to its group's keeper: the paths stay and {} comes back. Editing one linked path then changes all of them. {}; a copy on another drive than its keeper stays as it is.",
+                util::human_bytes(link_bytes),
+                capitalized(checked),
+            );
+            if unlinkable > 0 {
+                summary.push_str(&format!(
+                    " {} in similar groups {} not identical, so {} as {} {}.",
+                    counted(unlinkable as u64, "copy", "copies"),
+                    if unlinkable == 1 { "is" } else { "are" },
+                    if unlinkable == 1 {
+                        "it stays"
+                    } else {
+                        "they stay"
+                    },
+                    if unlinkable == 1 { "it" } else { "they" },
+                    if unlinkable == 1 { "is" } else { "are" },
+                ));
+            }
+            let label = format!("Link {link_count}");
+            let commit = (link_count > 0).then(|| danger_button(label, actions::confirm_delete));
+            (
+                format!("Replace {linked} with hard links?"),
+                summary,
+                commit,
+            )
+        }
     };
-    let confirm_label = if trash {
-        format!("Move {count} to the trash")
-    } else {
-        format!("Delete {count} permanently")
-    };
-    alert_dialog(
-        heading,
-        description_text,
-        fast_scroll_max(&DELETE_AT, px(DELETE_PLAN_MAX_H), body),
+    // What happens to the ticked copies is decided here, beside the plan it
+    // applies to; the toolbar button then names the same act.
+    let mut content = view().flex_col().w_full().gap(px(space::MD)).child(
         view()
-            .child(secondary_button("Cancel", actions::cancel_delete))
-            .child(when(count > 0, move || {
-                danger_button(confirm_label.clone(), actions::confirm_delete)
-            })),
-        actions::cancel_delete,
-    )
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(space::SM))
+            .child(field_label("Ticked copies"))
+            .child(radio_segmented(
+                REMOVAL_LABELS,
+                removal.index(),
+                actions::set_removal,
+            )),
+    );
+    if removal == Removal::MoveAside {
+        let (shown, full, button) = match &dest {
+            Some(dest) => {
+                let full = dest.display().to_string();
+                (
+                    fit_text(&full, PLAN_PATH_CHARS),
+                    Some(full),
+                    "Change folder…",
+                )
+            }
+            None => ("No folder chosen yet".to_string(), None, "Choose folder…"),
+        };
+        let line = caption(shown).flex_1().truncate();
+        let line = match full {
+            Some(full) => line.tooltip(hint(full)),
+            None => line,
+        };
+        content = content.child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(space::SM))
+                .child(line)
+                .child(secondary_button(button, actions::pick_move_dir)),
+        );
+    }
+    content = content.child(fast_scroll_max(&DELETE_AT, px(DELETE_PLAN_MAX_H), body));
+    let mut buttons = view().child(secondary_button("Cancel", actions::cancel_delete));
+    if let Some(commit) = commit {
+        buttons = buttons.child(commit);
+    }
+    alert_dialog(heading, summary, content, buttons, actions::cancel_delete)
 }
+
+/// `text` with its first letter in capitals, for a clause that starts a
+/// sentence in one summary and ends one in another.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// The three ways the delete confirmation can deal with the ticked copies,
+/// in [`Removal::ALL`] order.
+const REMOVAL_LABELS: [&str; 3] = ["Delete", "Move to folder", "Hard link"];
 
 /// Consolidate: gather one copy of every group into a folder the user picks.
 /// It moves files, so it is named on its button, and the confirmation opens
@@ -968,16 +1119,32 @@ fn setup_header() -> View {
 /// what it looks for, and where a delete sends the copies. Nothing is
 /// removed by a scan, and the line says so where the reader decides.
 fn scope_line() -> String {
-    let (folders, trash) = app().with(|s| (s.folders.len(), s.trash));
+    let (folders, trash, removal, find_index) =
+        app().with(|s| (s.folders.len(), s.trash, s.removal, s.find_index));
     if folders == 0 {
         return "Add a folder below or drop one on the window. A scan only reads; nothing is deleted until you confirm.".to_string();
     }
-    let outcome = if !finds_duplicates() {
-        "findings are listed, nothing is deleted"
-    } else if trash {
-        "copies go to the trash after you confirm"
+    let mode = crate::ui_helpers::find_mode(find_index);
+    let outcome = if mode != crate::cli::FindMode::Duplicates {
+        match actions::findings_act(mode) {
+            actions::FindingsAct::ReportOnly => "findings are listed, nothing is deleted",
+            actions::FindingsAct::StripMetadata => {
+                "photos are listed; their metadata goes only after you confirm"
+            }
+            actions::FindingsAct::Delete if trash => {
+                "findings are listed; they go to the trash only after you confirm"
+            }
+            actions::FindingsAct::Delete => {
+                "findings are listed; they are deleted only after you confirm"
+            }
+        }
     } else {
-        "copies are deleted permanently after you confirm"
+        match removal {
+            Removal::Delete if trash => "copies go to the trash after you confirm",
+            Removal::Delete => "copies are deleted permanently after you confirm",
+            Removal::MoveAside => "copies move into a folder after you confirm",
+            Removal::Link => "copies become hard links after you confirm",
+        }
     };
     format!(
         "{} in {} · {outcome}",
@@ -986,8 +1153,8 @@ fn scope_line() -> String {
     )
 }
 
-/// Whether the next scan looks for duplicates — the only scan the GUI acts
-/// on; the cleanup scans list their findings read-only.
+/// Whether the next scan looks for duplicates, the scan whose form carries
+/// the keeper, similarity and video rows.
 fn finds_duplicates() -> bool {
     crate::ui_helpers::find_mode(app().with(|s| s.find_index)) == crate::cli::FindMode::Duplicates
 }
@@ -999,13 +1166,21 @@ fn setup_form() -> View {
     view().w_full().child(dynamic(|| {
         // The scan type alone reshapes the form: the keeper, similarity,
         // delete and video rows only mean something to a duplicate scan.
-        let duplicates = computed(finds_duplicates);
-        setup_rows(duplicates.get())
+        let shape = computed(|| {
+            let mode = crate::ui_helpers::find_mode(app().with(|s| s.find_index));
+            (
+                mode == crate::cli::FindMode::Duplicates,
+                actions::findings_act(mode) == actions::FindingsAct::Delete,
+            )
+        });
+        let (duplicates, deletes) = shape.get();
+        setup_rows(duplicates, deletes)
     }))
 }
 
-/// The form's rows for one scan type.
-fn setup_rows(duplicates: bool) -> View {
+/// The form's rows for one scan type. `deletes` is a cleanup scan whose
+/// findings can be deleted, which makes where a delete goes worth a row.
+fn setup_rows(duplicates: bool, deletes: bool) -> View {
     let mut rows: Vec<View> = vec![
         form_row(
             "Folders",
@@ -1066,6 +1241,12 @@ fn setup_rows(duplicates: bool) -> View {
         form_row("Deleted copies", None, view().child(trash_select())),
         form_row("Video", None, media_status()),
         ]);
+    } else if deletes {
+        rows.push(form_row(
+            "Deleted items",
+            None,
+            view().child(trash_select()),
+        ));
     }
     let mut form = card().w_full();
     for (index, row) in rows.into_iter().enumerate() {
@@ -1169,7 +1350,9 @@ fn trash_select() -> impl IntoElement {
 
 fn find_label() -> SharedString {
     let index = app().with(|s| s.find_index.unwrap_or(0));
-    SharedString::from(crate::ui::settings::FIND_LABELS[index.min(10)])
+    SharedString::from(
+        crate::ui::settings::FIND_LABELS[index.min(crate::ui::settings::FIND_LABELS.len() - 1)],
+    )
 }
 
 fn trash_label(trash: bool) -> &'static str {
@@ -1299,24 +1482,36 @@ fn cleared_card(cleared: Cleared) -> View {
             files,
             trashed,
             freed,
+            moved,
         } => {
-            let title = if freed == 0 {
-                format!("{} moved to the trash", counted(files, "copy", "copies"))
+            let copies = counted(files, "copy", "copies");
+            let title = if freed == 0 && trashed == 0 {
+                format!("{copies} moved aside")
+            } else if freed == 0 && moved == 0 {
+                format!("{copies} moved to the trash")
+            } else if trashed == 0 && moved == 0 {
+                format!("{copies} removed")
             } else {
-                format!("{} removed", counted(files, "copy", "copies"))
+                format!("{copies} cleared")
             };
-            let detail = if freed == 0 {
-                "Your keepers stay where they were. The copies stay in the trash until you empty it."
-                    .to_string()
-            } else if trashed > 0 {
-                format!(
-                    "Your keepers stay where they were. {} freed; {} more waits in the trash until you empty it.",
-                    util::human_bytes(freed),
-                    util::human_bytes(trashed),
-                )
-            } else {
-                "Your keepers stay where they were.".to_string()
-            };
+            // One sentence per place the copies went, in the order the space
+            // comes back: free now, free once the trash is emptied, not freed.
+            let mut detail = "Your keepers stay where they were.".to_string();
+            if freed > 0 && (trashed > 0 || moved > 0) {
+                detail.push_str(&format!(" {} freed.", util::human_bytes(freed)));
+            }
+            if trashed > 0 {
+                detail.push_str(&format!(
+                    " {} waits in the trash until you empty it.",
+                    util::human_bytes(trashed)
+                ));
+            }
+            if moved > 0 {
+                detail.push_str(&format!(
+                    " {} moved into the folder you chose.",
+                    util::human_bytes(moved)
+                ));
+            }
             (title, detail)
         }
     };
@@ -1365,6 +1560,55 @@ fn nothing_found_card(message: &'static str, hint: &'static str, rescan: bool) -
                 .flex_row()
                 .child(primary_button("Scan again", actions::start_scan)),
         );
+    }
+    card
+}
+
+/// Every finding is gone because the user acted on them: what went and where,
+/// so the empty list reads as the end of the task, not as a clean scan. After
+/// a trashed delete it offers the trash's way back where the OS can restore.
+fn findings_cleared_card(done: FindingsDone) -> View {
+    let bytes = util::human_bytes(done.bytes);
+    let (title, detail) = match done.went {
+        FindingsWent::Trash => (
+            format!(
+                "{} moved to the trash",
+                counted(done.items, "item", "items")
+            ),
+            format!("{bytes} waits in the trash until you empty it."),
+        ),
+        FindingsWent::Deleted => (
+            format!("{} deleted", counted(done.items, "item", "items")),
+            format!("{bytes} freed."),
+        ),
+        FindingsWent::Restored => (
+            format!("{} restored", counted(done.items, "item", "items")),
+            "They are back where they were. Scan again to review them.".to_string(),
+        ),
+        FindingsWent::Stripped => (
+            format!(
+                "Metadata removed from {}",
+                counted(done.items, "photo", "photos")
+            ),
+            format!("{bytes} freed. The photos themselves stay where they were."),
+        ),
+    };
+    let mut card = card().gap(px(space::MD)).p(px(space::XL)).child(
+        view()
+            .flex_col()
+            .gap(px(space::XS))
+            .child(section_title(title))
+            .child(description(detail)),
+    );
+    let can_restore = done.went == FindingsWent::Trash
+        && actions::CAN_RESTORE
+        && app().with_untracked(|s| !s.last_trashed.is_empty());
+    if can_restore {
+        card = card.child(view().flex_row().child(icon_secondary_button(
+            icons::UNDO,
+            "Restore from trash",
+            actions::undo_delete,
+        )));
     }
     card
 }
@@ -1846,13 +2090,118 @@ fn mode_workspace() -> View {
         .h_full()
         .gap(px(space::XL))
         .p(px(space::XXL))
-        .child(mode_header())
+        .child(
+            view()
+                .flex_col()
+                .gap(px(space::LG))
+                .child(mode_header())
+                .child(dynamic(mode_actions)),
+        )
         .child(fast_scroll(&MODE_AT, dynamic(mode_list)))
 }
 
+/// What the cleanup workspace's toolbar renders from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ModeBar {
+    shown: bool,
+    act: actions::FindingsAct,
+    plan: actions::FindingsPlan,
+    trash: bool,
+    can_undo: bool,
+}
+
+/// The cleanup workspace's toolbar: the one act its findings allow (delete
+/// them, or strip the photos' metadata), Restore from trash after a trashed
+/// delete, and Export report…. Duplicate folders are report-only, as on the
+/// command line, so their bar holds the export alone.
+fn mode_actions() -> View {
+    let bar = computed(|| {
+        app().with(|s| {
+            let result = s.mode_result.as_ref();
+            ModeBar {
+                // With every finding gone the list's own card says what
+                // happened and offers the restore; the bar has nothing left
+                // to act on.
+                shown: !s.scanning && result.is_some_and(|r| !r.is_empty()),
+                act: result.map_or(actions::FindingsAct::ReportOnly, |r| {
+                    actions::findings_act(r.mode)
+                }),
+                plan: actions::findings_plan(s),
+                trash: s.trash,
+                can_undo: !s.last_trashed.is_empty(),
+            }
+        })
+    });
+    let ModeBar {
+        shown,
+        act,
+        plan,
+        trash,
+        can_undo,
+    } = bar.get();
+    if !shown {
+        return view();
+    }
+    let size = util::human_bytes(plan.bytes);
+    let count = plan.count;
+    let mut decide = action_group();
+    if count > 0 {
+        decide = match act {
+            actions::FindingsAct::Delete if trash => decide.child(
+                danger_button(
+                    format!("Delete {count} ({size})"),
+                    actions::request_findings_act,
+                )
+                .tooltip(hint(format!(
+                    "Move {} ({size}) to the trash",
+                    counted(count as u64, "item", "items")
+                ))),
+            ),
+            actions::FindingsAct::Delete => decide.child(
+                danger_button(
+                    format!("Delete {count} permanently ({size})"),
+                    actions::request_findings_act,
+                )
+                .tooltip(hint(format!(
+                    "Permanently delete {} ({size}). This can't be undone.",
+                    counted(count as u64, "item", "items")
+                ))),
+            ),
+            actions::FindingsAct::StripMetadata => decide.child(
+                danger_button(
+                    format!(
+                        "Remove metadata from {} ({size})",
+                        counted(count as u64, "photo", "photos")
+                    ),
+                    actions::request_findings_act,
+                )
+                .tooltip(hint("Rewrite the photos without their EXIF and XMP data")),
+            ),
+            actions::FindingsAct::ReportOnly => decide,
+        };
+    }
+    if can_undo && actions::CAN_RESTORE {
+        decide = decide.child(icon_secondary_button(
+            icons::UNDO,
+            "Restore from trash",
+            actions::undo_delete,
+        ));
+    }
+    view().w_full().child(action_bar(
+        "Findings actions",
+        vec![
+            decide,
+            action_group().child(
+                icon_button(icons::EXPORT, "Export report…", actions::save_report)
+                    .tooltip(hint("Export the findings as JSON, CSV or HTML")),
+            ),
+        ],
+    ))
+}
+
 /// The cleanup scan's title row: what was looked for, how much was found, and
-/// the space it holds as the answer figure. The findings are read-only here,
-/// and the line under the title says where deleting them happens.
+/// the space it holds as the answer figure. The line under the title says
+/// what the findings allow: an act, or (duplicate folders) a review by hand.
 fn mode_header() -> View {
     view()
         .flex_row()
@@ -1877,11 +2226,30 @@ fn mode_header() -> View {
                 }))
                 .child(description(|| {
                     app().with(|s| match s.mode_result.as_ref() {
-                        Some(r) => format!(
-                            "{} in {} scanned · read-only here; delete with the CLI's --delete or --trash",
-                            counted(r.finding_count() as u64, "finding", "findings"),
-                            counted(r.files_scanned, "file", "files"),
-                        ),
+                        Some(r) => {
+                            let found = match actions::findings_act(r.mode) {
+                                actions::FindingsAct::StripMetadata => {
+                                    counted(r.finding_count() as u64, "photo", "photos")
+                                }
+                                _ => counted(r.finding_count() as u64, "finding", "findings"),
+                            };
+                            let mut line = format!(
+                                "{found} in {} scanned",
+                                counted(r.files_scanned, "file", "files"),
+                            );
+                            let plan = actions::findings_plan(s);
+                            if actions::findings_act(r.mode) == actions::FindingsAct::ReportOnly {
+                                line.push_str(
+                                    " · listed only: check each one and remove it yourself",
+                                );
+                            } else if plan.protected > 0 {
+                                line.push_str(&format!(
+                                    " · {} in a protected folder stay",
+                                    counted(plan.protected as u64, "item", "items")
+                                ));
+                            }
+                            line
+                        }
                         None => "Run a cleanup scan to see findings.".to_string(),
                     })
                 })),
@@ -1892,17 +2260,118 @@ fn mode_header() -> View {
                 .items_end()
                 .gap(px(space::XL))
                 .child(scan_again_button())
-                .child(answer_figure(
-                    "Reclaimable",
-                    || {
-                        app().with(|s| {
-                            s.mode_result
-                                .as_ref()
-                                .map_or_else(String::new, |r| util::human_bytes(r.reclaimable()))
-                        })
-                    },
-                )),
+                .child(answer_figure("Reclaimable", || {
+                    app().with(|s| {
+                        s.mode_result
+                            .as_ref()
+                            .map_or_else(String::new, |r| util::human_bytes(r.reclaimable()))
+                    })
+                })),
         )
+}
+
+/// Items drawn in the findings' confirmation before it counts the rest.
+const FINDINGS_ROWS: usize = 8;
+
+/// The findings' confirmation: the first items the act touches, a count of
+/// the rest, and what a protected folder keeps. Nothing changes until its
+/// commit is pressed, and every file is checked against the scan first.
+pub(crate) fn findings_confirm() -> View {
+    let (act, plan, trash, rows) = app().with_untracked(|s| {
+        (
+            s.mode_result
+                .as_ref()
+                .map_or(actions::FindingsAct::ReportOnly, |r| {
+                    actions::findings_act(r.mode)
+                }),
+            actions::findings_plan(s),
+            s.trash,
+            actions::findings_rows(s, FINDINGS_ROWS),
+        )
+    });
+    let count = plan.count;
+    let size = util::human_bytes(plan.bytes);
+    let mut body = view().flex_col().w_full().gap(px(space::MD));
+    for (path, bytes) in &rows {
+        let file_name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let folder = path
+            .parent()
+            .map_or_else(String::new, |p| p.display().to_string());
+        body = body.child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(space::SM))
+                .child(
+                    view()
+                        .flex_col()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(space::XXS))
+                        .child(panel_title(file_name).truncate())
+                        .child(caption(fit_text(&folder, PLAN_PATH_CHARS)).truncate()),
+                )
+                .child(caption(util::human_bytes(*bytes))),
+        );
+    }
+    if count > rows.len() {
+        body = body.child(caption(format!(
+            "… and {} more",
+            counted((count - rows.len()) as u64, "item", "items")
+        )));
+    }
+    let items = counted(count as u64, "item", "items");
+    let checked =
+        "Each is checked against the scan one last time first; anything that changed stays.";
+    let kept = if plan.protected > 0 {
+        format!(
+            " {} in a protected folder {}.",
+            counted(plan.protected as u64, "item", "items"),
+            if plan.protected == 1 { "stays" } else { "stay" }
+        )
+    } else {
+        String::new()
+    };
+    let (heading, summary, label) = match act {
+        actions::FindingsAct::StripMetadata => {
+            let photos = counted(count as u64, "photo", "photos");
+            (
+                format!("Remove metadata from {photos}?"),
+                format!(
+                    "Their EXIF and XMP data (camera, place, dates) is removed and each photo is rewritten in place; {size} comes back. The pictures themselves do not change. This can't be undone. {checked}{kept}"
+                ),
+                "Remove metadata".to_string(),
+            )
+        }
+        _ if trash => (
+            format!("Move {items} to the trash?"),
+            format!(
+                "{items} ({size}) will move to the trash. You can put them back from the trash until it is emptied. {checked}{kept}"
+            ),
+            format!("Move {count} to the trash"),
+        ),
+        _ => (
+            format!("Delete {items} permanently?"),
+            format!(
+                "{items} ({size}) will be deleted permanently. This can't be undone. {checked}{kept}"
+            ),
+            format!("Delete {count} permanently"),
+        ),
+    };
+    let mut buttons = view().child(secondary_button("Cancel", actions::cancel_findings_act));
+    if count > 0 && act != actions::FindingsAct::ReportOnly {
+        buttons = buttons.child(danger_button(label, actions::confirm_findings_act));
+    }
+    alert_dialog(
+        heading,
+        summary,
+        fast_scroll_max(&FINDINGS_AT, px(DELETE_PLAN_MAX_H), body),
+        buttons,
+        actions::cancel_findings_act,
+    )
 }
 
 fn mode_list() -> View {
@@ -1914,6 +2383,9 @@ fn mode_list() -> View {
         list = list.child(progress_card());
     }
     if result.is_empty() {
+        if let Some(done) = app().with(|s| s.findings_done) {
+            return list.child(findings_cleared_card(done));
+        }
         list = list.child(nothing_found_card(
             "Nothing to clean up",
             "The scanned folders came back clean. Add a folder, or scan again after changing the threshold.",
