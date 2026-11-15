@@ -95,6 +95,18 @@ pub fn link_targets(targets: &[LinkTarget], engine: &HashEngine) -> LinkOutcome 
                 outcome.linked.push(target.path.clone());
                 outcome.bytes_saved += target.size;
             }
+            // Linked, but the old copy is still on disk: the path is done
+            // (it is the keeper's file now), the space is not.
+            Err(err @ ActionError::BackupKept { .. }) => {
+                eprintln!(
+                    "{} {}: {}",
+                    style("⚠").yellow(),
+                    style("linked, but the old copy remains").yellow().bold(),
+                    style(err.to_string()).dim()
+                );
+                outcome.linked.push(target.path.clone());
+                outcome.failures.push((target.path.clone(), err));
+            }
             Err(err) => {
                 let restored = !matches!(err, ActionError::Restore { .. });
                 eprintln!(
@@ -169,12 +181,14 @@ fn replace_with_link(target: &LinkTarget) -> Result<(), ActionError> {
         source,
     })?;
     match fs::hard_link(&target.keeper, &target.path) {
-        Ok(()) => {
-            // The link already holds the same bytes; a leftover backup only
-            // costs space, so a failed cleanup is not worth reporting.
-            let _ = fs::remove_file(&backup);
-            Ok(())
-        }
+        // The link already holds the same bytes, so a backup that will not
+        // go loses nothing; but its space is not free, and the caller must
+        // not count it as saved.
+        Ok(()) => fs::remove_file(&backup).map_err(|source| ActionError::BackupKept {
+            path: target.path.clone(),
+            backup,
+            source,
+        }),
         Err(link) => match fs::rename(&backup, &target.path) {
             Ok(()) => Err(ActionError::Link {
                 path: target.path.clone(),

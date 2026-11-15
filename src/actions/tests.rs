@@ -1009,3 +1009,59 @@ fn remove_findings_keeps_group_keeper_and_protected_members() {
 
     let _ = fs::remove_dir_all(&fixture.dir);
 }
+
+/// Names that differ only by case are one file on Windows and macOS volumes,
+/// so a plan never gives two moves names that fold to the same one.
+#[test]
+fn plan_move_aside_treats_case_only_names_as_one() {
+    let dir = tmpdir("plan-case");
+    let dest = dir.join("aside");
+    let target = |path: PathBuf| DeleteTarget {
+        path,
+        expected_hash: "h".to_string(),
+        size: 1,
+    };
+    let plan = plan_move_aside(
+        &[
+            target(dir.join("a").join("Photo.JPG")),
+            target(dir.join("b").join("photo.jpg")),
+        ],
+        &dest,
+    );
+    assert_eq!(plan[0].to, dest.join("Photo.JPG"));
+    assert_eq!(plan[1].to, dest.join("photo (2).jpg"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A file that appears at a planned destination after planning is never
+/// replaced: the move lands on the next free name and says so.
+#[test]
+fn move_targets_never_replace_a_file_that_appeared_after_planning() {
+    let dir = tmpdir("move-no-clobber");
+    let dest = dir.join("aside");
+    fs::create_dir_all(&dest).unwrap();
+    let dup = dir.join("photo.jpg");
+    fs::write(&dup, b"the duplicate").unwrap();
+    let plan = plan_move_aside(&[target_for(&dup)], &dest);
+    assert_eq!(plan[0].to, dest.join("photo.jpg"));
+    // Someone else's file takes the planned name before the move runs.
+    fs::write(dest.join("photo.jpg"), b"someone else's file").unwrap();
+
+    let outcome = move_targets(&plan, &engine());
+
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    assert_eq!(
+        outcome.moved,
+        vec![(dup.clone(), dest.join("photo (2).jpg"))]
+    );
+    assert_eq!(
+        fs::read(dest.join("photo.jpg")).unwrap(),
+        b"someone else's file"
+    );
+    assert_eq!(
+        fs::read(dest.join("photo (2).jpg")).unwrap(),
+        b"the duplicate"
+    );
+    assert!(!dup.exists());
+    let _ = fs::remove_dir_all(&dir);
+}

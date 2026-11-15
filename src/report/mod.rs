@@ -71,6 +71,40 @@ mod tests {
     use super::*;
     use crate::matching::GroupMember;
 
+    /// A file name that opens like a formula is written as text, so opening
+    /// the CSV in a spreadsheet never runs it.
+    #[test]
+    fn csv_keeps_formula_like_names_as_text() {
+        let dir = std::env::temp_dir().join(format!("dedupe-csv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("r.csv");
+        let paths = ["/media".to_string()];
+        let ctx = ReportContext {
+            paths: &paths,
+            hash_algo: "blake3",
+            verbose: false,
+            ffprobe_used: false,
+        };
+        let mut result = crate::modes::ModeResult::default();
+        result.findings.push(crate::modes::Finding {
+            path: std::path::PathBuf::from("=HYPERLINK(\"x\")"),
+            kind: "temp",
+            ..crate::modes::Finding::default()
+        });
+        let stats = ScanStats {
+            files_scanned: 1,
+            bytes_scanned: 0,
+            dirs_skipped: 0,
+            files_skipped: 0,
+            hardlinks_skipped: 0,
+            dir_read_errors: Vec::new(),
+        };
+        write_csv(&out, &ctx, &stats, &[], Some(&result)).unwrap();
+        let csv = std::fs::read_to_string(&out).unwrap();
+        assert!(csv.contains("\"'=HYPERLINK(\"\"x\"\")\""), "{csv}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn to_json_has_expected_shape() {
         let paths = ["/media".to_string()];

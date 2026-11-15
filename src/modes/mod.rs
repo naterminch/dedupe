@@ -152,20 +152,18 @@ pub fn content_hash(path: &Path, engine: &HashEngine) -> Option<String> {
 /// lists. A cancelled scan stops early, leaving the rest unhashed so they are
 /// kept rather than removed unverified.
 pub fn attach_content_hashes(result: &mut ModeResult, engine: &HashEngine, cancel: &CancelToken) {
-    // A photo-metadata finding is sized by its metadata, not the file, so the
-    // size check has nothing to compare against. That is safe there: the
-    // only action on it is a strip, which re-derives the rewrite from the
-    // bytes this hash pins, never from what the scan saw.
-    let sized_by_file = result.mode != FindMode::PhotoMetadata;
+    // Photo-metadata findings were hashed from the bytes the scan classified
+    // (their size is the metadata's, so the size check below could not tell
+    // a changed photo apart); hashing them again now would bless whatever the
+    // file holds by this time.
+    if result.mode == FindMode::PhotoMetadata {
+        return;
+    }
     for finding in &mut result.findings {
         if cancel.is_cancelled() {
             return;
         }
-        let unchanged = if sized_by_file {
-            still_same_size(&finding.path, finding.size)
-        } else {
-            std::fs::symlink_metadata(&finding.path).is_ok_and(|meta| meta.is_file())
-        };
+        let unchanged = still_same_size(&finding.path, finding.size);
         finding.hash = if unchanged {
             content_hash(&finding.path, engine)
         } else {
@@ -356,7 +354,8 @@ pub fn run_mode(cli: &Cli, cancel: &CancelToken) -> ModeResult {
             result.groups = music_groups(cli, &tree, &mut result.notes, cancel);
         }
         FindMode::PhotoMetadata => {
-            result.findings = photo_metadata(&tree, &mut result.errors, cancel);
+            let engine = HashEngine::new(cli.hash);
+            result.findings = photo_metadata(&tree, &engine, &mut result.errors, cancel);
         }
     }
     result.findings.sort_by(|a, b| a.path.cmp(&b.path));

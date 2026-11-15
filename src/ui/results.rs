@@ -544,6 +544,9 @@ struct DeleteBar {
     can_undo: bool,
     trash: bool,
     removal: Removal,
+    /// The ticked copies a hard link can replace, and their size: only those
+    /// in byte-identical groups. Counted only while Hard link is chosen.
+    linkable: (usize, u64),
     groups: usize,
 }
 
@@ -560,6 +563,12 @@ fn delete_bar() -> View {
                     can_undo: !s.last_trashed.is_empty(),
                     trash: s.trash,
                     removal: s.removal,
+                    linkable: if s.removal == Removal::Link {
+                        let (links, _) = actions::link_plan(s);
+                        (links.len(), links.iter().map(|l| l.size).sum())
+                    } else {
+                        (0, 0)
+                    },
                     groups: s.groups.len(),
                 }
             })
@@ -570,6 +579,7 @@ fn delete_bar() -> View {
             can_undo,
             trash,
             removal,
+            linkable,
             groups,
         } = bar.get();
         let mut row = view().flex_row().gap(px(space::SM)).items_center();
@@ -599,12 +609,26 @@ fn delete_bar() -> View {
                             "Move {count} {unit} ({size}) into a folder you choose"
                         )))
                 }
-                Removal::Link => {
-                    danger_button(format!("Link {count} ({size})"), actions::request_delete)
-                        .tooltip(hint(format!(
-                            "Replace {count} {unit} with hard links to their keepers"
-                        )))
-                }
+                // Only identical copies can be linked: the button counts
+                // those, and with none it still opens the dialog, where
+                // another way can be picked for the ticked copies.
+                Removal::Link => match linkable {
+                    (0, _) => secondary_button(
+                        format!("Review {count} ticked…"),
+                        actions::request_delete,
+                    )
+                    .tooltip(hint(
+                        "None of the ticked copies is identical to its keeper, so none can become a hard link",
+                    )),
+                    (links, link_bytes) => {
+                        let size = util::human_bytes(link_bytes);
+                        let unit = if links == 1 { "file" } else { "files" };
+                        danger_button(format!("Link {links} ({size})"), actions::request_delete)
+                            .tooltip(hint(format!(
+                                "Replace {links} {unit} with hard links to their keepers"
+                            )))
+                    }
+                },
             };
             row = row
                 .child(button)

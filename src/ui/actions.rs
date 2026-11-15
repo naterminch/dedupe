@@ -1413,6 +1413,9 @@ pub(crate) fn confirm_groups(s: &AppState) -> Vec<ConfirmGroup> {
 /// Nothing is removed until it is confirmed.
 pub(crate) fn request_delete() {
     let state = app();
+    if busy() {
+        return;
+    }
     if state.with_untracked(|s| pending_targets(s).is_empty()) {
         state.update(|s| {
             s.status = "Mark the copies you want deleted first.".to_string();
@@ -1513,6 +1516,8 @@ pub(crate) fn link_plan(s: &AppState) -> (Vec<file_actions::LinkTarget>, usize) 
 /// What one removal run did, in the terms every kind of run shares, so the
 /// list, the counters and the status line follow it the same way.
 struct RemovalDone {
+    /// The scan whose results the run acted on.
+    generation: u64,
     removal: Removal,
     /// Paths that left their group: deleted, moved away or linked.
     done: Vec<PathBuf>,
@@ -1522,6 +1527,35 @@ struct RemovalDone {
     /// failed; those are in `failures` too).
     skipped: Vec<PathBuf>,
     failures: Vec<(PathBuf, file_actions::ActionError)>,
+}
+
+/// Claim the one running file act, saying `status` while it runs, and return
+/// the scan generation it acts on; `None` (with a note) while another runs.
+fn begin_act(status: &str) -> Option<u64> {
+    let mut generation = None;
+    app().update(|s| {
+        if s.acting {
+            s.status = BUSY.to_string();
+        } else {
+            s.acting = true;
+            s.status = status.to_string();
+            generation = Some(s.scan_gen);
+        }
+    });
+    generation
+}
+
+/// What a file act says when another one is still running.
+const BUSY: &str = "Wait for the current change to finish first.";
+
+/// Refuse to open a confirmation while a file act runs: its plan would list
+/// files that act is about to change.
+fn busy() -> bool {
+    let acting = app().with_untracked(|s| s.acting);
+    if acting {
+        app().update(|s| s.status = BUSY.to_string());
+    }
+    acting
 }
 
 /// The ticked copies go the way the confirmation chose: deleted (trash or
@@ -1545,7 +1579,9 @@ pub(crate) fn perform_removal() {
             } else {
                 file_actions::Disposition::Permanent
             };
-            state.update(|s| s.status = "Deleting…".to_string());
+            let Some(generation) = begin_act("Deleting…") else {
+                return;
+            };
             app_spawn(async move {
                 let outcome = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
@@ -1557,6 +1593,7 @@ pub(crate) fn perform_removal() {
                     return;
                 };
                 apply_removal(RemovalDone {
+                    generation,
                     removal,
                     done: outcome.deleted,
                     bytes: outcome.bytes_freed,
@@ -1574,7 +1611,9 @@ pub(crate) fn perform_removal() {
                 return;
             };
             let moves = file_actions::plan_move_aside(&targets, &dest);
-            state.update(|s| s.status = "Moving copies…".to_string());
+            let Some(generation) = begin_act("Moving copies…") else {
+                return;
+            };
             app_spawn(async move {
                 let outcome = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
@@ -1586,6 +1625,7 @@ pub(crate) fn perform_removal() {
                     return;
                 };
                 apply_removal(RemovalDone {
+                    generation,
                     removal,
                     done: outcome.moved.into_iter().map(|(from, _)| from).collect(),
                     bytes: outcome.bytes_moved,
@@ -1604,7 +1644,9 @@ pub(crate) fn perform_removal() {
                 });
                 return;
             }
-            state.update(|s| s.status = "Linking copies…".to_string());
+            let Some(generation) = begin_act("Linking copies…") else {
+                return;
+            };
             app_spawn(async move {
                 let outcome = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
@@ -1616,6 +1658,7 @@ pub(crate) fn perform_removal() {
                     return;
                 };
                 apply_removal(RemovalDone {
+                    generation,
                     removal,
                     done: outcome.linked,
                     bytes: outcome.bytes_saved,
@@ -1630,7 +1673,10 @@ pub(crate) fn perform_removal() {
 
 fn worker_stopped(message: &str) {
     let message = message.to_string();
-    app().update(|s| s.status = message);
+    app().update(|s| {
+        s.acting = false;
+        s.status = message;
+    });
 }
 
 /// The last name of a path, for a sentence that has to stay short.
@@ -1678,40 +1724,46 @@ fn failed_note<E: std::fmt::Display>(failures: &[(PathBuf, E)], verb: &str) -> S
 /// went where, and say so.
 fn apply_removal(run: RemovalDone) {
     app().update(|s| {
-        let gone: HashSet<PathBuf> = run.done.iter().cloned().collect();
-        for groups in [&mut s.groups, &mut s.base_groups] {
-            for g in groups.iter_mut() {
-                g.members.retain(|m| !gone.contains(&m.path));
-            }
-            // Pruning the pristine copy too means a later floor change cannot
-            // resurrect copies that are gone.
-            groups.retain(|g| g.members.len() >= 2);
-        }
-        // Members are gone: the list's cards are stale now.
-        s.results_rev += 1;
-        s.playing = None;
-        for p in &run.done {
-            s.selected.remove(p);
-        }
-        // Those paths are gone: disarm a pending consolidate.
-        s.consolidate_dest = None;
-        // Trash receipts enable one-step undo. A permanent delete makes any
-        // older receipt stale (its copies' groups are re-derived); a move or
-        // a link leaves an earlier trash run restorable.
+        s.acting = false;
+        // Trash receipts enable one-step undo, whatever page is up now. A
+        // permanent delete makes any older receipt stale (its copies' groups
+        // are re-derived); a move or a link leaves an earlier trash run
+        // restorable.
         match run.went {
             Went::Trash => s.last_trashed = run.done.clone(),
             Went::Freed if run.removal == Removal::Delete => s.last_trashed.clear(),
             Went::Freed | Went::Moved => {}
         }
-        if !run.done.is_empty() {
-            s.cleared = Some(Cleared::add(
-                s.cleared,
-                run.done.len() as u64,
-                run.bytes,
-                run.went,
-            ));
+        // A scan (or Back) since the run started: these results are not the
+        // ones it acted on, so only the status says what happened.
+        if s.scan_gen == run.generation {
+            let gone: HashSet<PathBuf> = run.done.iter().cloned().collect();
+            for groups in [&mut s.groups, &mut s.base_groups] {
+                for g in groups.iter_mut() {
+                    g.members.retain(|m| !gone.contains(&m.path));
+                }
+                // Pruning the pristine copy too means a later floor change
+                // cannot resurrect copies that are gone.
+                groups.retain(|g| g.members.len() >= 2);
+            }
+            // Members are gone: the list's cards are stale now.
+            s.results_rev += 1;
+            s.playing = None;
+            for p in &run.done {
+                s.selected.remove(p);
+            }
+            // Those paths are gone: disarm a pending consolidate.
+            s.consolidate_dest = None;
+            if !run.done.is_empty() {
+                s.cleared = Some(Cleared::add(
+                    s.cleared,
+                    run.done.len() as u64,
+                    run.bytes,
+                    run.went,
+                ));
+            }
+            recount(s);
         }
-        recount(s);
         let files = counted(run.done.len() as u64, "file", "files");
         let bytes = util::human_bytes(run.bytes);
         let changed = changed_note(&run.skipped, &run.failures);
@@ -1729,10 +1781,28 @@ fn apply_removal(run: RemovalDone) {
                     .map_or_else(|| "the folder".to_string(), |d| d.display().to_string()),
                 failed_note(&run.failures, "moved")
             ),
-            (Went::Freed, Removal::Link) => format!(
-                "Replaced {files} with hard links ({bytes} freed){changed}{}.",
-                failed_note(&run.failures, "linked")
-            ),
+            (Went::Freed, Removal::Link) => {
+                // A link whose old copy would not go is linked all the same;
+                // it is named apart, since its space is still taken.
+                let (kept, failed): (Vec<_>, Vec<_>) = run
+                    .failures
+                    .iter()
+                    .map(|(p, e)| (p.clone(), e))
+                    .partition(|(_, e)| matches!(e, file_actions::ActionError::BackupKept { .. }));
+                let kept = match kept.first() {
+                    Some((_, err)) => format!(
+                        "; {} kept {} old {} beside the link: {err}",
+                        counted(kept.len() as u64, "file", "files"),
+                        if kept.len() == 1 { "its" } else { "their" },
+                        if kept.len() == 1 { "copy" } else { "copies" },
+                    ),
+                    None => String::new(),
+                };
+                format!(
+                    "Replaced {files} with hard links ({bytes} freed){changed}{}{kept}.",
+                    failed_note(&failed, "linked")
+                )
+            }
             (Went::Freed, _) => format!(
                 "Deleted {files} ({bytes} freed){changed}{}.",
                 failed_note(&run.failures, "removed")
@@ -1864,6 +1934,9 @@ pub(crate) fn undo_delete() {
 /// ([`pick_consolidate_dir`]) and nothing moves until it is confirmed
 /// ([`confirm_consolidate`]).
 pub(crate) fn open_consolidate() {
+    if busy() {
+        return;
+    }
     // The confirmation opens at its top, wherever the wheel left its list
     // the last time.
     crate::ui::results::reset_consolidate_scroll();
@@ -1938,7 +2011,9 @@ pub(crate) fn confirm_consolidate() {
         return;
     }
     let hash = state.with_untracked(|s| s.last_hash);
-    state.update(|s| s.status = "Moving keepers…".to_string());
+    let Some(generation) = begin_act("Moving keepers…") else {
+        return;
+    };
     app_spawn(async move {
         let outcome = blocking(move || {
             let engine = hashing::HashEngine::new(hash);
@@ -1946,11 +2021,19 @@ pub(crate) fn confirm_consolidate() {
         })
         .await;
         let Ok(outcome) = outcome else {
-            app().update(|s| s.status = "Consolidate failed: worker stopped.".to_string());
+            worker_stopped("Consolidate failed: worker stopped.");
             return;
         };
         app().update(|s| {
-            for (from, to) in &outcome.moved {
+            s.acting = false;
+            // A scan (or Back) since the move started: these results are not
+            // the ones it moved, so only the status says what happened.
+            let moved = if s.scan_gen == generation {
+                outcome.moved.as_slice()
+            } else {
+                &[]
+            };
+            for (from, to) in moved {
                 for groups in [&mut s.groups, &mut s.base_groups] {
                     for m in groups.iter_mut().flat_map(|g| g.members.iter_mut()) {
                         if m.path == *from {
@@ -2067,6 +2150,9 @@ pub(crate) fn findings_rows(s: &AppState, limit: usize) -> Vec<(PathBuf, u64)> {
 
 /// Open the findings' confirmation. Nothing changes until it is confirmed.
 pub(crate) fn request_findings_act() {
+    if busy() {
+        return;
+    }
     if app().with_untracked(|s| findings_plan(s).count == 0) {
         app().update(|s| {
             s.status = "Nothing to clean up: every finding is in a protected folder.".to_string();
@@ -2100,7 +2186,9 @@ pub(crate) fn confirm_findings_act() {
             } else {
                 file_actions::Disposition::Permanent
             };
-            state.update(|s| s.status = "Deleting…".to_string());
+            let Some(generation) = begin_act("Deleting…") else {
+                return;
+            };
             app_spawn(async move {
                 let outcome = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
@@ -2127,17 +2215,13 @@ pub(crate) fn confirm_findings_act() {
                 } else {
                     format!("Deleted {files} ({bytes} freed){changed}{failed}{kept}.")
                 };
-                if trash {
-                    app().update(|s| s.last_trashed = outcome.removed.clone());
-                } else {
-                    app().update(|s| s.last_trashed.clear());
-                }
                 let went = if trash {
                     FindingsWent::Trash
                 } else {
                     FindingsWent::Deleted
                 };
                 apply_findings_done(
+                    generation,
                     &outcome.removed,
                     outcome.bytes_freed,
                     went,
@@ -2147,7 +2231,9 @@ pub(crate) fn confirm_findings_act() {
             });
         }
         FindingsAct::StripMetadata => {
-            state.update(|s| s.status = "Removing photo metadata…".to_string());
+            let Some(generation) = begin_act("Removing photo metadata…") else {
+                return;
+            };
             app_spawn(async move {
                 let outcome = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
@@ -2164,11 +2250,15 @@ pub(crate) fn confirm_findings_act() {
                 let bytes = util::human_bytes(outcome.bytes_saved);
                 let changed = changed_note(&outcome.skipped, &outcome.failures);
                 let failed = failed_note(&outcome.failures, "rewritten");
+                let kept = protected_note(outcome.protected.len());
                 apply_findings_done(
+                    generation,
                     &outcome.stripped,
                     outcome.bytes_saved,
                     FindingsWent::Stripped,
-                    format!("Removed the metadata from {photos} ({bytes} freed){changed}{failed}."),
+                    format!(
+                        "Removed the metadata from {photos} ({bytes} freed){changed}{failed}{kept}."
+                    ),
                     !outcome.failures.is_empty(),
                 );
             });
@@ -2189,6 +2279,7 @@ fn protected_note(kept: usize) -> String {
 
 /// Take the findings a run finished with off the list and report it.
 fn apply_findings_done(
+    generation: u64,
     done: &[PathBuf],
     bytes: u64,
     went: FindingsWent,
@@ -2197,6 +2288,20 @@ fn apply_findings_done(
 ) {
     let gone: HashSet<&PathBuf> = done.iter().collect();
     app().update(|s| {
+        s.acting = false;
+        // The trash receipt holds whatever page is up now.
+        match went {
+            FindingsWent::Trash => s.last_trashed = done.to_vec(),
+            FindingsWent::Deleted => s.last_trashed.clear(),
+            FindingsWent::Stripped | FindingsWent::Restored => {}
+        }
+        s.status = status;
+        crate::ui::toast::notify(s.status.clone(), failed);
+        // A scan (or Back) since the act started: these findings are not the
+        // ones it acted on, so the status above is all that changes.
+        if s.scan_gen != generation {
+            return;
+        }
         if !done.is_empty() {
             // Rounds add up while they go the same way; a different way
             // starts the count again, so the card never mixes two outcomes.
@@ -2215,20 +2320,40 @@ fn apply_findings_done(
             for group in &mut result.groups {
                 // Members, their sizes and their hashes are parallel lists.
                 let keep: Vec<bool> = group.members.iter().map(|m| !gone.contains(m)).collect();
+                let before_sizes = group.sizes.clone();
                 let mut flags = keep.iter();
                 group.members.retain(|_| *flags.next().unwrap_or(&true));
                 let mut flags = keep.iter();
                 group.sizes.retain(|_| *flags.next().unwrap_or(&true));
                 let mut flags = keep.iter();
                 group.hashes.retain(|_| *flags.next().unwrap_or(&true));
+                // `bytes` counts every member here (music groups are the
+                // only ones acted on): drop the ones that went.
+                let removed: u64 = before_sizes
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, kept)| !**kept)
+                    .map(|(size, _)| size)
+                    .sum();
+                group.bytes = group.bytes.saturating_sub(removed);
                 group.reclaimable = group.sizes.iter().skip(1).sum();
+                // The detail opens with the member count ("3 tracks, …").
+                let before = keep.len();
+                let after = group.members.len();
+                if after != before
+                    && let Some(rest) = group.detail.strip_prefix(&format!("{before} "))
+                {
+                    group.detail = format!("{after} {rest}");
+                }
             }
             result.groups.retain(|g| g.members.len() >= 2);
+            // Largest first, as the scan ordered them.
+            result
+                .groups
+                .sort_by_key(|g| std::cmp::Reverse(g.reclaimable));
             s.dup_files = result.finding_count() as u64;
             s.reclaim_bytes = result.reclaimable();
         }
-        s.status = status;
-        crate::ui::toast::notify(s.status.clone(), failed);
     });
 }
 

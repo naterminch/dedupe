@@ -349,21 +349,28 @@ fn photo_metadata_mode_finds_a_jpeg_with_exif() {
     let _ = fs::remove_dir_all(&root);
 }
 
+/// A photo's hash pins the bytes the scan classified: a photo saved again
+/// before the hashes are attached keeps the scan's hash, so a strip refuses
+/// it instead of blessing the new contents.
 #[test]
-fn photo_metadata_findings_get_content_hashes() {
+fn photo_metadata_findings_are_hashed_from_the_scanned_bytes() {
     let root = temp_root("photo-metadata-hash");
-    fs::write(root.join("photo.jpg"), jpeg_with_exif(b"MM\0*")).unwrap();
+    let photo = root.join("photo.jpg");
+    fs::write(&photo, jpeg_with_exif(b"MM\0*")).unwrap();
     let mut result = run_mode(
         &cli_for(&root, FindMode::PhotoMetadata, &[]),
         &CancelToken::new(),
     );
+    let scanned = blake3().full(&photo).unwrap();
+    assert_eq!(result.findings[0].hash, Some(scanned.clone()));
 
+    fs::write(&photo, jpeg_with_exif(b"II*\0")).unwrap();
     attach_content_hashes(&mut result, &blake3(), &CancelToken::new());
 
     assert_eq!(
         result.findings[0].hash,
-        Some(blake3().full(&root.join("photo.jpg")).unwrap()),
-        "sized by its metadata, the finding is still hashed"
+        Some(scanned),
+        "the photo's later bytes are not hashed in"
     );
 
     let _ = fs::remove_dir_all(&root);
@@ -404,9 +411,10 @@ fn strip_metadata_strips_only_verified_unprotected_photos() {
     assert!(outcome.failures.is_empty());
     let mut skipped = outcome.skipped.clone();
     skipped.sort();
-    let mut expected = vec![changed.clone(), unhashed.clone(), guarded.clone()];
+    let mut expected = vec![changed.clone(), unhashed.clone()];
     expected.sort();
     assert_eq!(skipped, expected);
+    assert_eq!(outcome.protected, vec![guarded.clone()]);
     assert!(
         !fs::read(&verified)
             .unwrap()

@@ -106,6 +106,20 @@ pub enum ActionError {
         #[source]
         source: io::Error,
     },
+
+    /// The hard link is in place, but the original's staged copy beside it
+    /// could not be removed, so its space is still taken.
+    #[error(
+        "{} is now a hard link, but its old copy could not be removed from {}: {source}",
+        path.display(),
+        backup.display()
+    )]
+    BackupKept {
+        path: PathBuf,
+        backup: PathBuf,
+        #[source]
+        source: io::Error,
+    },
 }
 
 impl ActionError {
@@ -119,7 +133,8 @@ impl ActionError {
             | Self::Trash { path, .. }
             | Self::Stage { path, .. }
             | Self::Link { path, .. }
-            | Self::Restore { path, .. } => path,
+            | Self::Restore { path, .. }
+            | Self::BackupKept { path, .. } => path,
             Self::CopiedButKept { from, .. } | Self::Move { from, .. } => from,
         }
     }

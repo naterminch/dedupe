@@ -1,14 +1,13 @@
 use super::consolidate::move_targets;
-use super::fileops::free_dest_path;
+use super::fileops::{Claimed, free_dest_path};
 use super::guard::prompt;
 use super::{ActionError, DeleteTarget, MoveDuplicateStats, MoveTarget};
 use crate::hashing::HashEngine;
 use crate::matching::Group;
 use crate::util::human_bytes;
 use console::style;
-use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Decide where each of `targets` lands under `dest` (flattened), in input
 /// order, without touching disk beyond existence checks.
@@ -18,7 +17,7 @@ use std::path::{Path, PathBuf};
 /// consolidation, so a move can never overwrite an unrelated file.
 #[must_use]
 pub fn plan_move_aside(targets: &[DeleteTarget], dest: &Path) -> Vec<MoveTarget> {
-    let mut claimed: HashSet<PathBuf> = HashSet::new();
+    let mut claimed = Claimed::default();
     targets
         .iter()
         .map(|target| {
@@ -27,7 +26,7 @@ pub fn plan_move_aside(targets: &[DeleteTarget], dest: &Path) -> Vec<MoveTarget>
                 .file_name()
                 .unwrap_or_else(|| target.path.as_os_str());
             let to = free_dest_path(dest, file_name, &claimed);
-            claimed.insert(to.clone());
+            claimed.insert(&to);
             MoveTarget {
                 from: target.path.clone(),
                 to,

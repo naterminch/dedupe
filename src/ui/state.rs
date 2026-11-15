@@ -324,6 +324,10 @@ pub(crate) struct AppState {
     /// The cleanup findings' confirmation is open (delete, or remove photo
     /// metadata). Nothing changes on disk until it is confirmed.
     pub(crate) confirm_findings: bool,
+    /// A delete, move, link, consolidate or findings act is running. A second
+    /// one waits for it: both would act on the same files, and the later
+    /// outcome would overwrite the earlier one's trash receipt.
+    pub(crate) acting: bool,
     /// What the findings' act did since the cleanup scan; reset by a scan.
     pub(crate) findings_done: Option<FindingsDone>,
     /// Cooperative cancellation for the running scan; Stop sets it and the
@@ -411,6 +415,7 @@ impl Default for AppState {
             removal: Removal::Delete,
             move_dest: None,
             confirm_findings: false,
+            acting: false,
             findings_done: None,
             scan_cancel: CancelToken::new(),
             scan_gen: 0,
