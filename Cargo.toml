@@ -2,7 +2,7 @@
 name = "dedupe"
 version = "0.1.2"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.97"
 description = "Find duplicate files (including images and videos) by content hash, with media metadata comparison"
 license = "MIT"
 publish = false
@@ -36,8 +36,8 @@ indicatif = "0.18.6"
 md-5 = "0.11.0"
 # Native Shell: the GUI is an nsh app written in Rust. `nsh-base` holds the
 # unstyled behavior components; the styled layer lives in `src/ui`.
-nsh-base = { version = "0.5.0", default-features = false }
-nsh-core = "0.5.0"
+nsh-base = { version = "0.5.1", default-features = false }
+nsh-core = "0.5.1"
 rayon = "1.12.0"
 rfd = "0.17.2"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -52,13 +52,13 @@ thiserror = "2"
 # target. `default-features = false` drops the embedded JS runtime (`js`):
 # this app is Rust-only.
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-platform-linux = { version = "0.5.0", default-features = false }
+nsh-platform-linux = { version = "0.5.1", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = { version = "0.5.0", default-features = false }
+nsh-platform-macos = { version = "0.5.1", default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-nsh-platform-windows = { version = "0.5.0", default-features = false }
+nsh-platform-windows = { version = "0.5.1", default-features = false }
 # The direct Win32 calls here and in `src/ui/window_state.rs` (console
 # attach/reopen for CLI runs, the single-instance mutex and the frame
 # sampler). Listed explicitly: nsh-platform-windows enables the graphics
@@ -80,8 +80,8 @@ windows = { version = "0.62", features = [
 [dev-dependencies]
 serde_json = "1.0.154"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
-nsh-engine = { version = "0.5.0", default-features = false }
-nsh-testing = { version = "0.5.0", default-features = false }
+nsh-engine = { version = "0.5.1", default-features = false }
+nsh-testing = { version = "0.5.1", default-features = false }
 
 [build-dependencies]
 winres = "0.1.12"
