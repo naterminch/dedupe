@@ -747,6 +747,11 @@ const DELETE_PLAN_MAX_H: f32 = 320.0;
 /// its two keep controls in the delete dialog; the front is cut beyond it.
 const PLAN_PATH_CHARS: usize = 30;
 
+/// About how many characters of a folder fit under a going copy's name in
+/// the delete dialog; the front is cut beyond it, so the distinguishing end
+/// stays.
+const PLAN_FOLDER_CHARS: usize = 22;
+
 pub(crate) fn delete_confirm() -> View {
     let (count, bytes, groups, trash, removal, dest, link_count, link_bytes, unlinkable) = app()
         .with(|s| {
@@ -801,15 +806,26 @@ pub(crate) fn delete_confirm() -> View {
             )
             .child(caption(fate));
         for member in &group.rows {
+            // The name leads, as on the review card: the folder under it is
+            // the part that tells two copies of one name apart.
             let full = member.path.display().to_string();
-            let shown = fit_text(&full, PLAN_PATH_CHARS);
-            let truncated = shown != full;
-            let cell = caption(shown).flex_1().truncate();
-            let cell = if truncated {
-                cell.tooltip(hint(full))
-            } else {
-                cell
-            };
+            let file_name = member
+                .path
+                .file_name()
+                .map_or_else(|| full.clone(), |n| n.to_string_lossy().into_owned());
+            let folder = member
+                .path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let cell = view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                // `body` here is the dialog's list; the text role by path.
+                .child(crate::ui::widgets::body(file_name).truncate())
+                .child(caption(fit_text(&folder, PLAN_FOLDER_CHARS)).truncate())
+                .tooltip(hint(full));
             let index = group.index;
             let keep_path = member.path.clone();
             let untick_path = member.path.clone();
@@ -1167,59 +1183,63 @@ fn first_sight(seen: &'static std::thread::LocalKey<Cell<u64>>) -> bool {
     seen.with(|cell| cell.replace(generation) != generation)
 }
 
-fn progress_card() -> View {
-    // Progress has a signal of its own: reading it here subscribes this card
-    // alone, so a tick never rebuilds the rest of the window.
+/// The running scan's phase, its count and Stop. Progress has a signal of
+/// its own: reading it here subscribes this row alone, so a tick never
+/// rebuilds the rest of the window.
+fn progress_header() -> View {
     let (done, total, determinate, phase) =
         scan_status().with(|p| (p.done, p.total, p.determinate, p.phase.clone()));
-    let fraction = if determinate && total > 0 {
-        (done as f32 / total as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
     // A scan counts twice — files to hash, then media to compare — so the
     // bar legitimately restarts with a fresh total when the phase changes.
     // The phase is the heading and the counts are the caption, so that
     // restart reads as a new stage instead of the same bar going backwards.
-    let label = if determinate && total > 0 {
-        format!("{done} of {total}")
-    } else {
-        phase.clone()
-    };
-    view()
+    // A phase that cannot count has no caption: it would only repeat the
+    // heading.
+    let mut words = view()
         .flex_col()
-        .flex_1()
         .min_w(px(0.0))
+        .gap(px(space::XXS))
+        .child(panel_title(phase));
+    if determinate && total > 0 {
+        words = words.child(caption(format!("{done} of {total}")).tabular_nums());
+    }
+    view()
+        .flex_row()
+        .items_center()
+        .justify_between()
         .gap(px(space::MD))
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(space::MD))
-                .child(
-                    view()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .gap(px(space::XXS))
-                        .child(panel_title(phase))
-                        .child(caption(label).tabular_nums()),
-                )
-                .child(danger_button("Stop", actions::stop_scan)),
-        )
-        .child(progress_bar(fraction, determinate))
+        .child(words)
+        .child(danger_button("Stop", actions::stop_scan))
 }
 
-/// A running scan: the ensō turning beside its progress. The ensō lives
-/// outside the part a tick rebuilds, so its turn never restarts.
+/// A running scan: the ensō turning beside its progress. The ensō and the
+/// bar live outside the part a tick rebuilds, so the ensō's turn never
+/// restarts, and the bar rebuilds only when its fill moves — while the scan
+/// cannot count, its sweep runs on undisturbed.
 fn scan_card() -> View {
+    let fill = computed(|| {
+        scan_status().with(|p| {
+            (p.determinate && p.total > 0).then(|| (p.done.min(p.total) * 1000 / p.total) as u32)
+        })
+    });
     card()
         .flex_row()
         .items_center()
         .gap(px(space::LG))
         .p(px(space::LG))
         .child(turning_enso(ENSO_SIDE))
-        .child(dynamic(progress_card))
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(space::MD))
+                .child(dynamic(progress_header))
+                .child(dynamic(move || match fill.get() {
+                    Some(permille) => progress_bar(permille as f32 / 1000.0, true),
+                    None => progress_bar(0.0, false),
+                })),
+        )
 }
 
 /// The ensō's side on the scan card: the height of the phase and its count.

@@ -246,6 +246,8 @@ nsh lands them at their end state when reduce-motion is on.
 | Rail slot and settings nav moving | background transition / tab indicator; the rail's vermilion stroke (`rail_marker`, the running head's) is drawn down when the rail first shows, then travels to the new slot on a page change, drawn out long mid-way like a dragged brush (`TranslateY` + `ScaleY` 1→1.8→1) | `BASE` / `FAST`; stroke 360 ms out-expo |
 | Running head drawn (every title row as it mounts) | `ScaleY` 0→1, `TranslateY` −8→0, fade | 360 ms, out-expo |
 | Scan running | the ensō turns, linear and endless, on a part of the card the progress ticks never rebuild | 2600 ms a turn |
+| Scan phase that cannot count (listing folders, finishing) | a stroke of sumi a quarter of the groove long (40–220 pt) is carried across it, again and again, in-out ease; the bar rebuilds only when its fill moves, so the sweep never restarts on a tick. Reduce-motion: a faint full line | 1500 ms a pass |
+| A folder added to the folder pane | `arriving(n)` on the new row only (the restored list at start-up and the rows already there stay still) | 320 ms out-expo |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Group body opening and closing | `collapsible().reveal(true)` | nsh spring |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |

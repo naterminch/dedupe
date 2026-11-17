@@ -5,7 +5,9 @@
 //! scan controls live in the workspace's setup form, so the sidebar stays a
 //! quiet index of places.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
+use std::rc::Rc;
 
 use nsh_core::prelude::*;
 
@@ -13,9 +15,9 @@ use crate::ui::actions;
 use crate::ui::palette::{size, space};
 use crate::ui::state::{FolderEntry, app};
 use crate::ui::widgets::{
-    Availability, Ink, RowEmphasis, body, caption, fast_scroll, field, field_label, glyph, hint,
-    icon_ghost_button, icons, list_row, notice, panel_title, row_button, row_icon_button,
-    side_pane, toggle_switch, wordmark,
+    Availability, Ink, RowEmphasis, arriving, body, caption, fast_scroll, field, field_label,
+    glyph, hint, icon_ghost_button, icons, list_row, notice, panel_title, row_button,
+    row_icon_button, side_pane, toggle_switch, wordmark,
 };
 use crate::ui_helpers::fit_text;
 
@@ -170,34 +172,60 @@ fn toggle_trash() {
 
 /// Folders the user typed, dropped or browsed for. The filter, when open,
 /// narrows the list by path; rows address the live list by path so a
-/// filtered view never removes the wrong folder.
+/// filtered view never removes the wrong folder. A folder just added
+/// settles into its place ([`arriving`]); the rows already there, and every
+/// row the window opened with, stay still.
 fn folder_list() -> impl IntoElement {
-    view().flex_col().gap(px(space::XXS)).child(dynamic(|| {
-        // The list and the filter rebuild the rows; a scan tick must not,
-        // or the Protect and Remove buttons under the pointer restart their
-        // hover and never report a press.
-        let rows = computed(|| {
-            filtered_folders()
-                .into_iter()
-                .map(|folder| (folder.path, folder.reference))
-                .collect::<Vec<_>>()
-        });
-        let rows = rows.get();
-        if rows.is_empty() {
-            // An empty list is a place to act, not a label: name both ways in.
-            view()
-                .flex_col()
-                .gap(px(space::XXS))
-                .p(px(space::SM))
-                .child(caption("No folders yet"))
-                .child(caption("Drop a folder on the window, or press Browse."))
-        } else {
-            view().flex_col().gap(px(space::XXS)).children(
-                rows.into_iter()
-                    .map(|(path, reference)| folder_row(path, reference)),
-            )
-        }
-    }))
+    // The paths the list has shown, kept across its rebuilds; `None` until
+    // the first build, which shows what was restored without moving it.
+    let shown = Rc::new(RefCell::new(None::<HashSet<String>>));
+    view()
+        .flex_col()
+        .gap(px(space::XXS))
+        .child(dynamic(move || {
+            // The list and the filter rebuild the rows; a scan tick must not,
+            // or the Protect and Remove buttons under the pointer restart their
+            // hover and never report a press.
+            let rows = computed(|| {
+                filtered_folders()
+                    .into_iter()
+                    .map(|folder| (folder.path, folder.reference))
+                    .collect::<Vec<_>>()
+            });
+            let rows = rows.get();
+            let mut shown = shown.borrow_mut();
+            let first = shown.is_none();
+            let seen = shown.get_or_insert_with(HashSet::new);
+            // A folder that left the list (removed, or filtered out) arrives
+            // again when it comes back.
+            seen.retain(|path| rows.iter().any(|(row, _)| row == path));
+            if rows.is_empty() {
+                // An empty list is a place to act, not a label: name both ways in.
+                view()
+                    .flex_col()
+                    .gap(px(space::XXS))
+                    .p(px(space::SM))
+                    .child(caption("No folders yet"))
+                    .child(caption("Drop a folder on the window, or press Browse."))
+            } else {
+                let mut newcomers = 0;
+                let rows = rows.into_iter().map(|(path, reference)| {
+                    let new = seen.insert(path.clone()) && !first;
+                    let row = folder_row(path, reference);
+                    if new {
+                        let settle = arriving(newcomers);
+                        newcomers += 1;
+                        row.bind_motion(&settle)
+                    } else {
+                        row
+                    }
+                });
+                view()
+                    .flex_col()
+                    .gap(px(space::XXS))
+                    .children(rows.collect::<Vec<_>>())
+            }
+        }))
 }
 
 fn filtered_folders() -> Vec<FolderEntry> {

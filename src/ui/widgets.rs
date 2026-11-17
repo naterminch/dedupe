@@ -605,8 +605,8 @@ pub(crate) mod icons {
     pub(crate) const HOME: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 10.5 12 3l9 7.5\"/><path d=\"M5 9.5V21h14V9.5\"/></svg>";
     pub(crate) const GRID: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"3\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"3\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/><rect x=\"13.5\" y=\"13.5\" width=\"7.5\" height=\"7.5\" rx=\"1.5\"/></svg>";
     pub(crate) const LIST: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M8 6h13M8 12h13M8 18h13\"/><path d=\"M3.5 6h.01M3.5 12h.01M3.5 18h.01\" stroke-width=\"2.6\"/></svg>";
-    pub(crate) const EXPAND: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 10 6-6 6 6\"/><path d=\"m6 14 6 6 6-6\"/></svg>";
-    pub(crate) const COLLAPSE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 4 6 6 6-6\"/><path d=\"m6 20 6-6 6 6\"/></svg>";
+    pub(crate) const EXPAND: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m7 8 5-5 5 5\"/><path d=\"M4 12h16\"/><path d=\"m7 16 5 5 5-5\"/></svg>";
+    pub(crate) const COLLAPSE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m7 3 5 5 5-5\"/><path d=\"M4 12h16\"/><path d=\"m7 21 5-5 5 5\"/></svg>";
     pub(crate) const SELECT_ALL: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m2 13 4 4 8-9\"/><path d=\"m12 17 2 2 8-9\"/></svg>";
     pub(crate) const CLEAR: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M6 6l12 12M18 6 6 18\"/></svg>";
     pub(crate) const EXPORT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3v11\"/><path d=\"m7 9 5 5 5-5\"/><path d=\"M4 20h16\"/></svg>";
@@ -2059,10 +2059,15 @@ pub(crate) fn action_group() -> View {
 /// The progress bar's thickness; its ends are fully rounded.
 const PROGRESS_H: f32 = 6.0;
 
+/// One pass of the indeterminate sweep across the track.
+const SWEEP_MS: f32 = 1500.0;
+
 /// A scan's progress: a determinate bar glides between ticks instead of
-/// stepping; an indeterminate one pulses.
-pub(crate) fn progress_bar(fraction: f32, determinate: bool) -> impl IntoElement {
-    progress()
+/// stepping; an indeterminate one carries a short stroke of ink across the
+/// groove, again and again, easing in and out as a brush does. With
+/// reduce-motion on the stroke rests as a faint full line.
+pub(crate) fn progress_bar(fraction: f32, determinate: bool) -> View {
+    let bar = progress()
         .value(fraction * 100.0)
         .indeterminate(!determinate)
         .accessibility_label("Scan progress")
@@ -2073,17 +2078,62 @@ pub(crate) fn progress_bar(fraction: f32, determinate: bool) -> impl IntoElement
                 .bg(colors::INSET)
                 .overflow_hidden()
         })
-        .indicator_class(if determinate {
-            "transition-all"
-        } else {
-            "w-full animate-pulse"
-        })
+        .indicator_class(if determinate { "transition-all" } else { "w-0" })
         .indicator_style(|s| {
             s.h(px(PROGRESS_H))
                 .rounded(px(PROGRESS_H / 2.0))
                 .bg(colors::PRIMARY)
                 .duration(motion(timing::SLOW))
-        })
+        });
+    if determinate {
+        return view().w_full().child(bar);
+    }
+    let track = signal(0.0f32);
+    view()
+        .relative()
+        .w_full()
+        .on_layout(move |bounds: &Bounds<Points>| track.set(bounds.size.width.0.round()))
+        .child(bar)
+        .child(
+            view()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .w_full()
+                .h(px(PROGRESS_H))
+                .rounded(px(PROGRESS_H / 2.0))
+                .overflow_hidden()
+                .pointer_events(PointerEvents::None)
+                .accessibility_elements_hidden(true)
+                .child(dynamic(move || ink_sweep(track.get()))),
+        )
+}
+
+/// The stroke an indeterminate [`progress_bar`] carries across a track
+/// `width` points wide: about a quarter of it, entering from the left edge
+/// and leaving past the right.
+fn ink_sweep(width: f32) -> View {
+    if width <= 0.0 {
+        return view();
+    }
+    let stroke = view()
+        .h(px(PROGRESS_H))
+        .rounded(px(PROGRESS_H / 2.0))
+        .bg(colors::PRIMARY);
+    if reduce_motion() {
+        return stroke.w_full().opacity(0.3);
+    }
+    let length = (width * 0.26).clamp(40.0, 220.0);
+    let sweep = nsh_core::element::motion();
+    let _ = sweep.play(
+        MotionSpec::new(
+            KeyframeTiming::new(SWEEP_MS)
+                .easing(Easing::Bezier(0.65, 0.0, 0.35, 1.0))
+                .infinite(),
+        )
+        .values(MotionChannel::TranslateX, [-length, width]),
+    );
+    stroke.w(px(length)).bind_motion(&sweep)
 }
 
 /// The confirmation dialog's width: a full Windows path at caption size
