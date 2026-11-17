@@ -16,7 +16,7 @@ use crate::ui::state::{SettingsTab, app};
 use crate::ui::widgets::{
     SelectItem, caption, card, description, divider, dropdown_trigger, fast_scroll, heading, icons,
     number_field, number_text, option_select, panel_title, radio_segmented, secondary_button,
-    section_title, side_pane, side_tabs, toggle_switch,
+    section_title, side_pane, side_tabs, title_block, toggle_switch,
 };
 use crate::ui_helpers::{counted, find_mode_caption, hash_caption};
 use crate::util;
@@ -161,14 +161,12 @@ fn page_column(
         .w_full()
         .max_w(px(PAGE_MAX_W))
         .gap(px(space::XXL))
-        .px(px(space::XXL))
+        .px(px(space::MA))
         .py(px(space::XXL))
         .child(
             view()
-                .flex_col()
-                .gap(px(space::XS))
-                .child(heading(title))
-                .child(description(summary)),
+                .flex_row()
+                .child(title_block("設定", heading(title), description(summary))),
         );
     for section in sections {
         column = column.child(divider()).child(section);

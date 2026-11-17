@@ -5,7 +5,7 @@
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
 use std::cell::Cell;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::thread::LocalKey;
 
 /// The item of an [`option_select`] list: features build their lists from it.
@@ -20,7 +20,7 @@ use nsh_core::element::{
 };
 use nsh_core::prelude::*;
 
-use crate::ui::palette::{colors, radius, size, space, text};
+use crate::ui::palette::{colors, faces, radius, size, space, text};
 use crate::ui::state::app;
 
 /// Transition length for colour and transform changes.
@@ -230,8 +230,8 @@ impl ControlStates for ButtonElement {
     }
 }
 
-/// The one container: a white card on the ground, one line at its edge, no
-/// shadow and no tray around it.
+/// The one container: a lighter sheet of paper laid on the ground, one soft
+/// edge, no shadow and no tray around it.
 pub(crate) fn card() -> View {
     view()
         .flex_col()
@@ -243,10 +243,13 @@ pub(crate) fn card() -> View {
 }
 
 /// The screen's title, one per screen. Screen readers hear it as a header.
+/// Medium, not bold, drawn slightly tight: a title set like a book's, not a
+/// dashboard's.
 pub(crate) fn heading(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::HEADING))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::MEDIUM)
+        .letter_spacing(px(-0.5))
         .text_color(colors::TEXT)
         .role(AccessibilityRole::Header)
 }
@@ -269,12 +272,14 @@ pub(crate) fn panel_title(label: impl IntoReactive<SharedString>) -> Text {
 }
 
 /// The figure a screen answers with: the space a delete gives back. The one
-/// hue, the largest number on the screen, digits of equal width so it does
-/// not jitter as the selection changes.
+/// hue, the largest number on the screen, set light the way a brush numeral
+/// sits on a page, digits of equal width so it does not jitter as the
+/// selection changes.
 pub(crate) fn figure(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::FIGURE))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::LIGHT)
+        .letter_spacing(px(-0.8))
         .text_color(colors::ACCENT)
         .tabular_nums()
 }
@@ -776,8 +781,138 @@ pub(crate) fn wordmark() -> impl IntoElement {
             text("dedupe")
                 .text_size(px(text::TITLE))
                 .font_weight(FontWeight::SEMIBOLD)
+                .letter_spacing(px(-0.2))
                 .text_color(colors::TEXT),
         )
+}
+
+// ---------------------------------------------------------------------------
+// Kanji: the running head, the rail's vertical line and the seal.
+// ---------------------------------------------------------------------------
+
+/// Every face the app sets, embedded so a single-file install carries them.
+const FACES: [&[u8]; 6] = [
+    include_bytes!("../../assets/fonts/Inter-300.ttf"),
+    include_bytes!("../../assets/fonts/Inter-400.ttf"),
+    include_bytes!("../../assets/fonts/Inter-500.ttf"),
+    include_bytes!("../../assets/fonts/Inter-600.ttf"),
+    include_bytes!("../../assets/fonts/NotoSerifJP-500.ttf"),
+    include_bytes!("../../assets/fonts/NotoSerifJP-700.ttf"),
+];
+
+/// Hand the bundled faces to the text system. Text naming a family is laid
+/// out again once it lands, so the first frame may show the system face for
+/// a moment; a face the platform refuses leaves its text on the system one.
+pub(crate) fn register_faces() {
+    for face in FACES {
+        let answer = register_font(face);
+        crate::ui::actions::app_spawn(async move {
+            if let Err(err) = answer.await {
+                eprintln!("dedupe: a bundled font was refused: {err}");
+            }
+        });
+    }
+}
+
+/// Kanji set vertically, one character under the next, the way a Japanese
+/// page runs its margin heads. Decorative: the English beside it is what
+/// screen readers hear.
+fn vertical_kanji(chars: &'static str, ink: AdaptiveColor) -> View {
+    let mut column = view()
+        .flex_col()
+        .items_center()
+        .gap(px(space::XXS))
+        .accessibility_elements_hidden(true);
+    for ch in chars.chars() {
+        column = column.child(
+            text(SharedString::from(ch.to_string()))
+                .font_family(faces::KANJI)
+                .font_weight(FontWeight::MEDIUM)
+                .text_size(px(text::KANJI))
+                .line_height(px(text::KANJI + 3.0))
+                .text_color(ink),
+        );
+    }
+    column
+}
+
+/// A page's running head (hashira): a short vermilion stroke over the page's
+/// two kanji, set vertically beside its title.
+fn hashira(chars: &'static str) -> View {
+    view()
+        .flex_col()
+        .items_center()
+        .gap(px(space::SM))
+        .w(px(HASHIRA_W))
+        .flex_shrink_0()
+        .pt(px(space::XS))
+        .child(view().w(px(2.0)).h(px(space::LG)).bg(colors::ACCENT))
+        .child(vertical_kanji(chars, colors::MUTED))
+}
+
+/// The running head's column: one kanji wide.
+const HASHIRA_W: f32 = 20.0;
+
+/// Every screen's title block: the running head, then the title over its one
+/// line of description. Grows to fill the title row beside the screen's
+/// action or figure.
+pub(crate) fn title_block(kanji: &'static str, title: Text, line: Text) -> View {
+    view()
+        .flex_row()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_start()
+        .gap(px(space::LG))
+        .child(hashira(kanji))
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(space::XS))
+                .child(title)
+                .child(line),
+        )
+}
+
+/// The rail's vertical line: 断捨離 (refuse, discard, part with), the
+/// tidying the app exists for, in diluted ink, closed by a small seal dot.
+pub(crate) fn rail_motto() -> View {
+    view()
+        .flex_col()
+        .items_center()
+        .gap(px(space::MD))
+        .child(vertical_kanji("断捨離", colors::MUTED))
+        .child(view().size(px(5.0)).bg(colors::ACCENT).rounded(px(1.0)))
+}
+
+/// A hanko seal: vermilion pressed into the paper with the kanji left in the
+/// paper's own colour (hakubun). Turned a few degrees, as a hand-pressed seal
+/// is. Decorative: the card's title carries the meaning.
+pub(crate) fn seal(kanji: &'static str, side: f32) -> View {
+    view()
+        .size(px(side))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .bg(colors::ACCENT)
+        .rounded(px(radius::INSET + 1.0))
+        .rotate(deg(-6.0))
+        .accessibility_elements_hidden(true)
+        .child(
+            text(kanji)
+                .font_family(faces::KANJI)
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(side * 0.62))
+                .line_height(px(side * 0.7))
+                .text_color(colors::ON_ACCENT),
+        )
+}
+
+/// [`seal`] arriving the way a seal is pressed: it settles into the paper.
+pub(crate) fn pressed_seal(kanji: &'static str, side: f32) -> View {
+    let press = nsh_core::element::motion().entering(MotionPreset::ZoomIn);
+    seal(kanji, side).bind_motion(&press)
 }
 
 // ---------------------------------------------------------------------------
@@ -830,25 +965,74 @@ pub(crate) fn error_notice(message: impl IntoReactive<SharedString>) -> View {
 // Regions.
 // ---------------------------------------------------------------------------
 
-/// The window's ground, under every pane.
+/// The window's ground, under every pane: kinari paper with its fibre grain.
+/// The grain is one layer behind everything; panes on the ground are
+/// transparent so it runs under them, and only a sheet (a card) covers it.
 pub(crate) fn ground() -> View {
-    view().bg(colors::BACKGROUND)
+    view()
+        .bg(colors::BACKGROUND)
+        .font_family(faces::SANS)
+        .child(dynamic(|| paper_grain(dark())))
 }
 
-/// A side pane on the ground (the folder pane, the settings nav): one rule
-/// at its trailing edge separates it from the work.
+/// One decoded grain texture: its size and RGBA pixels.
+type Grain = (u32, u32, Arc<[u8]>);
+
+/// Decode an embedded texture. It is built into the binary, so a failure
+/// means the repository's PNG is corrupt: draw no grain rather than fail.
+fn decode_grain(bytes: &[u8]) -> Grain {
+    ::image::load_from_memory(bytes).ok().map_or_else(
+        || (1, 1, Arc::from([0_u8, 0, 0, 0].as_slice())),
+        |decoded| {
+            let rgba = decoded.into_rgba8();
+            let (w, h) = rgba.dimensions();
+            (w, h, rgba.into_raw().into())
+        },
+    )
+}
+
+static GRAIN_LIGHT: LazyLock<Grain> =
+    LazyLock::new(|| decode_grain(include_bytes!("../../assets/textures/washi-light.png")));
+static GRAIN_DARK: LazyLock<Grain> =
+    LazyLock::new(|| decode_grain(include_bytes!("../../assets/textures/washi-dark.png")));
+
+/// The kozo fibres and pulp clouds of washi, as an alpha layer the ground's
+/// colour shows through: brown fibres on light paper, pale ones on dark. Two
+/// textures because a fibre is darker than light paper and lighter than dark
+/// paper. Generated procedurally (tileable noise and tapered curves) and
+/// decoded once per appearance.
+fn paper_grain(dark: bool) -> View {
+    let (width, height, pixels) = if dark { &*GRAIN_DARK } else { &*GRAIN_LIGHT };
+    view()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .w_full()
+        .h_full()
+        .overflow_hidden()
+        .pointer_events(PointerEvents::None)
+        .accessibility_elements_hidden(true)
+        .child(
+            image(ImageSrc::rgba(*width, *height, Arc::clone(pixels)))
+                .w_full()
+                .h_full()
+                .object_fit(ResizeMode::Cover),
+        )
+}
+
+/// A side pane on the ground (the folder pane, the settings nav): the same
+/// paper as the work, one rule at its trailing edge separating the two.
 pub(crate) fn side_pane(width: f32) -> View {
     view()
         .flex_col()
         .w(px(width))
         .h_full()
         .flex_shrink_0()
-        .bg(colors::SIDEBAR)
         .border_r_1()
         .border_color(colors::BORDER)
 }
 
-/// The status line at the foot of the window.
+/// The status line at the foot of the window, on the page's own paper.
 pub(crate) fn status_strip() -> View {
     view()
         .flex_row()
@@ -857,7 +1041,6 @@ pub(crate) fn status_strip() -> View {
         .gap(px(space::LG))
         .px(px(space::XXL))
         .py(px(space::SM))
-        .bg(colors::BACKGROUND)
         .border_t_1()
         .border_color(colors::BORDER)
 }

@@ -27,12 +27,13 @@ use crate::{cli, hashing, media, pipeline, poster, prefs, similar, util};
 /// Set once per process: components re-run, bootstrapping must not.
 static BOOTSTRAPPED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
-/// Restore preferences, theme and the ffmpeg probe. Runs once, on the first
-/// frame, after the component tree exists.
+/// Restore preferences, theme and the ffmpeg probe, and register the bundled
+/// faces. Runs once, on the first frame, after the component tree exists.
 pub(crate) fn bootstrap() {
     if BOOTSTRAPPED.set(()).is_err() {
         return;
     }
+    crate::ui::widgets::register_faces();
     let saved = prefs::GuiPrefs::load();
     set_color_scheme(if saved.dark {
         Appearance::Dark
