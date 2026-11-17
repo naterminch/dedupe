@@ -33,7 +33,17 @@ pub(crate) fn bootstrap() {
     if BOOTSTRAPPED.set(()).is_err() {
         return;
     }
-    crate::ui::widgets::register_faces();
+    // Text naming a family is laid out again once its face lands, so the
+    // first frame may show the system face for a moment; a face the
+    // platform refuses leaves its text on the system one.
+    for face in crate::ui::widgets::FACES {
+        let answer = register_font(face);
+        app_spawn(async move {
+            if let Err(err) = answer.await {
+                eprintln!("dedupe: a bundled font was refused: {err}");
+            }
+        });
+    }
     let saved = prefs::GuiPrefs::load();
     set_color_scheme(if saved.dark {
         Appearance::Dark

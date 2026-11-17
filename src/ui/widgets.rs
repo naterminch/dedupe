@@ -791,26 +791,13 @@ pub(crate) fn wordmark() -> impl IntoElement {
 // ---------------------------------------------------------------------------
 
 /// Every face the app sets, embedded so a single-file install carries them.
-const FACES: [&[u8]; 4] = [
+/// Registered once at bootstrap ([`crate::ui::actions::bootstrap`]).
+pub(crate) const FACES: [&[u8]; 4] = [
     include_bytes!("../../assets/fonts/Inter-300.ttf"),
     include_bytes!("../../assets/fonts/Inter-400.ttf"),
     include_bytes!("../../assets/fonts/Inter-500.ttf"),
     include_bytes!("../../assets/fonts/Inter-600.ttf"),
 ];
-
-/// Hand the bundled faces to the text system. Text naming a family is laid
-/// out again once it lands, so the first frame may show the system face for
-/// a moment; a face the platform refuses leaves its text on the system one.
-pub(crate) fn register_faces() {
-    for face in FACES {
-        let answer = register_font(face);
-        crate::ui::actions::app_spawn(async move {
-            if let Err(err) = answer.await {
-                eprintln!("dedupe: a bundled font was refused: {err}");
-            }
-        });
-    }
-}
 
 /// A brush lands with a quick, decelerating touch: out-expo.
 const BRUSH: Easing = Easing::Bezier(0.16, 1.0, 0.3, 1.0);
@@ -1018,20 +1005,24 @@ pub(crate) fn ground() -> View {
         .child(dynamic(|| paper_grain(dark())))
 }
 
-/// One decoded grain texture: its size and RGBA pixels.
-type Grain = (u32, u32, Arc<[u8]>);
+/// One grain texture, decoded once per appearance. The source is built once
+/// and cloned into every tile, so the tiles share one image (a fresh
+/// `ImageSrc::rgba` would be a new image each).
+type Grain = (f32, ImageSrc);
 
 /// Decode an embedded texture. It is built into the binary, so a failure
 /// means the repository's PNG is corrupt: draw no grain rather than fail.
 fn decode_grain(bytes: &[u8]) -> Grain {
-    ::image::load_from_memory(bytes).ok().map_or_else(
+    let (w, h, pixels): (u32, u32, Arc<[u8]>) = ::image::load_from_memory(bytes).ok().map_or_else(
         || (1, 1, Arc::from([0_u8, 0, 0, 0].as_slice())),
         |decoded| {
             let rgba = decoded.into_rgba8();
             let (w, h) = rgba.dimensions();
             (w, h, rgba.into_raw().into())
         },
-    )
+    );
+    // The textures are square; a tile is laid out at the texture's own size.
+    (w.max(h) as f32, ImageSrc::rgba(w, h, pixels))
 }
 
 static GRAIN_LIGHT: LazyLock<Grain> =
@@ -1039,14 +1030,27 @@ static GRAIN_LIGHT: LazyLock<Grain> =
 static GRAIN_DARK: LazyLock<Grain> =
     LazyLock::new(|| decode_grain(include_bytes!("../../assets/textures/washi-dark.png")));
 
+/// How many grain tiles run across and down: enough to cover an 8K-wide
+/// window at 1024 pt tiles. The layer crops whatever the window leaves out.
+const GRAIN_COLS: usize = 8;
+const GRAIN_ROWS: usize = 5;
+
+/// The grain layer's test id: its tiles run past the window by design (the
+/// layer crops them), so layout checks leave them out.
+pub(crate) const GRAIN_TEST_ID: &str = "paper-grain";
+
 /// The kozo fibres and pulp clouds of washi, as an alpha layer the ground's
 /// colour shows through: brown fibres on light paper, pale ones on dark. Two
 /// textures because a fibre is darker than light paper and lighter than dark
 /// paper. Generated procedurally (tileable noise and tapered curves) and
-/// decoded once per appearance.
+/// repeated at its own size from the top-left corner, so the fibres keep
+/// one scale whatever the window's size or shape.
 fn paper_grain(dark: bool) -> View {
-    let (width, height, pixels) = if dark { &*GRAIN_DARK } else { &*GRAIN_LIGHT };
+    let (tile, src) = if dark { &*GRAIN_DARK } else { &*GRAIN_LIGHT };
+    let tiles =
+        (0..GRAIN_COLS * GRAIN_ROWS).map(|_| image(src.clone()).size(px(*tile)).flex_shrink_0());
     view()
+        .test_id(GRAIN_TEST_ID)
         .absolute()
         .top(px(0.0))
         .left(px(0.0))
@@ -1056,10 +1060,12 @@ fn paper_grain(dark: bool) -> View {
         .pointer_events(PointerEvents::None)
         .accessibility_elements_hidden(true)
         .child(
-            image(ImageSrc::rgba(*width, *height, Arc::clone(pixels)))
-                .w_full()
-                .h_full()
-                .object_fit(ResizeMode::Cover),
+            view()
+                .flex_row()
+                .flex_wrap()
+                .flex_shrink_0()
+                .w(px(*tile * GRAIN_COLS as f32))
+                .children(tiles),
         )
 }
 

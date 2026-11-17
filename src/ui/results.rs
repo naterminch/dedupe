@@ -21,9 +21,9 @@ use crate::ui::widgets::{
     BadgeTone, Decision, Ink, PreviewFill, PreviewGlyph, PreviewSize, SelectItem, action_bar,
     action_group, alert_dialog, amount, badge, body, caption, card, danger_button, description,
     disclosure, divider, dropdown_trigger, entering, error_notice, fading_in, fast_scroll,
-    fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, ground, heading,
-    hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name,
-    notice, option_select, panel_title, press_to_play, pressed_seal, preview_frame, preview_glyph,
+    fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, heading, hint,
+    icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name, notice,
+    option_select, panel_title, press_to_play, pressed_seal, preview_frame, preview_glyph,
     preview_image, primary_button, progress_bar, quiet_button, radio_segmented, secondary_button,
     section_title, segmented, tick, tile, title_block, turning_enso, video_player,
 };
@@ -110,7 +110,8 @@ fn path_source(path: &Path) -> String {
 }
 
 pub(crate) fn results() -> View {
-    ground()
+    // On the root ground: transparent, so its grain runs on under the pane.
+    view()
         .flex_col()
         .flex_1()
         .h_full()
