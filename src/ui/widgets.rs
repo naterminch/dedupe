@@ -5,8 +5,10 @@
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
 use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock, OnceLock};
 use std::thread::LocalKey;
+use std::time::Duration;
 
 /// The item of an [`option_select`] list: features build their lists from it.
 pub(crate) use nsh_base::SelectItem;
@@ -16,9 +18,11 @@ use nsh_base::{
 };
 use nsh_core::AccessibilityState;
 use nsh_core::element::{
-    BorderCurve, ImageSrc, Motion, MotionPreset, StyleRefinement, input, svg, video,
+    BorderCurve, ImageSrc, Motion, MotionPreset, StyleRefinement, input, shader_transition, svg,
+    video,
 };
 use nsh_core::prelude::*;
+use nsh_core::shader::{Shader, TransitionKey, UniformValue};
 
 use crate::ui::palette::{colors, faces, radius, size, space, text};
 use crate::ui::state::app;
@@ -528,14 +532,19 @@ fn chip(
     background: AdaptiveColor,
     foreground: AdaptiveColor,
 ) -> View {
+    chip_label(label, foreground)
+        .bg(background)
+        .rounded(px(radius::CONTROL))
+}
+
+/// A chip's words at its padding, without a backing of their own.
+fn chip_label(label: impl IntoReactive<SharedString>, foreground: AdaptiveColor) -> View {
     view()
         .flex_shrink_0()
         .px(px(space::SM))
         .py(px(space::XXS))
         .flex_row()
         .items_center()
-        .bg(background)
-        .rounded(px(radius::CONTROL))
         .child(
             text(label)
                 .text_size(px(text::CAPTION))
@@ -892,11 +901,12 @@ const SEAL_RIM_INSET: f32 = 3.5;
 
 /// The press: the seal comes down from above the paper (larger, a little
 /// more turned), meets it a touch past flat and settles. It waits for the
-/// card it marks to land first.
+/// card it marks to be inked in by the lift ([`ink_lift`]) first: the
+/// press lands as the last of the old page lets go.
 fn seal_press() -> MotionSpec {
     MotionSpec::new(
         KeyframeTiming::new(560.0)
-            .delay(220.0)
+            .delay(INK_LIFT_MS * 0.8)
             .easing(Easing::Bezier(0.2, 0.9, 0.3, 1.0)),
     )
     .values(MotionChannel::Opacity, [0.0, 1.0, 1.0])
@@ -909,6 +919,110 @@ fn seal_press() -> MotionSpec {
 pub(crate) fn pressed_seal(side: f32) -> View {
     let press = nsh_core::element::motion().entering(seal_press());
     view().flex_shrink_0().child(seal(side)).bind_motion(&press)
+}
+
+/// How many of a freshly scanned list's cards arrive one after another; the
+/// rest arrive with the last of them, so the wait never grows with the list.
+const ARRIVAL_STAGGER_CARDS: usize = 8;
+
+/// The pause between two cards of a freshly scanned list arriving.
+const ARRIVAL_STAGGER_MS: f32 = 40.0;
+
+/// A card of a freshly scanned list arriving, `order` in from the top: it
+/// fades in while settling 12 pt, a beat after the card above it. Only a
+/// scan's own landing uses it; every other rebuild of the list fades in
+/// place ([`fading_in`]). With reduce-motion on it is there at once.
+pub(crate) fn arriving(order: usize) -> Motion {
+    let order = order.min(ARRIVAL_STAGGER_CARDS - 1) as f32;
+    nsh_core::element::motion().entering(
+        MotionSpec::new(
+            KeyframeTiming::new(320.0)
+                .delay(order * ARRIVAL_STAGGER_MS)
+                .easing(BRUSH),
+        )
+        .values(MotionChannel::Opacity, [0.0, 1.0])
+        .values(MotionChannel::TranslateY, [space::MD, 0.0]),
+    )
+}
+
+/// A fraction that runs from 0 to 1 over `ms`, frame by frame, in the
+/// brush's out-expo: a figure counting up to its value as it arrives. With
+/// reduce-motion on it is 1 from the start.
+pub(crate) fn count_up(ms: f32) -> Signal<f32> {
+    let ms = motion(ms)();
+    let fraction = signal(if ms > 0.0 { 0.0 } else { 1.0 });
+    if ms > 0.0 {
+        count_frame(fraction, None, ms);
+    }
+    fraction
+}
+
+fn count_frame(fraction: Signal<f32>, start: Option<nsh_core::time::Instant>, ms: f32) {
+    // Detached, as the toast ticker is: the task runs to its frame.
+    request_animation_frame(move |at| {
+        let start = start.unwrap_or(at);
+        let t = (at.saturating_duration_since(start).as_secs_f32() * 1000.0 / ms).min(1.0);
+        // Out-expo, closed at 1 so the last frame lands on the value itself.
+        let eased = if t >= 1.0 {
+            1.0
+        } else {
+            1.0 - 2f32.powf(-10.0 * t)
+        };
+        // The figure may have gone (the page changed) before the count ended.
+        if fraction.try_set(eased) && t < 1.0 {
+            count_frame(fraction, Some(start), ms);
+        }
+    });
+}
+
+/// How long a clean-up's ending takes to lift off the paper ([`ink_lift`]).
+const INK_LIFT_MS: f32 = 900.0;
+
+/// The ink-lift program: fibre-noise lets the old picture's ink go, dense
+/// ink first, then inks the new one in behind it (see the file's notes).
+const INK_LIFT: &str = include_str!("../../assets/shaders/ink_lift.wgsl");
+
+/// A list whose ending lifts off the paper: when `settled` turns true — a
+/// clean-up has just gone through and the list now holds its outcome — the
+/// cards that were there let go of their ink along the paper's fibres, the
+/// ground's grain shows through, and the outcome is inked in behind them,
+/// before its seal presses down. Only that moment runs it: every other
+/// change of the list (and `settled` turning false) is the list's own.
+///
+/// Without a GPU the same moment cross-fades; with reduce-motion on the
+/// outcome is simply there.
+pub(crate) fn ink_lift(
+    settled: impl Fn() -> bool + 'static,
+    content: impl IntoElement + 'static,
+) -> impl IntoElement {
+    // The key moves only as a settle begins: (settled now, settles so far).
+    let lifts = Rc::new(Cell::new((false, 0u32)));
+    let key = move || {
+        let now = settled();
+        let (was, count) = lifts.get();
+        let count = if now && !was { count + 1 } else { count };
+        lifts.set((now, count));
+        TransitionKey::from(f64::from(count))
+    };
+    let lift = shader_transition()
+        .value(key)
+        .duration(Duration::from_secs_f32(motion(INK_LIFT_MS)() / 1000.0))
+        .uniform("dark", move || {
+            UniformValue::from(if dark() { 1.0f32 } else { 0.0 })
+        })
+        .flex_col()
+        .flex_1()
+        .w_full()
+        .min_w(px(0.0))
+        .min_h(px(0.0))
+        .child(content);
+    match Shader::compile(INK_LIFT) {
+        Ok(program) => lift.source(program),
+        Err(err) => {
+            eprintln!("dedupe: the ink-lift shader was refused: {err}");
+            lift
+        }
+    }
 }
 
 /// An ensō: one brush stroke round an open circle, heavy where the brush
@@ -952,20 +1066,60 @@ pub(crate) fn turning_enso(side: f32) -> View {
 /// What a badge says, which decides its backing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BadgeTone {
-    /// A kind or a neutral fact, on the ground or a card.
-    Neutral,
     /// A neutral fact on a pane-coloured tile: lifted to the card surface.
     Raised,
     /// The copy a group keeps.
     Keep,
+    /// What sort of thing it is: the kind's dye.
+    Kind(Kind),
+}
+
+/// What sort of thing a group or a finding is. Each kind takes one
+/// traditional dye, so a list of one kind reads as one colour and a mixed
+/// list sorts itself by eye; the word on the tag always says it too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Photo,
+    Video,
+    Audio,
+    Document,
+    Archive,
+    /// A file of no kind the app names.
+    File,
+    /// Holds nothing: an empty file or folder, a link to nowhere.
+    Empty,
+    /// Left behind by another program: temp and partial files.
+    Leftover,
+    /// Cannot be read as what it claims to be.
+    Damaged,
+    /// Among the largest files scanned.
+    Large,
+    /// Photo metadata.
+    Metadata,
+}
+
+impl Kind {
+    fn dye(self) -> colors::Dye {
+        match self {
+            Kind::Photo | Kind::Metadata => colors::SAKURA,
+            Kind::Video | Kind::Damaged => colors::FUJI,
+            Kind::Audio => colors::YAMABUKI,
+            Kind::Document | Kind::Large => colors::AI,
+            Kind::Archive | Kind::Leftover => colors::ASAGI,
+            Kind::File | Kind::Empty => colors::NEZUMI,
+        }
+    }
 }
 
 /// A short state or kind (Keeper, Protected, a finding's kind).
 pub(crate) fn badge(label: impl IntoReactive<SharedString>, tone: BadgeTone) -> View {
     let (fill, ink) = match tone {
-        BadgeTone::Neutral => (colors::PANE, colors::MUTED),
         BadgeTone::Raised => (colors::CARD, colors::MUTED),
         BadgeTone::Keep => (colors::KEEP_WASH, colors::KEEP_INK),
+        BadgeTone::Kind(kind) => {
+            let dye = kind.dye();
+            (dye.wash, dye.ink)
+        }
     };
     chip(label, fill, ink)
 }
@@ -1135,14 +1289,15 @@ pub(crate) fn tile(decision: Decision) -> View {
 const TICK_BOX: f32 = 12.0;
 const TICK_BOX_RADIUS: f32 = 3.0;
 
-/// A copy's tick: the keeper's is checked and fixed, a ticked copy's amber,
-/// an idle one an outline. The word beside the box says the state, so the
-/// hue is never the only signal.
+/// A copy's tick: a ticked copy's amber, an idle one an outline. The word
+/// beside the box says the state, so the hue is never the only signal.
+/// `soak` runs the wash in as the decision is made (see [`soaked`]).
 pub(crate) fn tick(
     label: &'static str,
     decision: Decision,
+    soak: bool,
     on_toggle: impl Fn() + 'static,
-) -> impl IntoElement {
+) -> View {
     let keep = decision == Decision::Keep;
     let active = decision != Decision::Undecided;
     let (fill, mark, ink) = match decision {
@@ -1150,7 +1305,11 @@ pub(crate) fn tick(
         Decision::Delete => (colors::SELECT_WASH, colors::SELECT, colors::SELECT_INK),
         Decision::Undecided => (colors::CARD, colors::MUTED, colors::MUTED),
     };
-    checkbox()
+    let soak = soak && active;
+    let control = checkbox()
+        // The word beside the box is the control's name; without it a
+        // screen reader reads the drawn mark too ("✓ Delete").
+        .accessibility_label(label)
         .checked(active)
         .disabled(keep)
         .on_change(move |_: &bool| on_toggle())
@@ -1159,8 +1318,11 @@ pub(crate) fn tick(
         .flex_row()
         .items_center()
         .gap(px(space::XS + space::XXS))
-        .rounded(px(radius::CONTROL))
-        .bg(fill)
+        .rounded(px(radius::CONTROL));
+    // A soaking wash is a layer under the control, so the control itself
+    // stays clear while the layer runs in.
+    let control = if soak { control } else { control.bg(fill) };
+    let control = control
         .border_1()
         .border_color(if active { fill } else { colors::CONTROL_BORDER })
         .transition_colors()
@@ -1193,7 +1355,53 @@ pub(crate) fn tick(
                 .text_size(px(text::CAPTION))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(ink),
+        );
+    if soak {
+        soaked(fill, control)
+    } else {
+        view().child(control)
+    }
+}
+
+/// How a decision's wash arrives: it runs in from the tag's leading edge, the
+/// way dye wicks along paper, in the brush's out-expo.
+fn soak_in() -> MotionSpec {
+    MotionSpec::new(KeyframeTiming::new(timing::BASE).easing(BRUSH))
+        .values(MotionChannel::ScaleX, [0.0, 1.0])
+        .values(MotionChannel::Opacity, [0.4, 1.0])
+}
+
+/// `content` on a wash of `fill` that soaks in as it mounts: a decision just
+/// made. Only the wash moves; the words are there at once, so the state is
+/// readable before the motion ends, and reduce-motion lands it whole.
+fn soaked(fill: AdaptiveColor, content: impl IntoElement) -> View {
+    let soak = nsh_core::element::motion().entering(soak_in());
+    view()
+        .flex_shrink_0()
+        .child(
+            view()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .right(px(0.0))
+                .bottom(px(0.0))
+                .rounded(px(radius::CONTROL))
+                .bg(fill)
+                .origin_left()
+                .accessibility_elements_hidden(true)
+                .bind_motion(&soak),
         )
+        .child(content)
+}
+
+/// The keeper's "Keeping" badge. `soak` runs its matcha wash in, for the
+/// copy that has just been made the keeper.
+pub(crate) fn keeper_badge(soak: bool) -> View {
+    if soak {
+        soaked(colors::KEEP_WASH, chip_label("Keeping", colors::KEEP_INK))
+    } else {
+        badge("Keeping", BadgeTone::Keep)
+    }
 }
 
 /// A row thumbnail's box, in points. Fixed so an image finishing its async
@@ -1256,22 +1464,26 @@ pub(crate) fn preview_image(source: String, size: PreviewSize) -> impl IntoEleme
     }
 }
 
-/// What a preview without a picture stands for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PreviewGlyph {
-    /// A file with no preview of its own.
-    Document,
-    /// A clip whose poster frame has not landed yet.
-    Clip,
+/// The glyph in a clip's preview while its poster frame has not landed yet.
+pub(crate) fn clip_glyph() -> impl IntoElement {
+    icon(icons::PLAY, size::ICON_LARGE, colors::MUTED)
 }
 
-/// The glyph of a preview that has no picture.
-pub(crate) fn preview_glyph(kind: PreviewGlyph) -> impl IntoElement {
-    let markup = match kind {
-        PreviewGlyph::Document => icons::FILE,
-        PreviewGlyph::Clip => icons::PLAY,
-    };
-    icon(markup, size::ICON_LARGE, colors::MUTED)
+/// A row's preview for a file with no picture: a slip of its kind's dye with
+/// the document glyph in the dye's ink, so a list of PDFs and archives reads
+/// by kind before the names are read. Decorative; the group's tag names it.
+pub(crate) fn kind_preview(kind: Kind) -> View {
+    let dye = kind.dye();
+    view()
+        .flex_shrink_0()
+        .w(px(THUMB_W))
+        .h(px(THUMB_H))
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::INSET))
+        .bg(dye.wash)
+        .accessibility_elements_hidden(true)
+        .child(icon(icons::FILE, size::ICON_LARGE, dye.ink))
 }
 
 /// A preview a pointer can press to play: the clip's own glyph or poster
@@ -1613,34 +1825,21 @@ pub(crate) fn side_tabs<T: Copy + PartialEq + 'static>(
 /// A rail slot's side: a 20 pt glyph with 8 pt around it.
 const RAIL_SLOT: f32 = 36.0;
 
-/// One slot of the icon rail: the active view's slot is a neutral pill, and
-/// a short vermilion stroke — the running head's — is drawn down the rail's
-/// edge beside it as the page arrives. The rail is icons only, so the
-/// pointer gets the name too, not just the screen reader.
+/// The rail's padding above its first slot, and the gap between slots: the
+/// rail lays its slots out with these, and its marker finds them by them.
+pub(crate) const RAIL_PAD: f32 = space::MD;
+pub(crate) const RAIL_GAP: f32 = space::SM;
+
+/// One slot of the icon rail: the active view's slot is a neutral pill; the
+/// vermilion stroke beside it is the rail's [`rail_marker`]. The rail is
+/// icons only, so the pointer gets the name too, not just the screen reader.
 pub(crate) fn rail_button(
     markup: &'static str,
     label: &'static str,
     active: bool,
     on_press: fn(),
 ) -> View {
-    let slot = view().tooltip(hint(label));
-    let slot = if active {
-        let stroke = nsh_core::element::motion().entering(brush_stroke());
-        slot.child(
-            view()
-                .absolute()
-                .left(px(-RAIL_STROKE_INSET))
-                .top(px((RAIL_SLOT - space::LG) / 2.0))
-                .w(px(2.0))
-                .h(px(space::LG))
-                .bg(colors::ACCENT)
-                .accessibility_elements_hidden(true)
-                .bind_motion(&stroke),
-        )
-    } else {
-        slot
-    };
-    slot.child(
+    view().tooltip(hint(label)).child(
         button()
             .on_press(on_press)
             .accessibility_label(label)
@@ -1671,9 +1870,53 @@ pub(crate) fn rail_button(
     )
 }
 
-/// How far the active stroke sits out from a rail slot: to the rail's own
-/// edge, 10 pt out, less one so the stroke is not clipped by the window.
-const RAIL_STROKE_INSET: f32 = 9.0;
+/// Where the stroke stands beside rail slot `slot`, from the rail's top.
+fn rail_stroke_y(slot: usize) -> f32 {
+    RAIL_PAD + slot as f32 * (RAIL_SLOT + RAIL_GAP) + (RAIL_SLOT - space::LG) / 2.0
+}
+
+/// The rail's mark for the active page: a short vermilion stroke — the
+/// running head's — at the rail's edge beside the active slot. It is drawn
+/// down when the rail first appears; [`move_rail_marker`] carries it to
+/// another slot. `travel` holds its place, created where the rail is built
+/// and kept across the rail's rebuilds. Decorative.
+pub(crate) fn rail_marker(travel: Motion, slot: usize) -> View {
+    travel
+        .value(MotionChannel::TranslateY)
+        .set(rail_stroke_y(slot));
+    let stroke = nsh_core::element::motion().entering(brush_stroke());
+    view()
+        .absolute()
+        .top(px(0.0))
+        .left(px(RAIL_STROKE_X))
+        .accessibility_elements_hidden(true)
+        .bind_motion(&travel)
+        .child(
+            view()
+                .w(px(2.0))
+                .h(px(space::LG))
+                .bg(colors::ACCENT)
+                .bind_motion(&stroke),
+        )
+}
+
+/// The stroke leaves one slot for another as a brush dragged down the
+/// paper: it travels with the brush's out-expo, drawn out long mid-way and
+/// gathered again as it lands. With reduce-motion on it is simply there.
+pub(crate) fn move_rail_marker(travel: Motion, from: usize, to: usize) {
+    let _ = travel.play(
+        MotionSpec::new(KeyframeTiming::new(STROKE_MS).easing(BRUSH))
+            .values(
+                MotionChannel::TranslateY,
+                [rail_stroke_y(from), rail_stroke_y(to)],
+            )
+            .values(MotionChannel::ScaleY, [1.0, 1.8, 1.0]),
+    );
+}
+
+/// Where the stroke runs across the rail: at its own edge, less one point so
+/// the window does not clip it.
+const RAIL_STROKE_X: f32 = 1.0;
 
 /// Whether a control can be pressed right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

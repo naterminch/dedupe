@@ -5,13 +5,16 @@
 //! workspace (sidebar + results) and the Settings page. Preferences are
 //! restored once, on the first frame, through `actions::bootstrap`.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use nsh_core::keymap::When;
 use nsh_core::prelude::*;
 
-use crate::ui::palette::space;
 use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{
-    caption, entering, ground, icon_ghost_button, icons, rail_button, status_strip,
+    RAIL_GAP, RAIL_PAD, caption, entering, ground, icon_ghost_button, icons, move_rail_marker,
+    rail_button, rail_marker, status_strip,
 };
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::ui_helpers::counted;
@@ -104,45 +107,57 @@ const RAIL_WIDTH: f32 = 56.0;
 /// The left icon rail, shared by every view. The active view carries a
 /// neutral grey pill, not an accent tint: selection is a place, not a
 /// state. Reacts to the view, so the active slot moves without a rebuild
-/// of the body.
+/// of the body; the vermilion marker outlives the slots' rebuilds, so it
+/// travels to the new slot instead of reappearing there.
 fn nav_rail() -> View {
-    view().child(dynamic(|| {
-        // Rebuild only when the page changes. Reading the app signal here
-        // directly rebuilt the rail on every scan tick (five a second), which
-        // restarted the buttons' hover fade and dropped presses: a button
-        // replaced between press and release never reports one.
-        let page = computed(|| app().with(|s| s.view));
-        let view_now = page.get();
-        view()
-            .flex_col()
-            .items_center()
-            .w(px(RAIL_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .py(px(space::MD))
-            .gap(px(space::SM))
-            .child(rail_button(
-                icons::HOME,
-                "Scan workspace",
-                view_now == AppView::Main,
-                actions::leave_settings,
-            ))
-            .child(rail_button(
-                icons::SLIDERS,
-                "Settings",
-                view_now == AppView::Settings,
-                actions::open_settings,
-            ))
-            .child(view().flex_1().justify_end().child(icon_ghost_button(
-                if dark() { icons::SUN } else { icons::MOON },
-                if dark() {
-                    "Switch to light theme"
-                } else {
-                    "Switch to dark theme"
-                },
-                actions::toggle_theme,
-            )))
-    }))
+    let slot_of = |view: AppView| usize::from(view == AppView::Settings);
+    let travel = nsh_core::element::motion();
+    let first = app().with_untracked(|s| slot_of(s.view));
+    let shown = Rc::new(Cell::new(first));
+    view()
+        .child(dynamic(move || {
+            // Rebuild only when the page changes. Reading the app signal here
+            // directly rebuilt the rail on every scan tick (five a second),
+            // which restarted the buttons' hover fade and dropped presses: a
+            // button replaced between press and release never reports one.
+            let page = computed(|| app().with(|s| s.view));
+            let view_now = page.get();
+            let slot = slot_of(view_now);
+            let from = shown.replace(slot);
+            if from != slot {
+                move_rail_marker(travel, from, slot);
+            }
+            view()
+                .flex_col()
+                .items_center()
+                .w(px(RAIL_WIDTH))
+                .h_full()
+                .flex_shrink_0()
+                .py(px(RAIL_PAD))
+                .gap(px(RAIL_GAP))
+                .child(rail_button(
+                    icons::HOME,
+                    "Scan workspace",
+                    view_now == AppView::Main,
+                    actions::leave_settings,
+                ))
+                .child(rail_button(
+                    icons::SLIDERS,
+                    "Settings",
+                    view_now == AppView::Settings,
+                    actions::open_settings,
+                ))
+                .child(view().flex_1().justify_end().child(icon_ghost_button(
+                    if dark() { icons::SUN } else { icons::MOON },
+                    if dark() {
+                        "Switch to light theme"
+                    } else {
+                        "Switch to dark theme"
+                    },
+                    actions::toggle_theme,
+                )))
+        }))
+        .child(rail_marker(travel, first))
 }
 
 fn body() -> impl IntoElement {
