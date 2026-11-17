@@ -166,5 +166,5 @@ prek run --all-files  # check everything now
 
 MIT
 
-The desktop app bundles Inter and Noto Serif JP (subset), both under the SIL
-Open Font License 1.1: see `assets/fonts/OFL.txt`.
+The desktop app bundles the Inter typeface, under the SIL Open Font License
+1.1: see `assets/fonts/OFL.txt`.

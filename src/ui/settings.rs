@@ -166,7 +166,7 @@ fn page_column(
         .child(
             view()
                 .flex_row()
-                .child(title_block("設定", heading(title), description(summary))),
+                .child(title_block(heading(title), description(summary))),
         );
     for section in sections {
         column = column.child(divider()).child(section);

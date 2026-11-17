@@ -787,17 +787,15 @@ pub(crate) fn wordmark() -> impl IntoElement {
 }
 
 // ---------------------------------------------------------------------------
-// Kanji: the running head, the rail's vertical line and the seal.
+// Brush marks: the running head's stroke, the seal and the ensō.
 // ---------------------------------------------------------------------------
 
 /// Every face the app sets, embedded so a single-file install carries them.
-const FACES: [&[u8]; 6] = [
+const FACES: [&[u8]; 4] = [
     include_bytes!("../../assets/fonts/Inter-300.ttf"),
     include_bytes!("../../assets/fonts/Inter-400.ttf"),
     include_bytes!("../../assets/fonts/Inter-500.ttf"),
     include_bytes!("../../assets/fonts/Inter-600.ttf"),
-    include_bytes!("../../assets/fonts/NotoSerifJP-500.ttf"),
-    include_bytes!("../../assets/fonts/NotoSerifJP-700.ttf"),
 ];
 
 /// Hand the bundled faces to the text system. Text naming a family is laid
@@ -814,43 +812,12 @@ pub(crate) fn register_faces() {
     }
 }
 
-/// Kanji set vertically, one character under the next, the way a Japanese
-/// page runs its margin heads. Decorative: the English beside it is what
-/// screen readers hear.
-fn vertical_kanji(chars: &'static str, ink: AdaptiveColor, written: bool) -> View {
-    let mut column = view()
-        .flex_col()
-        .items_center()
-        .gap(px(space::XXS))
-        .accessibility_elements_hidden(true);
-    for (index, ch) in chars.chars().enumerate() {
-        let glyph = text(SharedString::from(ch.to_string()))
-            .font_family(faces::KANJI)
-            .font_weight(FontWeight::MEDIUM)
-            .text_size(px(text::KANJI))
-            .line_height(px(text::KANJI + 3.0))
-            .text_color(ink);
-        column = column.child(if written {
-            let ink_lands = nsh_core::element::motion().entering(brush_character(index));
-            view().child(glyph).bind_motion(&ink_lands)
-        } else {
-            view().child(glyph)
-        });
-    }
-    column
-}
-
 /// A brush lands with a quick, decelerating touch: out-expo.
 const BRUSH: Easing = Easing::Bezier(0.16, 1.0, 0.3, 1.0);
 
 /// The running head's stroke, drawn down the margin: it grows from nothing
 /// to its length as it settles.
 const STROKE_MS: f32 = 360.0;
-
-/// Each kanji of a running head after the stroke: ink rising into the paper
-/// one character at a time, the way the head is written.
-const CHARACTER_MS: f32 = 420.0;
-const CHARACTER_GAP_MS: f32 = 110.0;
 
 fn brush_stroke() -> MotionSpec {
     MotionSpec::new(KeyframeTiming::new(STROKE_MS).easing(BRUSH))
@@ -859,52 +826,38 @@ fn brush_stroke() -> MotionSpec {
         .values(MotionChannel::Opacity, [0.0, 1.0])
 }
 
-fn brush_character(index: usize) -> MotionSpec {
-    MotionSpec::new(
-        KeyframeTiming::new(CHARACTER_MS)
-            .easing(BRUSH)
-            .delay(STROKE_MS * 0.6 + index as f32 * CHARACTER_GAP_MS),
-    )
-    .values(MotionChannel::Opacity, [0.0, 1.0])
-    .values(MotionChannel::TranslateY, [space::XS + space::XXS, 0.0])
-}
+/// The running head's stroke: as long as the title's capitals and set on
+/// them, so the page's title reads as marked in the margin.
+const HEAD_STROKE_H: f32 = 22.0;
 
-/// A page's running head (hashira): a short vermilion stroke over the page's
-/// two kanji, set vertically beside its title. It is written as the page
-/// arrives: the stroke draws down, then each kanji inks in under it.
-fn hashira(chars: &'static str) -> View {
+/// A page's running head: one vermilion brush stroke in the margin beside
+/// its title, drawn down as the page arrives. Decorative.
+fn head_stroke() -> View {
     let stroke = nsh_core::element::motion().entering(brush_stroke());
     view()
-        .flex_col()
-        .items_center()
-        .gap(px(space::SM))
-        .w(px(HASHIRA_W))
         .flex_shrink_0()
-        .pt(px(space::XS))
+        .pt(px(space::XS + space::XXS))
+        .accessibility_elements_hidden(true)
         .child(
             view()
                 .w(px(2.0))
-                .h(px(space::LG))
+                .h(px(HEAD_STROKE_H))
                 .bg(colors::ACCENT)
                 .bind_motion(&stroke),
         )
-        .child(vertical_kanji(chars, colors::MUTED, true))
 }
 
-/// The running head's column: one kanji wide.
-const HASHIRA_W: f32 = 20.0;
-
-/// Every screen's title block: the running head, then the title over its one
-/// line of description. Grows to fill the title row beside the screen's
-/// action or figure.
-pub(crate) fn title_block(kanji: &'static str, title: Text, line: Text) -> View {
+/// Every screen's title block: the running head's stroke, then the title
+/// over its one line of description. Grows to fill the title row beside the
+/// screen's action or figure.
+pub(crate) fn title_block(title: Text, line: Text) -> View {
     view()
         .flex_row()
         .flex_1()
         .min_w(px(0.0))
         .items_start()
-        .gap(px(space::LG))
-        .child(hashira(kanji))
+        .gap(px(space::MD + space::XXS))
+        .child(head_stroke())
         .child(
             view()
                 .flex_col()
@@ -916,41 +869,39 @@ pub(crate) fn title_block(kanji: &'static str, title: Text, line: Text) -> View 
         )
 }
 
-/// The rail's vertical line: 断捨離 (refuse, discard, part with), the
-/// tidying the app exists for, in diluted ink, closed by a small seal dot.
-/// It stays still: the rail is there on every page, and only a page's own
-/// head is written as it arrives.
-pub(crate) fn rail_motto() -> View {
-    view()
-        .flex_col()
-        .items_center()
-        .gap(px(space::MD))
-        .child(vertical_kanji("断捨離", colors::MUTED, false))
-        .child(view().size(px(5.0)).bg(colors::ACCENT).rounded(px(1.0)))
-}
+/// The tick a settled seal carries, brushed in the paper's colour.
+const SEAL_TICK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" \
+fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.6\" stroke-linecap=\"round\" \
+stroke-linejoin=\"round\"><path d=\"M6.2 12.8 10.4 16.8 18 7.4\"/></svg>";
 
-/// A hanko seal: vermilion pressed into the paper with the kanji left in the
-/// paper's own colour (hakubun). Turned a few degrees, as a hand-pressed seal
-/// is. Decorative: the card's title carries the meaning.
-pub(crate) fn seal(kanji: &'static str, side: f32) -> View {
+/// A round hanko seal: a vermilion disc pressed into the paper, its rim ring
+/// and tick left in the paper's own colour. Round, ringed and turned a few
+/// degrees, as a hand-pressed seal is — never mistaken for a checkbox.
+/// Decorative: the card's title carries the meaning.
+fn seal(side: f32) -> View {
     view()
         .size(px(side))
         .flex_shrink_0()
         .items_center()
         .justify_center()
         .bg(colors::ACCENT)
-        .rounded(px(radius::INSET + 1.0))
+        .rounded_full()
         .rotate(deg(-6.0))
         .accessibility_elements_hidden(true)
         .child(
-            text(kanji)
-                .font_family(faces::KANJI)
-                .font_weight(FontWeight::BOLD)
-                .text_size(px(side * 0.62))
-                .line_height(px(side * 0.7))
-                .text_color(colors::ON_ACCENT),
+            view()
+                .size(px(side - 2.0 * SEAL_RIM_INSET))
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border(px(1.5))
+                .border_color(colors::ON_ACCENT)
+                .child(icon(SEAL_TICK, side * 0.5, colors::ON_ACCENT)),
         )
 }
+
+/// How far inside a seal's edge its rim ring runs.
+const SEAL_RIM_INSET: f32 = 3.5;
 
 /// The press: the seal comes down from above the paper (larger, a little
 /// more turned), meets it a touch past flat and settles. It waits for the
@@ -968,12 +919,9 @@ fn seal_press() -> MotionSpec {
 
 /// [`seal`] arriving the way a seal is pressed. The press turns a wrapper,
 /// so the seal keeps its own resting angle underneath.
-pub(crate) fn pressed_seal(kanji: &'static str, side: f32) -> View {
+pub(crate) fn pressed_seal(side: f32) -> View {
     let press = nsh_core::element::motion().entering(seal_press());
-    view()
-        .flex_shrink_0()
-        .child(seal(kanji, side))
-        .bind_motion(&press)
+    view().flex_shrink_0().child(seal(side)).bind_motion(&press)
 }
 
 /// An ensō: one brush stroke round an open circle, heavy where the brush

@@ -11,7 +11,7 @@ use nsh_core::prelude::*;
 use crate::ui::palette::space;
 use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{
-    caption, entering, ground, icon_ghost_button, icons, rail_button, rail_motto, status_strip,
+    caption, entering, ground, icon_ghost_button, icons, rail_button, status_strip,
 };
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::ui_helpers::counted;
@@ -133,23 +133,15 @@ fn nav_rail() -> View {
                 view_now == AppView::Settings,
                 actions::open_settings,
             ))
-            .child(
-                view()
-                    .flex_1()
-                    .justify_end()
-                    .items_center()
-                    .gap(px(space::XL))
-                    .child(rail_motto())
-                    .child(icon_ghost_button(
-                        if dark() { icons::SUN } else { icons::MOON },
-                        if dark() {
-                            "Switch to light theme"
-                        } else {
-                            "Switch to dark theme"
-                        },
-                        actions::toggle_theme,
-                    )),
-            )
+            .child(view().flex_1().justify_end().child(icon_ghost_button(
+                if dark() { icons::SUN } else { icons::MOON },
+                if dark() {
+                    "Switch to light theme"
+                } else {
+                    "Switch to dark theme"
+                },
+                actions::toggle_theme,
+            )))
     }))
 }
 

@@ -26,9 +26,9 @@ look; everything visual is the app's own, and it lives in two places:
   - media and status: `preview_frame`, `preview_image`, `preview_glyph`,
     `press_to_play`, `video_player`, `progress_bar`, `badge`, `glyph`, `logo`,
     `hint`;
-  - the Japanese marks: `rail_motto`, `seal` + `pressed_seal`,
-    `turning_enso`, and `register_faces`, which hands the bundled faces to the
-    text system at start-up.
+  - the brush marks: `seal` + `pressed_seal`, `turning_enso`, and
+    `register_faces`, which hands the bundled face to the text system at
+    start-up.
 
 ## The style: washi and sumi
 
@@ -52,34 +52,31 @@ one soft edge per sheet, paper corners cut nearly square. The work area keeps
 48 pt of empty margin either side (`space::MA`); the empty space is part of
 the page.
 
-Two type voices: Inter (bundled, Light/Regular/Medium/SemiBold) for every
-working word, and Noto Serif JP (bundled, subset to the thirteen kanji the app
-prints) for the marks. The marks are set the Japanese way, vertically:
+One type voice: Inter (bundled, Light/Regular/Medium/SemiBold) for every word.
+The app prints no CJK text; the Japanese world lives in the material and the
+brush marks, so every string stays translatable:
 
-- every page's title row opens with a running head (hashira): a short
-  vermilion stroke over two kanji in diluted ink — 探索 (search) on New scan,
-  重複 (duplicates) on the review, 掃除 (cleaning) on a cleanup scan, 設定
-  (settings) on Settings. It is written as the page arrives: the stroke draws
-  down, then each kanji inks in under it;
-- the rail carries 断捨離 (refuse, discard, part with: the tidying the app is
-  for) above the theme switch, closed by a small vermilion dot, and the
-  active page's slot carries the running head's stroke at the rail's edge;
+- every page's title row opens with a running head: one vermilion brush
+  stroke in the margin beside the title, drawn down as the page arrives;
+- the active page's slot on the rail carries the same stroke at the rail's
+  edge;
 - a running scan shows an ensō (`assets/enso.path`: one tapered brush stroke
   round an open circle) turning slowly in vermilion beside its progress. It
   only ever appears turning, so an open circle always means work in
   progress;
-- a clean-up that went through ends in a 済 (settled) seal, vermilion with the
-  kanji left in the paper's colour, turned −6° as a hand-pressed seal is.
+- a clean-up that went through ends in a settled seal: a round vermilion
+  disc with a rim ring and a tick left in the paper's colour, turned −6° as a
+  hand-pressed seal is. Round and ringed, so it never reads as a checkbox.
 
-The kanji are decorative and hidden from screen readers; the English beside
-them carries every meaning. Both fonts are SIL OFL 1.1 (`assets/fonts/OFL.txt`).
+The marks are decorative and hidden from screen readers; the words beside them
+carry every meaning. Inter is SIL OFL 1.1 (`assets/fonts/OFL.txt`).
 
 Each screen answers one question with its largest element:
 
 | Screen | Question | Answered by |
 | --- | --- | --- |
 | New scan | What will this scan look at, and how will it decide? | The setup form: folders, what to find, keep rule, similarity, where deletes go, video support; **Scan** is the one primary action in the title row |
-| Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the 済 seal pressed beside it |
+| Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the settled seal pressed beside it |
 | Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; one toolbar (Delete N, or Remove metadata for photo metadata; Export report…); the findings as one ruled list |
 | Settings | What does each default do? | Two columns: each section's title and purpose beside a panel of rows that say what they change |
 
@@ -97,8 +94,8 @@ Each screen answers one question with its largest element:
 | `CONTROL_BORDER` | `#cfc4b1` | `#423c36` | fields, select triggers, the off switch |
 | `TEXT` / `PRIMARY` | `#1f1c18` | `#ede6d8` | sumi ink; the primary button and the on switch |
 | `ON_PRIMARY` | `#fbf8f1` | `#161513` | the label on `PRIMARY` |
-| `MUTED` | `#6a6257` | `#a69d8f` | diluted ink: secondary copy, the kanji (5.2:1 on the ground) |
-| `ACCENT` / `ON_ACCENT` | `#c83e2b` / `#fbf8f1` | `#e5654f` / `#161513` | the answer figure, the seal and what is printed on it, the hashira stroke, the focus ring |
+| `MUTED` | `#6a6257` | `#a69d8f` | diluted ink: secondary copy (5.2:1 on the ground) |
+| `ACCENT` / `ON_ACCENT` | `#c83e2b` / `#fbf8f1` | `#e5654f` / `#161513` | the answer figure, the seal and its tick, the running head's stroke, the ensō, the focus ring |
 | `KEEP` / `KEEP_WASH` / `KEEP_INK` | `#3c6e47` / `#e0eadb` / `#24502f` | `#8cc49a` / `#1d2a20` / `#b5e0be` | a keeper's edge, its badge, the badge's words |
 | `SELECT` / `SELECT_WASH` / `SELECT_INK` | `#a86a12` / `#f4e5c9` / `#6e4508` | `#e3a54e` / `#33270f` / `#f2cc8a` | a ticked copy's edge, its badge, the badge's words |
 | `DANGER` / `DANGER_SURFACE` / `ON_DANGER` / `DANGER_TEXT` | `ACCENT` / `#b8361f` / `#fbf8f1` / `#a8301e` | `ACCENT` / `#b8361f` / `#fbf8f1` / `#f08470` | error edges, the Delete fill and its label, error copy |
@@ -111,18 +108,17 @@ reads as five tiles with two marks rather than five coloured blocks.
 
 Scales are finite:
 
-- `text::{CAPTION, BODY, TITLE, HEADING, FIGURE}` = 12, 14, 16, 26, 36 pt, and
-  `KANJI` = 15 pt for the running heads and the rail. One page title per
-  screen (`heading`, Inter Medium, −0.5 pt tracking, read as a header);
-  `figure` is reserved for the answer figure (Inter Light, tabular digits).
-  Text is set in points and the engine applies the user's text size to all of
-  it. `faces::{SANS, KANJI}` name the two families; the ground sets `SANS` for
-  everything under it.
+- `text::{CAPTION, BODY, TITLE, HEADING, FIGURE}` = 12, 14, 16, 26, 36 pt.
+  One page title per screen (`heading`, Inter Medium, −0.5 pt tracking, read
+  as a header); `figure` is reserved for the answer figure (Inter Light,
+  tabular digits). Text is set in points and the engine applies the user's
+  text size to all of it. `faces::SANS` names the family; the ground sets it
+  for everything under it.
 - `radius::{CARD, CONTROL, INSET}` = 6, 4, 2: paper is cut nearly square.
   Cards and floating surfaces take 6, controls 4, and anything inset inside a
   card or a control (a segment in its groove, a group header's hover, a
   preview in its tile) takes 2, so nested curves stay concentric.
-  `rounded_full` is for the switch alone.
+  `rounded_full` is for the switch and the seal alone.
 - `space::{XXS..XXL}` = 2, 4, 8, 12, 16, 24, 32, and `MA` = 48, the margin
   either side of the work area and a settings page.
 - `size::{CONTROL, COMPACT}` = 32, 26 pt. Every button, field, select and
@@ -146,7 +142,7 @@ so "What to find" is an `option_select`.
 
 ## Layout
 
-- Shell: a 56 pt icon rail (Home, Settings, then 断捨離 and the theme switch
+- Shell: a 56 pt icon rail (Home, Settings, and the theme switch
   at its foot) and a 264 pt folder pane on the ground, separated from the work
   area by one `BORDER` rule. The pane opens with the product's mark and name;
   each folder row is the folder's name over its full path, cut from the front
@@ -228,7 +224,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Button press dim and sink | state style + scale 0.97, transitioned | `FAST`, opacity 0.9 |
 | Segment picked (keep rule, sort, layout, settings) | colour transition on each segment | `FAST` |
 | Rail slot and settings nav moving | background transition / tab indicator; the active rail slot's vermilion stroke draws down as the page arrives (the running head's stroke) | `BASE` / `FAST`; stroke 360 ms out-expo |
-| Running head written (every title row as it mounts) | stroke: `ScaleY` 0→1, `TranslateY` −8→0, fade; then each kanji fades in rising 6 pt, one after another | stroke 360 ms; kanji 420 ms each, from 216 ms, 110 ms apart; out-expo |
+| Running head drawn (every title row as it mounts) | `ScaleY` 0→1, `TranslateY` −8→0, fade | 360 ms, out-expo |
 | Scan running | the ensō turns, linear and endless, on a part of the card the progress ticks never rebuild | 2600 ms a turn |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Group body opening and closing | `collapsible().reveal(true)` | nsh spring |
@@ -244,7 +240,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Findings confirmation scrim and panel | the same `alert_dialog` as Delete | `FadeIn` 300 ms / platform `Slide` |
 | Findings removed (delete or metadata) | the list rebuilds under `fading_in()`; a toast reports the outcome | `FadeIn`, 300 ms; toast `SLOW` |
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
-| Cleared card's 済 seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles, after the card lands | 560 ms, 220 ms delay |
+| Cleared card's seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles, after the card lands | 560 ms, 220 ms delay |
 
 With reduce-motion on, every line above lands at its end state: the
 transitions take 0 ms through `motion(ms)` and the presets land without

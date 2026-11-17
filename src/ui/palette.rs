@@ -133,16 +133,12 @@ pub(crate) mod text {
     /// The screen's answer figure, and nothing else: large and light, the
     /// way a brush number sits on a page.
     pub(crate) const FIGURE: f32 = 36.0;
-    /// A kanji of a running head (hashira) or of the rail's vertical line.
-    pub(crate) const KANJI: f32 = 15.0;
 }
 
-/// The faces, bundled in `assets/fonts` and registered at start-up: Inter
-/// for every working word, Noto Serif JP (subset to the kanji the app
-/// prints) for the vertical running heads and the seal.
+/// The face, bundled in `assets/fonts` (Inter, four weights) and registered
+/// at start-up; the ground sets it for everything under it.
 pub(crate) mod faces {
     pub(crate) const SANS: &str = "Inter";
-    pub(crate) const KANJI: &str = "Noto Serif JP";
 }
 
 /// Corner radii: paper is cut nearly square. Sheets take 6, the controls on

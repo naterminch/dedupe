@@ -235,7 +235,6 @@ fn header_row() -> View {
         .items_end()
         .gap(px(space::LG))
         .child(title_block(
-            "重複",
             heading(|| {
                 app().with(|s| {
                     if s.scanning {
@@ -1141,11 +1140,7 @@ fn setup_header() -> View {
         .items_end()
         .justify_between()
         .gap(px(space::LG))
-        .child(title_block(
-            "探索",
-            heading("New scan"),
-            description(scope_line),
-        ))
+        .child(title_block(heading("New scan"), description(scope_line)))
         .child(primary_button(scan_label, actions::start_scan))
 }
 
@@ -1586,7 +1581,7 @@ fn outcome_card(title: String, detail: String, settled: bool) -> View {
                     .child(section_title(title))
                     .child(description(detail)),
             )
-            .child(when(settled, || pressed_seal("済", SEAL_SIDE))),
+            .child(when(settled, || pressed_seal(SEAL_SIDE))),
     )
 }
 
@@ -2258,7 +2253,6 @@ fn mode_header() -> View {
         .justify_between()
         .gap(px(space::LG))
         .child(title_block(
-            "掃除",
             heading(|| {
                 app().with(|s| {
                     s.mode_result
