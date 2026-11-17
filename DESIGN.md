@@ -28,9 +28,11 @@ look; everything visual is the app's own, and it lives in two places:
     (`BadgeTone::Kind(Kind)` for a dyed kind tag), `keeper_badge`, `glyph`,
     `logo`, `hint`;
   - the brush marks: `seal` + `pressed_seal`, `turning_enso`, `rail_marker`
-    + `move_rail_marker`, `ink_lift`, and `register_faces`, which hands the
-    bundled face to the text system at start-up;
-  - motion helpers: `entering`, `fading_in`, `arriving`, `count_up`.
+    + `move_rail_marker`, `ink_lift`, `theme_dissolve`, and
+    `register_faces`, which hands the bundled face to the text system at
+    start-up;
+  - motion helpers: `entering`, `fading_in`, `arriving`, `count_up`;
+  - `drop_sheet`, the answer to folders dragged over the window.
 
 ## The style: washi and sumi
 
@@ -264,6 +266,9 @@ nsh lands them at their end state when reduce-motion is on.
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
 | A clean-up settling (the last group or finding goes) | `ink_lift()`: a WGSL `shader_transition` (`assets/shaders/ink_lift.wgsl`) around the list. The old cards let go of their ink along fibre noise (dense ink first, drifting a point or two along the fibre), the ground's real grain shows through, and the outcome card is inked in behind through the same fibres. Only the moment of settling runs it; a restore or a new scan does not. No GPU: nsh's cross-fade | 900 ms |
 | Cleared card's seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles as the lift finishes | 560 ms, 720 ms delay |
+| Cleared card's seal meeting the paper | `seal_bleed()`: a faint vermilion ring under the seal widens and fades, as the seal's ink soaks into the fibres (`Scale` 1→1.4→2, `Opacity` 0→0.5→0); once per clean-up. Reduce-motion: never shown | 680 ms, from the press's contact (1000 ms delay) |
+| Light ⇄ dark | `theme_dissolve()`: a `screen_transition` (`assets/shaders/theme_soak.wgsl`); the new sheet soaks into the old one as a wash runs across washi, from the top-left corner, its front softened by pulp clouds. No GPU: cross-fade | 520 ms |
+| Folders dragged over the window | `drop_sheet()`: a card-paper sheet with a dashed `MUTED` edge over the work, "Drop to add folders"; it takes no pointer, so the drop lands beneath it | opacity, `BASE` |
 
 With reduce-motion on, every line above lands at its end state: the
 transitions take 0 ms through `motion(ms)` and the presets land without

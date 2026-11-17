@@ -13,8 +13,8 @@ use nsh_core::prelude::*;
 
 use crate::ui::state::{AppView, app, scan_status};
 use crate::ui::widgets::{
-    RAIL_GAP, RAIL_PAD, caption, entering, ground, icon_ghost_button, icons, move_rail_marker,
-    rail_button, rail_marker, status_strip,
+    RAIL_GAP, RAIL_PAD, caption, drop_sheet, entering, ground, icon_ghost_button, icons,
+    move_rail_marker, rail_button, rail_marker, status_strip, theme_dissolve,
 };
 use crate::ui::{actions, results, settings, shell, toast};
 use crate::ui_helpers::counted;
@@ -44,21 +44,31 @@ pub fn DedupeApp() -> impl IntoElement {
         },
         |_| actions::escape_leaves_settings(),
     );
+    // A drag of folders over the window lays the drop sheet over the work.
+    let dragging = signal(false);
     ground()
         .flex_row()
         .flex_1()
         .h_full()
         // Folders dropped from Explorer land in the scan list.
-        .on_file_drop(|event: &FileDropEvent| actions::drop_folders(&event.uris))
+        .on_file_drag_enter(move || dragging.set(true))
+        .on_file_drag_leave(move || dragging.set(false))
+        .on_file_drop(move |event: &FileDropEvent| {
+            dragging.set(false);
+            actions::drop_folders(&event.uris);
+        })
         .child(nav_rail())
         .child(
             view()
+                .relative()
                 .flex_col()
                 .flex_1()
                 .min_w(px(0.0))
                 .child(body())
-                .child(status_bar()),
+                .child(status_bar())
+                .child(drop_sheet(move || dragging.get())),
         )
+        .child(theme_dissolve())
         .child(toast::toast_layer())
         // Above the panes and the toasts: a confirmation must not be buried.
         .child(dynamic(|| {

@@ -915,10 +915,46 @@ fn seal_press() -> MotionSpec {
 }
 
 /// [`seal`] arriving the way a seal is pressed. The press turns a wrapper,
-/// so the seal keeps its own resting angle underneath.
+/// so the seal keeps its own resting angle underneath. As it meets the
+/// paper its ink spreads a little into the fibres around it: a faint
+/// vermilion ring that widens and fades, under the seal, once.
 pub(crate) fn pressed_seal(side: f32) -> View {
     let press = nsh_core::element::motion().entering(seal_press());
-    view().flex_shrink_0().child(seal(side)).bind_motion(&press)
+    let bleed = nsh_core::element::motion().entering(seal_bleed());
+    view()
+        .relative()
+        .flex_shrink_0()
+        .child(
+            view()
+                .absolute()
+                .top(px(0.0))
+                .left(px(0.0))
+                .size(px(side))
+                .rounded_full()
+                .border(px(1.5))
+                .border_color(colors::ACCENT)
+                .bg(colors::ACCENT.opacity(0.10))
+                .pointer_events(PointerEvents::None)
+                .accessibility_elements_hidden(true)
+                .bind_motion(&bleed),
+        )
+        .child(view().child(seal(side)).bind_motion(&press))
+}
+
+/// When the press meets the paper: the middle of its three keyframes.
+const SEAL_CONTACT_MS: f32 = 280.0;
+
+/// The seal's ink soaking outward from where it met the paper: it starts
+/// unseen under the seal, shows faintly as it leaves the seal's edge, and
+/// has gone by twice the seal's width. Reduce-motion: never shown.
+fn seal_bleed() -> MotionSpec {
+    MotionSpec::new(
+        KeyframeTiming::new(680.0)
+            .delay(INK_LIFT_MS * 0.8 + SEAL_CONTACT_MS)
+            .easing(BRUSH),
+    )
+    .values(MotionChannel::Opacity, [0.0, 0.5, 0.0])
+    .values(MotionChannel::Scale, [1.0, 1.4, 2.0])
 }
 
 /// How many of a freshly scanned list's cards arrive one after another; the
@@ -1023,6 +1059,63 @@ pub(crate) fn ink_lift(
             lift
         }
     }
+}
+
+/// How long a change of light and dark takes to soak through the window.
+const THEME_SOAK_MS: f32 = 520.0;
+
+/// The theme-soak program (see the file's notes).
+const THEME_SOAK: &str = include_str!("../../assets/shaders/theme_soak.wgsl");
+
+/// The whole window changing between light and dark through the paper: the
+/// new sheet soaks into the old one along its fibres. It takes no space;
+/// put it anywhere in the window. Without a GPU the change cross-fades;
+/// with reduce-motion on it is instant.
+pub(crate) fn theme_dissolve() -> impl IntoElement {
+    let soak = nsh_core::element::screen_transition()
+        .value(|| TransitionKey::from(if dark() { 1.0 } else { 0.0 }))
+        .duration(Duration::from_secs_f32(motion(THEME_SOAK_MS)() / 1000.0));
+    match Shader::compile(THEME_SOAK) {
+        Ok(program) => soak.source(program),
+        Err(err) => {
+            eprintln!("dedupe: the theme-soak shader was refused: {err}");
+            soak
+        }
+    }
+}
+
+/// The sheet that answers a drag of folders over the window: a paper with
+/// a dashed edge laid over the work, naming what a drop does. It fades with
+/// the drag (`shown`) and takes no pointer, so the drop lands on the window
+/// beneath it.
+pub(crate) fn drop_sheet(shown: impl Fn() -> bool + Copy + 'static) -> View {
+    view()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .w_full()
+        .h_full()
+        .p(px(space::XL))
+        .pointer_events(PointerEvents::None)
+        .opacity(move || if shown() { 1.0f32 } else { 0.0 })
+        .transition_opacity()
+        .duration(motion(timing::BASE))
+        .child(
+            view()
+                .flex_1()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(space::SM))
+                .bg(colors::CARD.opacity(0.94))
+                .rounded(px(radius::CARD))
+                .border(px(1.5))
+                .border_dashed()
+                .border_color(colors::MUTED)
+                .child(icon(icons::FOLDER, 28.0, colors::TEXT))
+                .child(panel_title("Drop to add folders"))
+                .child(caption("Each folder joins the scan list.")),
+        )
 }
 
 /// An ensō: one brush stroke round an open circle, heavy where the brush
