@@ -817,28 +817,63 @@ pub(crate) fn register_faces() {
 /// Kanji set vertically, one character under the next, the way a Japanese
 /// page runs its margin heads. Decorative: the English beside it is what
 /// screen readers hear.
-fn vertical_kanji(chars: &'static str, ink: AdaptiveColor) -> View {
+fn vertical_kanji(chars: &'static str, ink: AdaptiveColor, written: bool) -> View {
     let mut column = view()
         .flex_col()
         .items_center()
         .gap(px(space::XXS))
         .accessibility_elements_hidden(true);
-    for ch in chars.chars() {
-        column = column.child(
-            text(SharedString::from(ch.to_string()))
-                .font_family(faces::KANJI)
-                .font_weight(FontWeight::MEDIUM)
-                .text_size(px(text::KANJI))
-                .line_height(px(text::KANJI + 3.0))
-                .text_color(ink),
-        );
+    for (index, ch) in chars.chars().enumerate() {
+        let glyph = text(SharedString::from(ch.to_string()))
+            .font_family(faces::KANJI)
+            .font_weight(FontWeight::MEDIUM)
+            .text_size(px(text::KANJI))
+            .line_height(px(text::KANJI + 3.0))
+            .text_color(ink);
+        column = column.child(if written {
+            let ink_lands = nsh_core::element::motion().entering(brush_character(index));
+            view().child(glyph).bind_motion(&ink_lands)
+        } else {
+            view().child(glyph)
+        });
     }
     column
 }
 
+/// A brush lands with a quick, decelerating touch: out-expo.
+const BRUSH: Easing = Easing::Bezier(0.16, 1.0, 0.3, 1.0);
+
+/// The running head's stroke, drawn down the margin: it grows from nothing
+/// to its length as it settles.
+const STROKE_MS: f32 = 360.0;
+
+/// Each kanji of a running head after the stroke: ink rising into the paper
+/// one character at a time, the way the head is written.
+const CHARACTER_MS: f32 = 420.0;
+const CHARACTER_GAP_MS: f32 = 110.0;
+
+fn brush_stroke() -> MotionSpec {
+    MotionSpec::new(KeyframeTiming::new(STROKE_MS).easing(BRUSH))
+        .values(MotionChannel::ScaleY, [0.0, 1.0])
+        .values(MotionChannel::TranslateY, [-space::SM, 0.0])
+        .values(MotionChannel::Opacity, [0.0, 1.0])
+}
+
+fn brush_character(index: usize) -> MotionSpec {
+    MotionSpec::new(
+        KeyframeTiming::new(CHARACTER_MS)
+            .easing(BRUSH)
+            .delay(STROKE_MS * 0.6 + index as f32 * CHARACTER_GAP_MS),
+    )
+    .values(MotionChannel::Opacity, [0.0, 1.0])
+    .values(MotionChannel::TranslateY, [space::XS + space::XXS, 0.0])
+}
+
 /// A page's running head (hashira): a short vermilion stroke over the page's
-/// two kanji, set vertically beside its title.
+/// two kanji, set vertically beside its title. It is written as the page
+/// arrives: the stroke draws down, then each kanji inks in under it.
 fn hashira(chars: &'static str) -> View {
+    let stroke = nsh_core::element::motion().entering(brush_stroke());
     view()
         .flex_col()
         .items_center()
@@ -846,8 +881,14 @@ fn hashira(chars: &'static str) -> View {
         .w(px(HASHIRA_W))
         .flex_shrink_0()
         .pt(px(space::XS))
-        .child(view().w(px(2.0)).h(px(space::LG)).bg(colors::ACCENT))
-        .child(vertical_kanji(chars, colors::MUTED))
+        .child(
+            view()
+                .w(px(2.0))
+                .h(px(space::LG))
+                .bg(colors::ACCENT)
+                .bind_motion(&stroke),
+        )
+        .child(vertical_kanji(chars, colors::MUTED, true))
 }
 
 /// The running head's column: one kanji wide.
@@ -877,12 +918,14 @@ pub(crate) fn title_block(kanji: &'static str, title: Text, line: Text) -> View 
 
 /// The rail's vertical line: 断捨離 (refuse, discard, part with), the
 /// tidying the app exists for, in diluted ink, closed by a small seal dot.
+/// It stays still: the rail is there on every page, and only a page's own
+/// head is written as it arrives.
 pub(crate) fn rail_motto() -> View {
     view()
         .flex_col()
         .items_center()
         .gap(px(space::MD))
-        .child(vertical_kanji("断捨離", colors::MUTED))
+        .child(vertical_kanji("断捨離", colors::MUTED, false))
         .child(view().size(px(5.0)).bg(colors::ACCENT).rounded(px(1.0)))
 }
 
@@ -909,10 +952,62 @@ pub(crate) fn seal(kanji: &'static str, side: f32) -> View {
         )
 }
 
-/// [`seal`] arriving the way a seal is pressed: it settles into the paper.
+/// The press: the seal comes down from above the paper (larger, a little
+/// more turned), meets it a touch past flat and settles. It waits for the
+/// card it marks to land first.
+fn seal_press() -> MotionSpec {
+    MotionSpec::new(
+        KeyframeTiming::new(560.0)
+            .delay(220.0)
+            .easing(Easing::Bezier(0.2, 0.9, 0.3, 1.0)),
+    )
+    .values(MotionChannel::Opacity, [0.0, 1.0, 1.0])
+    .values(MotionChannel::Scale, [1.45, 0.94, 1.0])
+    .values(MotionChannel::Rotate, [-9.0, 1.0, 0.0])
+}
+
+/// [`seal`] arriving the way a seal is pressed. The press turns a wrapper,
+/// so the seal keeps its own resting angle underneath.
 pub(crate) fn pressed_seal(kanji: &'static str, side: f32) -> View {
-    let press = nsh_core::element::motion().entering(MotionPreset::ZoomIn);
-    seal(kanji, side).bind_motion(&press)
+    let press = nsh_core::element::motion().entering(seal_press());
+    view()
+        .flex_shrink_0()
+        .child(seal(kanji, side))
+        .bind_motion(&press)
+}
+
+/// An ensō: one brush stroke round an open circle, heavy where the brush
+/// lands and thinning to a dry tail before it closes. Authored as one filled
+/// outline, so it stays crisp at any size and takes the element's ink.
+const ENSO: &str = concat!(
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">",
+    "<path fill=\"currentColor\" d=\"",
+    include_str!("../../assets/enso.path"),
+    "\"/></svg>"
+);
+
+/// One turn of the brush while a scan reads: the ensō circles slowly in
+/// vermilion. With reduce-motion on it rests.
+const ENSO_TURN_MS: f32 = 2600.0;
+
+/// The ensō turning, for work in progress: the scan card's mark. It is only
+/// ever shown turning, so an open circle always means "working".
+/// Decorative; the phase beside it says what is happening.
+pub(crate) fn turning_enso(side: f32) -> View {
+    let turn = nsh_core::element::motion();
+    let _ = turn.play(
+        MotionSpec::new(
+            KeyframeTiming::new(ENSO_TURN_MS)
+                .easing(Easing::Linear)
+                .infinite(),
+        )
+        .values(MotionChannel::Rotate, [0.0, 360.0]),
+    );
+    view()
+        .flex_shrink_0()
+        .accessibility_elements_hidden(true)
+        .child(icon(ENSO, side, colors::ACCENT))
+        .bind_motion(&turn)
 }
 
 // ---------------------------------------------------------------------------
@@ -1564,16 +1659,34 @@ pub(crate) fn side_tabs<T: Copy + PartialEq + 'static>(
 /// A rail slot's side: a 20 pt glyph with 8 pt around it.
 const RAIL_SLOT: f32 = 36.0;
 
-/// One slot of the icon rail: the active view's slot is a neutral pill.
-/// The rail is icons only, so the pointer gets the name too, not just the
-/// screen reader.
+/// One slot of the icon rail: the active view's slot is a neutral pill, and
+/// a short vermilion stroke — the running head's — is drawn down the rail's
+/// edge beside it as the page arrives. The rail is icons only, so the
+/// pointer gets the name too, not just the screen reader.
 pub(crate) fn rail_button(
     markup: &'static str,
     label: &'static str,
     active: bool,
     on_press: fn(),
 ) -> View {
-    view().tooltip(hint(label)).child(
+    let slot = view().tooltip(hint(label));
+    let slot = if active {
+        let stroke = nsh_core::element::motion().entering(brush_stroke());
+        slot.child(
+            view()
+                .absolute()
+                .left(px(-RAIL_STROKE_INSET))
+                .top(px((RAIL_SLOT - space::LG) / 2.0))
+                .w(px(2.0))
+                .h(px(space::LG))
+                .bg(colors::ACCENT)
+                .accessibility_elements_hidden(true)
+                .bind_motion(&stroke),
+        )
+    } else {
+        slot
+    };
+    slot.child(
         button()
             .on_press(on_press)
             .accessibility_label(label)
@@ -1603,6 +1716,10 @@ pub(crate) fn rail_button(
             )),
     )
 }
+
+/// How far the active stroke sits out from a rail slot: to the rail's own
+/// edge, 10 pt out, less one so the stroke is not clipped by the window.
+const RAIL_STROKE_INSET: f32 = 9.0;
 
 /// Whether a control can be pressed right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

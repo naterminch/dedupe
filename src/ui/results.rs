@@ -25,7 +25,7 @@ use crate::ui::widgets::{
     hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name,
     notice, option_select, panel_title, press_to_play, pressed_seal, preview_frame, preview_glyph,
     preview_image, primary_button, progress_bar, quiet_button, radio_segmented, secondary_button,
-    section_title, segmented, tick, tile, title_block, video_player,
+    section_title, segmented, tick, tile, title_block, turning_enso, video_player,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -1018,7 +1018,7 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
     // the window instead of wrapping inside it.
     let mut list = view().flex_col().w_full().min_w(px(0.0)).gap(px(space::MD));
     if scanning {
-        list = list.child(dynamic(progress_card));
+        list = list.child(scan_card());
     }
     if !has_scanned && !scanning {
         list = list.child(dynamic(setup));
@@ -1078,9 +1078,11 @@ fn progress_card() -> View {
     } else {
         phase.clone()
     };
-    card()
+    view()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
         .gap(px(space::MD))
-        .p(px(space::LG))
         .child(
             view()
                 .flex_row()
@@ -1099,6 +1101,21 @@ fn progress_card() -> View {
         )
         .child(progress_bar(fraction, determinate))
 }
+
+/// A running scan: the ensō turning beside its progress. The ensō lives
+/// outside the part a tick rebuilds, so its turn never restarts.
+fn scan_card() -> View {
+    card()
+        .flex_row()
+        .items_center()
+        .gap(px(space::LG))
+        .p(px(space::LG))
+        .child(turning_enso(ENSO_SIDE))
+        .child(dynamic(progress_card))
+}
+
+/// The ensō's side on the scan card: the height of the phase and its count.
+const ENSO_SIDE: f32 = 36.0;
 
 /// The setup page: what the next scan covers and how it decides, as one
 /// form, with the scan itself as the screen's one primary action. Its title
@@ -2405,7 +2422,7 @@ fn mode_list() -> View {
     };
     let mut list = view().flex_col().gap(px(space::MD));
     if app().with(|s| s.scanning) {
-        list = list.child(progress_card());
+        list = list.child(scan_card());
     }
     if result.is_empty() {
         if let Some(done) = app().with(|s| s.findings_done) {

@@ -26,9 +26,9 @@ look; everything visual is the app's own, and it lives in two places:
   - media and status: `preview_frame`, `preview_image`, `preview_glyph`,
     `press_to_play`, `video_player`, `progress_bar`, `badge`, `glyph`, `logo`,
     `hint`;
-  - the Japanese marks: `rail_motto`, `seal` + `pressed_seal`, and
-    `register_faces`, which hands the bundled faces to the text system at
-    start-up.
+  - the Japanese marks: `rail_motto`, `seal` + `pressed_seal`,
+    `turning_enso`, and `register_faces`, which hands the bundled faces to the
+    text system at start-up.
 
 ## The style: washi and sumi
 
@@ -59,9 +59,15 @@ prints) for the marks. The marks are set the Japanese way, vertically:
 - every page's title row opens with a running head (hashira): a short
   vermilion stroke over two kanji in diluted ink — 探索 (search) on New scan,
   重複 (duplicates) on the review, 掃除 (cleaning) on a cleanup scan, 設定
-  (settings) on Settings;
+  (settings) on Settings. It is written as the page arrives: the stroke draws
+  down, then each kanji inks in under it;
 - the rail carries 断捨離 (refuse, discard, part with: the tidying the app is
-  for) above the theme switch, closed by a small vermilion dot;
+  for) above the theme switch, closed by a small vermilion dot, and the
+  active page's slot carries the running head's stroke at the rail's edge;
+- a running scan shows an ensō (`assets/enso.path`: one tapered brush stroke
+  round an open circle) turning slowly in vermilion beside its progress. It
+  only ever appears turning, so an open circle always means work in
+  progress;
 - a clean-up that went through ends in a 済 (settled) seal, vermilion with the
   kanji left in the paper's colour, turned −6° as a hand-pressed seal is.
 
@@ -221,7 +227,9 @@ nsh lands them at their end state when reduce-motion is on.
 | Button hover | colour or opacity transition, ease-out | `BASE` |
 | Button press dim and sink | state style + scale 0.97, transitioned | `FAST`, opacity 0.9 |
 | Segment picked (keep rule, sort, layout, settings) | colour transition on each segment | `FAST` |
-| Rail slot and settings nav moving | background transition / tab indicator | `BASE` / `FAST` |
+| Rail slot and settings nav moving | background transition / tab indicator; the active rail slot's vermilion stroke draws down as the page arrives (the running head's stroke) | `BASE` / `FAST`; stroke 360 ms out-expo |
+| Running head written (every title row as it mounts) | stroke: `ScaleY` 0→1, `TranslateY` −8→0, fade; then each kanji fades in rising 6 pt, one after another | stroke 360 ms; kanji 420 ms each, from 216 ms, 110 ms apart; out-expo |
+| Scan running | the ensō turns, linear and endless, on a part of the card the progress ticks never rebuild | 2600 ms a turn |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Group body opening and closing | `collapsible().reveal(true)` | nsh spring |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
@@ -236,7 +244,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Findings confirmation scrim and panel | the same `alert_dialog` as Delete | `FadeIn` 300 ms / platform `Slide` |
 | Findings removed (delete or metadata) | the list rebuilds under `fading_in()`; a toast reports the outcome | `FadeIn`, 300 ms; toast `SLOW` |
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
-| Cleared card's 済 seal | `pressed_seal()`: the seal settles into the paper as the card mounts | `ZoomIn` (from 90 %), 350 ms |
+| Cleared card's 済 seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles, after the card lands | 560 ms, 220 ms delay |
 
 With reduce-motion on, every line above lands at its end state: the
 transitions take 0 ms through `motion(ms)` and the presets land without
