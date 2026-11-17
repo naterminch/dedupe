@@ -29,7 +29,7 @@ const fn tone(light: Rgba, dark: Rgba) -> AdaptiveColor {
 }
 
 pub(crate) mod colors {
-    use super::{AdaptiveColor, rgba, tone};
+    use super::{AdaptiveColor, Rgba, rgba, tone};
 
     /// The window ground: kinari, unbleached paper, under the fibre grain;
     /// at night the warm black of an inkstone.
@@ -117,6 +117,56 @@ pub(crate) mod colors {
     /// hiding it.
     pub(crate) const SCRIM: AdaptiveColor =
         tone(rgba(0x1f, 0x1c, 0x18, 64), rgba(0x00, 0x00, 0x00, 150));
+
+    /// A traditional dye for a category of thing — a file's kind, a cleanup
+    /// finding's kind — never for a state or an action: the chrome stays sumi,
+    /// the decisions stay matcha and kuchiba, and vermilion stays the answer's.
+    /// A dye is a pale wash behind a tag and the deep ink its words take
+    /// (6.7:1 or more either way, both appearances).
+    #[derive(Debug, Clone, Copy)]
+    pub(crate) struct Dye {
+        pub(crate) wash: AdaptiveColor,
+        pub(crate) ink: AdaptiveColor,
+    }
+
+    const fn dye(wash: (Rgba, Rgba), ink: (Rgba, Rgba)) -> Dye {
+        Dye {
+            wash: tone(wash.0, wash.1),
+            ink: tone(ink.0, ink.1),
+        }
+    }
+
+    /// Ai, indigo: documents, and the largest files.
+    pub(crate) const AI: Dye = dye(
+        (rgba(0xdf, 0xe5, 0xee, 255), rgba(0x1a, 0x21, 0x30, 255)),
+        (rgba(0x22, 0x38, 0x5e, 255), rgba(0xae, 0xbf, 0xdc, 255)),
+    );
+    /// Fuji, wisteria: video, and files that are damaged or mislabelled.
+    pub(crate) const FUJI: Dye = dye(
+        (rgba(0xe8, 0xe1, 0xee, 255), rgba(0x25, 0x1f, 0x2d, 255)),
+        (rgba(0x4f, 0x3a, 0x6b, 255), rgba(0xcd, 0xb9, 0xe3, 255)),
+    );
+    /// Yamabuki, kerria gold: audio. Kept clear of kuchiba's brown so a tag
+    /// never reads as a copy ticked to go.
+    pub(crate) const YAMABUKI: Dye = dye(
+        (rgba(0xf5, 0xeb, 0xc2, 255), rgba(0x2c, 0x26, 0x0f, 255)),
+        (rgba(0x5f, 0x4b, 0x00, 255), rgba(0xec, 0xd4, 0x86, 255)),
+    );
+    /// Sabi-asagi, rusted pale teal: archives, and leftover temp files.
+    pub(crate) const ASAGI: Dye = dye(
+        (rgba(0xd9, 0xe9, 0xe6, 255), rgba(0x16, 0x26, 0x2a, 255)),
+        (rgba(0x1f, 0x54, 0x50, 255), rgba(0x9f, 0xd3, 0xcc, 255)),
+    );
+    /// Sakura, cherry: photos, and the metadata photos carry.
+    pub(crate) const SAKURA: Dye = dye(
+        (rgba(0xf3, 0xe0, 0xe2, 255), rgba(0x2e, 0x1c, 0x20, 255)),
+        (rgba(0x7a, 0x34, 0x46, 255), rgba(0xeb, 0xb3, 0xbe, 255)),
+    );
+    /// Nezumi, mouse grey: anything else, and what holds nothing at all.
+    pub(crate) const NEZUMI: Dye = dye(
+        (rgba(0xe6, 0xe1, 0xd8, 255), rgba(0x24, 0x22, 0x1f, 255)),
+        (rgba(0x4f, 0x4a, 0x43, 255), rgba(0xc2, 0xba, 0xae, 255)),
+    );
 }
 
 /// The type scale: five steps, 12/14/16/26/36. Text is set in points and the

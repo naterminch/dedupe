@@ -23,12 +23,16 @@ look; everything visual is the app's own, and it lives in two places:
   - surfaces and regions: `ground`, `side_pane`, `status_strip`, `card`,
     `notice`, `error_notice`, `tile`, `list_row`, `disclosure`, `alert_dialog`,
     `action_bar` + `action_group`, `divider`;
-  - media and status: `preview_frame`, `preview_image`, `preview_glyph`,
-    `press_to_play`, `video_player`, `progress_bar`, `badge`, `glyph`, `logo`,
-    `hint`;
-  - the brush marks: `seal` + `pressed_seal`, `turning_enso`, and
+  - media and status: `preview_frame`, `preview_image`, `clip_glyph`,
+    `kind_preview`, `press_to_play`, `video_player`, `progress_bar`, `badge`
+    (`BadgeTone::Kind(Kind)` for a dyed kind tag), `keeper_badge`, `glyph`,
+    `logo`, `hint`;
+  - the brush marks: `seal` + `pressed_seal`, `turning_enso`, `rail_marker`
+    + `move_rail_marker`, `ink_lift`, `theme_dissolve`, and
     `register_faces`, which hands the bundled face to the text system at
-    start-up.
+    start-up;
+  - motion helpers: `entering`, `fading_in`, `arriving`, `count_up`;
+  - `drop_sheet`, the answer to folders dragged over the window.
 
 ## The style: washi and sumi
 
@@ -46,6 +50,16 @@ hue is shu vermilion (`#c83e2b`), the red of a hanko seal, and it goes only on
 the figure each screen answers with, the seal, the running head's stroke, the
 keyboard's focus ring and destruction. The decisions take earth colours:
 matcha on the copy a group keeps, kuchiba ochre on a copy ticked to go.
+
+What a thing *is* takes a traditional dye, never what it *does*: each file
+kind and each cleanup finding kind wears a pale wash with its words in the
+dye's deep ink (`colors::Dye`). Ai indigo for documents and the largest
+files, fuji wisteria for video and damaged or mislabelled files, yamabuki
+gold for audio, sabi-asagi teal for archives and temp leftovers, sakura for
+photos and their metadata, nezumi grey for anything else and for what holds
+nothing. The dyes live on a group's kind tag, a finding's tag and the slip
+that stands in for a file with no picture; the chrome stays sumi, and no
+dye goes near an action, a state or the answer.
 
 Restraint and ma: no gradients, no shadows on anything that does not float,
 one soft edge per sheet, paper corners cut nearly square. The work area keeps
@@ -100,6 +114,12 @@ Each screen answers one question with its largest element:
 | `SELECT` / `SELECT_WASH` / `SELECT_INK` | `#a86a12` / `#f4e5c9` / `#6e4508` | `#e3a54e` / `#33270f` / `#f2cc8a` | a ticked copy's edge, its badge, the badge's words |
 | `DANGER` / `DANGER_SURFACE` / `ON_DANGER` / `DANGER_TEXT` | `ACCENT` / `#b8361f` / `#fbf8f1` / `#a8301e` | `ACCENT` / `#b8361f` / `#fbf8f1` / `#f08470` | error edges, the Delete fill and its label, error copy |
 | `SCRIM` | sumi 25% | black 59% | behind the delete dialog |
+| `AI` (wash / ink) | `#dfe5ee` / `#22385e` | `#1a2130` / `#aebfdc` | documents, the largest files (9.2:1 / 8.7:1) |
+| `FUJI` | `#e8e1ee` / `#4f3a6b` | `#251f2d` / `#cdb9e3` | video; damaged or mislabelled files |
+| `YAMABUKI` | `#f5ebc2` / `#5f4b00` | `#2c260f` / `#ecd486` | audio |
+| `ASAGI` | `#d9e9e6` / `#1f5450` | `#16262a` / `#9fd3cc` | archives; temp leftovers |
+| `SAKURA` | `#f3e0e2` / `#7a3446` | `#2e1c20` / `#ebb3be` | photos; photo metadata |
+| `NEZUMI` | `#e6e1d8` / `#4f4a43` | `#24221f` / `#c2baae` | any other file; empty files, folders and dead links |
 
 A wash is a backing, never a label colour: words on `KEEP_WASH` take
 `KEEP_INK`, words on `SELECT_WASH` take `SELECT_INK`. A member tile itself is
@@ -219,18 +239,22 @@ nsh lands them at their end state when reduce-motion is on.
 | --- | --- | --- |
 | Page switch (workspace ⇄ Settings) | `entering()` bound to the page | `FadeInUp`, 450 ms |
 | New scan page appearing | `entering()` | `FadeInUp`, 450 ms |
-| Results list rebuilt (scan landing, filter, delete, Show more) | `fading_in()` on the list | `FadeIn`, 300 ms |
+| Results list rebuilt (filter, delete, Show more) | `fading_in()` on the list | `FadeIn`, 300 ms |
+| A scan landing: its group cards | `arriving(order)` on each card instead of the list fade: fade + settle 12 pt, each a beat after the one above, the eighth and later together; once per scan (`scan_gen`), never on a page coming back | 320 ms out-expo, 40 ms apart, ≤ 280 ms delay |
+| A scan landing: the Reclaimable figure | `count_up()`: the figure counts from 0 to its value frame by frame, once per scan; every tick after that moves it at once | 700 ms out-expo |
 | Button hover | colour or opacity transition, ease-out | `BASE` |
 | Button press dim and sink | state style + scale 0.97, transitioned | `FAST`, opacity 0.9 |
 | Segment picked (keep rule, sort, layout, settings) | colour transition on each segment | `FAST` |
-| Rail slot and settings nav moving | background transition / tab indicator; the active rail slot's vermilion stroke draws down as the page arrives (the running head's stroke) | `BASE` / `FAST`; stroke 360 ms out-expo |
+| Rail slot and settings nav moving | background transition / tab indicator; the rail's vermilion stroke (`rail_marker`, the running head's) is drawn down when the rail first shows, then travels to the new slot on a page change, drawn out long mid-way like a dragged brush (`TranslateY` + `ScaleY` 1→1.8→1) | `BASE` / `FAST`; stroke 360 ms out-expo |
 | Running head drawn (every title row as it mounts) | `ScaleY` 0→1, `TranslateY` −8→0, fade | 360 ms, out-expo |
 | Scan running | the ensō turns, linear and endless, on a part of the card the progress ticks never rebuild | 2600 ms a turn |
+| Scan phase that cannot count (listing folders, finishing) | a stroke of sumi a quarter of the groove long (40–220 pt) is carried across it, again and again, in-out ease; the bar rebuilds only when its fill moves, so the sweep never restarts on a tick. Reduce-motion: a faint full line | 1500 ms a pass |
+| A folder added to the folder pane | `arriving(n)` on the new row only (the restored list at start-up and the rows already there stay still) | 320 ms out-expo |
 | Group disclosure chevron opening | transform rotation 0° → 90° | `FAST`, one glyph turned rather than two swapped |
 | Group body opening and closing | `collapsible().reveal(true)` | nsh spring |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
 | Text-field focus edge | colour transition | `BASE`, `CONTROL_BORDER` → `ACCENT` |
-| Keeper pick and duplicate tick | colour transition on the member's edge and badge | `FAST` |
+| Keeper pick and duplicate tick | colour transition on the member's edge; the new decision's wash (matcha "Keeping", ochre "Delete") soaks in from the tag's leading edge (`ScaleX` 0→1 on a layer under the words, origin left), only when that copy's decision changed | `FAST` edge; `BASE` soak, out-expo |
 | Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
 | Delete and Consolidate dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |
 | Delete and Consolidate dialog panel | nsh's modal slide, panel-only (the scrim is a page-layer sibling) | platform `Slide` |
@@ -240,17 +264,21 @@ nsh lands them at their end state when reduce-motion is on.
 | Findings confirmation scrim and panel | the same `alert_dialog` as Delete | `FadeIn` 300 ms / platform `Slide` |
 | Findings removed (delete or metadata) | the list rebuilds under `fading_in()`; a toast reports the outcome | `FadeIn`, 300 ms; toast `SLOW` |
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
-| Cleared card's seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles, after the card lands | 560 ms, 220 ms delay |
+| A clean-up settling (the last group or finding goes) | `ink_lift()`: a WGSL `shader_transition` (`assets/shaders/ink_lift.wgsl`) around the list. The old cards let go of their ink along fibre noise (dense ink first, drifting a point or two along the fibre), the ground's real grain shows through, and the outcome card is inked in behind through the same fibres. Only the moment of settling runs it; a restore or a new scan does not. No GPU: nsh's cross-fade | 900 ms |
+| Cleared card's seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles as the lift finishes | 560 ms, 720 ms delay |
+| Cleared card's seal meeting the paper | `seal_bleed()`: a faint vermilion ring under the seal widens and fades, as the seal's ink soaks into the fibres (`Scale` 1→1.4→2, `Opacity` 0→0.5→0); once per clean-up. Reduce-motion: never shown | 680 ms, from the press's contact (1000 ms delay) |
+| Light ⇄ dark | `theme_dissolve()`: a `screen_transition` (`assets/shaders/theme_soak.wgsl`); the new sheet soaks into the old one as a wash runs across washi, from the top-left corner, its front softened by pulp clouds. No GPU: cross-fade | 520 ms |
+| Folders dragged over the window | `drop_sheet()`: a card-paper sheet with a dashed `MUTED` edge over the work, "Drop to add folders"; it takes no pointer, so the drop lands beneath it | opacity, `BASE` |
 
 With reduce-motion on, every line above lands at its end state: the
 transitions take 0 ms through `motion(ms)` and the presets land without
 moving.
 
 Three things deliberately do not move: the scrim (a full-window layer must not
-travel), the results list on a rebuild (it keeps the reader's scroll place, so
-only its opacity changes), and the answer figure and the Delete count, which
-change on every tick of a selection — a fade there would flicker under the
-pointer.
+travel), the results list on an ordinary rebuild (it keeps the reader's scroll
+place, so only its opacity changes), and the answer figure and the Delete
+count after a scan has landed, which change on every tick of a selection — a
+fade there would flicker under the pointer.
 
 ## Known gaps
 

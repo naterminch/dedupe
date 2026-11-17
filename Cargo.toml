@@ -50,15 +50,16 @@ thiserror = "2"
 
 # nsh runs on the OS's own backend, so the platform crate is picked per
 # target. `default-features = false` drops the embedded JS runtime (`js`):
-# this app is Rust-only.
+# this app is Rust-only. `shader` keeps the GPU shader views (wgpu): the
+# results list lifts its ink off the paper through one when a clean-up ends.
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-platform-linux = { version = "0.5.1", default-features = false }
+nsh-platform-linux = { version = "0.5.1", default-features = false, features = ["shader"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = { version = "0.5.1", default-features = false }
+nsh-platform-macos = { version = "0.5.1", default-features = false, features = ["shader"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-nsh-platform-windows = { version = "0.5.1", default-features = false }
+nsh-platform-windows = { version = "0.5.1", default-features = false, features = ["shader"] }
 # The direct Win32 calls here and in `src/ui/window_state.rs` (console
 # attach/reopen for CLI runs, the single-instance mutex and the frame
 # sampler). Listed explicitly: nsh-platform-windows enables the graphics

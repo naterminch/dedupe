@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use nsh_core::prelude::*;
 
@@ -18,14 +19,15 @@ use crate::ui::state::{
     AppState, Cleared, FindingsDone, FindingsWent, Layout, Removal, app, scan_status,
 };
 use crate::ui::widgets::{
-    BadgeTone, Decision, Ink, PreviewFill, PreviewGlyph, PreviewSize, SelectItem, action_bar,
-    action_group, alert_dialog, amount, badge, body, caption, card, danger_button, description,
-    disclosure, divider, dropdown_trigger, entering, error_notice, fading_in, fast_scroll,
-    fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, heading, hint,
-    icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name, notice,
-    option_select, panel_title, press_to_play, pressed_seal, preview_frame, preview_glyph,
-    preview_image, primary_button, progress_bar, quiet_button, radio_segmented, secondary_button,
-    section_title, segmented, tick, tile, title_block, turning_enso, video_player,
+    BadgeTone, Decision, Ink, Kind, PreviewFill, PreviewSize, SelectItem, action_bar, action_group,
+    alert_dialog, amount, arriving, badge, body, caption, card, clip_glyph, count_up,
+    danger_button, description, disclosure, divider, dropdown_trigger, entering, error_notice,
+    fading_in, fast_scroll, fast_scroll_by, fast_scroll_max, field, field_label, figure,
+    ghost_button, heading, hint, icon_button, icon_ghost_button, icon_secondary_button,
+    icon_segmented, icons, ink_lift, keeper_badge, kind_preview, name, notice, option_select,
+    panel_title, press_to_play, pressed_seal, preview_frame, preview_image, primary_button,
+    progress_bar, quiet_button, radio_segmented, secondary_button, section_title, segmented, tick,
+    tile, title_block, turning_enso, video_player,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -35,6 +37,65 @@ const KEEP_MODES: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best"];
 /// Photo extensions the image element decodes. Formats it cannot (HEIC, SVG,
 /// ICO, TIFF) keep the text-only row rather than a broken box.
 const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
+
+/// Extensions read as documents and as archives: only to choose a group's
+/// kind tag, so a miss reads as a plain "File", never as a wrong action.
+const DOCUMENT_EXTS: [&str; 18] = [
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "md", "pages", "xls", "xlsx", "ods", "csv",
+    "numbers", "ppt", "pptx", "odp", "key", "epub",
+];
+const ARCHIVE_EXTS: [&str; 13] = [
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "zst", "iso", "dmg", "cab", "msi",
+];
+
+/// What sort of file a path is, for its kind tag and its preview's dye.
+fn file_kind(path: &Path) -> Kind {
+    match media::classify(path) {
+        media::MediaKind::Image => return Kind::Photo,
+        media::MediaKind::Video => return Kind::Video,
+        media::MediaKind::Other => {}
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let ext = ext.as_str();
+    if crate::modes::AUDIO_EXTS.contains(&ext) {
+        Kind::Audio
+    } else if DOCUMENT_EXTS.contains(&ext) {
+        Kind::Document
+    } else if ARCHIVE_EXTS.contains(&ext) {
+        Kind::Archive
+    } else {
+        Kind::File
+    }
+}
+
+/// The word on a file kind's tag.
+fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Photo => "Photo",
+        Kind::Video => "Video",
+        Kind::Audio => "Audio",
+        Kind::Document => "Document",
+        Kind::Archive => "Archive",
+        _ => "File",
+    }
+}
+
+/// The dye a cleanup finding's kind takes; its tag keeps the finding's own
+/// word.
+fn finding_kind(kind: &str) -> Kind {
+    match kind {
+        "empty" | "empty-dir" | "symlink" => Kind::Empty,
+        "temp" => Kind::Leftover,
+        "broken" | "bad-extension" | "bad-name" => Kind::Damaged,
+        "big" => Kind::Large,
+        "metadata" => Kind::Metadata,
+        _ => Kind::File,
+    }
+}
 
 /// Height of one group card, which is what one wheel notch moves: a photo card
 /// in grid layout carries a large preview, a compact card two plain rows.
@@ -89,18 +150,15 @@ fn member_preview(thumb: &Thumb, path: &Path, size: PreviewSize) -> View {
         }
         Thumb::Poster(poster) => preview_frame(size, PreviewFill::Picture)
             .child(preview_image(path_source(poster), size)),
-        // A file with no preview gets a document glyph in a row, not an empty
-        // box: the box read as a thumbnail that failed to load. On a card it
-        // is a photo the image element cannot decode, so the box stays plain.
+        // A file with no preview gets a slip of its kind's dye in a row, not
+        // an empty box: the box read as a thumbnail that failed to load. On a
+        // card it is a photo the image element cannot decode, so the box
+        // stays plain.
         Thumb::None => match size {
             PreviewSize::Card => preview_frame(size, PreviewFill::Empty),
-            PreviewSize::Thumb => {
-                preview_frame(size, PreviewFill::Empty).child(preview_glyph(PreviewGlyph::Document))
-            }
+            PreviewSize::Thumb => kind_preview(file_kind(path)),
         },
-        Thumb::PendingVideo => {
-            preview_frame(size, PreviewFill::Empty).child(preview_glyph(PreviewGlyph::Clip))
-        }
+        Thumb::PendingVideo => preview_frame(size, PreviewFill::Empty).child(clip_glyph()),
     }
 }
 
@@ -206,25 +264,36 @@ fn duplicate_workspace() -> View {
         // Rebuild only when the results change shape: a scan, a threshold, a
         // delete, a consolidate, a re-sort, Show more. Keeper picks and ticks
         // update their own cards, so pressing Keep never rebuilds (or
-        // reorders) the list.
-        .child(fast_scroll_by(
-            &RESULTS_AT,
-            card_step,
-            dynamic(|| {
-                let signature = computed(|| {
-                    app().with(|s| {
-                        (
-                            s.results_rev,
-                            s.scanning,
-                            s.has_scanned,
-                            s.groups.len(),
-                            s.group_limit,
-                            s.ffprobe_note,
-                        )
-                    })
-                });
-                list_body(signature.get())
-            }),
+        // reorders) the list. When a delete clears the last group, the cards
+        // lift off the paper and the outcome is inked in behind them.
+        .child(ink_lift(
+            || {
+                app().with(|s| {
+                    s.has_scanned
+                        && !s.scanning
+                        && s.groups.is_empty()
+                        && matches!(s.cleared, Some(Cleared::Removed { .. }))
+                })
+            },
+            fast_scroll_by(
+                &RESULTS_AT,
+                card_step,
+                dynamic(|| {
+                    let signature = computed(|| {
+                        app().with(|s| {
+                            (
+                                s.results_rev,
+                                s.scanning,
+                                s.has_scanned,
+                                s.groups.len(),
+                                s.group_limit,
+                                s.ffprobe_note,
+                            )
+                        })
+                    });
+                    list_body(signature.get())
+                }),
+            ),
         ))
 }
 
@@ -331,10 +400,18 @@ fn removed_figure(trashed: u64, freed: u64, moved: u64) -> View {
 
 /// The space a delete gives back right now: the marked copies, the same set
 /// the Delete button counts. Unticking a copy lowers it; what the scan found
-/// in all stays readable underneath while the two differ.
+/// in all stays readable underneath while the two differ. When a scan has
+/// just landed it counts up to its value once; a tick after that moves it
+/// at once, never through a count.
 fn reclaim_figure() -> View {
-    answer_figure("Reclaimable", || {
-        util::human_bytes(app().with(|s| actions::ticked(s).bytes))
+    let count = if first_sight(&COUNTED_GEN) {
+        count_up(FIGURE_COUNT_MS)
+    } else {
+        signal(1.0)
+    };
+    answer_figure("Reclaimable", move || {
+        let bytes = app().with(|s| actions::ticked(s).bytes);
+        util::human_bytes((bytes as f64 * f64::from(count.get())).round() as u64)
     })
     // The line is always there, blank while everything found is marked: a
     // tick must not change the header's height and move the list under the
@@ -352,6 +429,9 @@ fn reclaim_figure() -> View {
         "The space the ticked copies would give back if you deleted them now",
     ))
 }
+
+/// How long the Reclaimable figure counts up when a scan lands.
+const FIGURE_COUNT_MS: f32 = 700.0;
 
 /// The screen's answer, labelled above it: the largest number on the
 /// screen, right-aligned with the toolbar's far edge.
@@ -667,6 +747,11 @@ const DELETE_PLAN_MAX_H: f32 = 320.0;
 /// its two keep controls in the delete dialog; the front is cut beyond it.
 const PLAN_PATH_CHARS: usize = 30;
 
+/// About how many characters of a folder fit under a going copy's name in
+/// the delete dialog; the front is cut beyond it, so the distinguishing end
+/// stays.
+const PLAN_FOLDER_CHARS: usize = 22;
+
 pub(crate) fn delete_confirm() -> View {
     let (count, bytes, groups, trash, removal, dest, link_count, link_bytes, unlinkable) = app()
         .with(|s| {
@@ -721,15 +806,26 @@ pub(crate) fn delete_confirm() -> View {
             )
             .child(caption(fate));
         for member in &group.rows {
+            // The name leads, as on the review card: the folder under it is
+            // the part that tells two copies of one name apart.
             let full = member.path.display().to_string();
-            let shown = fit_text(&full, PLAN_PATH_CHARS);
-            let truncated = shown != full;
-            let cell = caption(shown).flex_1().truncate();
-            let cell = if truncated {
-                cell.tooltip(hint(full))
-            } else {
-                cell
-            };
+            let file_name = member
+                .path
+                .file_name()
+                .map_or_else(|| full.clone(), |n| n.to_string_lossy().into_owned());
+            let folder = member
+                .path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let cell = view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                // `body` here is the dialog's list; the text role by path.
+                .child(crate::ui::widgets::body(file_name).truncate())
+                .child(caption(fit_text(&folder, PLAN_FOLDER_CHARS)).truncate())
+                .tooltip(hint(full));
             let index = group.index;
             let keep_path = member.path.clone();
             let untick_path = member.path.clone();
@@ -1044,8 +1140,17 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
     // Structural snapshot, read untracked: nothing here subscribes, so this
     // list only re-runs when the signature above changes.
     let (groups, layout) = app().with_untracked(|s| (s.groups.clone(), s.layout));
+    // A scan's own landing deals its cards in one after another; a page
+    // coming back to results it already showed does not.
+    let landed = has_scanned && !scanning && total > 0 && first_sight(&ARRIVED_GEN);
     for (position, group) in groups.iter().take(limit).enumerate() {
-        list = list.child(group_slot(position, group, layout));
+        let slot = group_slot(position, group, layout);
+        list = list.child(if landed {
+            let arrive = arriving(position);
+            slot.bind_motion(&arrive)
+        } else {
+            slot
+        });
     }
     if total > limit {
         let remaining = total - limit;
@@ -1054,66 +1159,87 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
             actions::show_more_groups,
         )));
     }
-    // A rebuilt list — a scan landing, a new filter, a delete — fades in where
-    // it stands. It fades rather than rises because it keeps the scroll's own
-    // place; only the page itself travels.
+    if landed {
+        return list;
+    }
+    // Any other rebuild — a new filter, a delete, Show more — fades in where
+    // it stands. It fades rather than rises because it keeps the scroll's
+    // own place; only the page itself travels.
     let fade = fading_in();
     list.bind_motion(&fade)
 }
 
-fn progress_card() -> View {
-    // Progress has a signal of its own: reading it here subscribes this card
-    // alone, so a tick never rebuilds the rest of the window.
+thread_local! {
+    /// The scan whose cards last arrived, and whose figure last counted up.
+    static ARRIVED_GEN: Cell<u64> = const { Cell::new(0) };
+    static COUNTED_GEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Whether `seen` meets the current scan's results for the first time: the
+/// scan has just landed, rather than a page coming back to results it
+/// already showed.
+fn first_sight(seen: &'static std::thread::LocalKey<Cell<u64>>) -> bool {
+    let generation = app().with_untracked(|s| s.scan_gen);
+    seen.with(|cell| cell.replace(generation) != generation)
+}
+
+/// The running scan's phase, its count and Stop. Progress has a signal of
+/// its own: reading it here subscribes this row alone, so a tick never
+/// rebuilds the rest of the window.
+fn progress_header() -> View {
     let (done, total, determinate, phase) =
         scan_status().with(|p| (p.done, p.total, p.determinate, p.phase.clone()));
-    let fraction = if determinate && total > 0 {
-        (done as f32 / total as f32).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
     // A scan counts twice — files to hash, then media to compare — so the
     // bar legitimately restarts with a fresh total when the phase changes.
     // The phase is the heading and the counts are the caption, so that
     // restart reads as a new stage instead of the same bar going backwards.
-    let label = if determinate && total > 0 {
-        format!("{done} of {total}")
-    } else {
-        phase.clone()
-    };
-    view()
+    // A phase that cannot count has no caption: it would only repeat the
+    // heading.
+    let mut words = view()
         .flex_col()
-        .flex_1()
         .min_w(px(0.0))
+        .gap(px(space::XXS))
+        .child(panel_title(phase));
+    if determinate && total > 0 {
+        words = words.child(caption(format!("{done} of {total}")).tabular_nums());
+    }
+    view()
+        .flex_row()
+        .items_center()
+        .justify_between()
         .gap(px(space::MD))
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap(px(space::MD))
-                .child(
-                    view()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .gap(px(space::XXS))
-                        .child(panel_title(phase))
-                        .child(caption(label).tabular_nums()),
-                )
-                .child(danger_button("Stop", actions::stop_scan)),
-        )
-        .child(progress_bar(fraction, determinate))
+        .child(words)
+        .child(danger_button("Stop", actions::stop_scan))
 }
 
-/// A running scan: the ensō turning beside its progress. The ensō lives
-/// outside the part a tick rebuilds, so its turn never restarts.
+/// A running scan: the ensō turning beside its progress. The ensō and the
+/// bar live outside the part a tick rebuilds, so the ensō's turn never
+/// restarts, and the bar rebuilds only when its fill moves — while the scan
+/// cannot count, its sweep runs on undisturbed.
 fn scan_card() -> View {
+    let fill = computed(|| {
+        scan_status().with(|p| {
+            (p.determinate && p.total > 0).then(|| (p.done.min(p.total) * 1000 / p.total) as u32)
+        })
+    });
     card()
         .flex_row()
         .items_center()
         .gap(px(space::LG))
         .p(px(space::LG))
         .child(turning_enso(ENSO_SIDE))
-        .child(dynamic(progress_card))
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(space::MD))
+                .child(dynamic(progress_header))
+                .child(dynamic(move || match fill.get() {
+                    Some(permille) => progress_bar(permille as f32 / 1000.0, true),
+                    None => progress_bar(0.0, false),
+                })),
+        )
 }
 
 /// The ensō's side on the scan card: the height of the phase and its count.
@@ -1789,12 +1915,14 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
                 })
         })
     });
+    let tag = members.first().map_or(Kind::File, |m| file_kind(&m.path));
     let header = view()
         .flex_row()
         .flex_1()
         .min_w(px(0.0))
         .items_center()
         .gap(px(space::MD))
+        .child(badge(kind_label(tag), BadgeTone::Kind(tag)))
         .child(name(header).flex_1().truncate())
         .child(dynamic(move || {
             let (kept, copies, bytes) = stats.get();
@@ -1870,14 +1998,22 @@ fn member_slot(
             )
         })
     });
+    // The decision this slot last showed: a change of it (and only that, not
+    // a poster landing or a clip playing) soaks the new wash in.
+    let shown: Rc<Cell<Option<Decision>>> = Rc::new(Cell::new(None));
     view().child(dynamic(move || {
         let (keep, checked, poster, playing) = signature.get();
+        let now = decision(keep, checked);
+        let soak = shown.replace(Some(now)).is_some_and(|was| was != now);
         if grid {
             media_card(
                 group_index,
                 &member,
-                keep,
-                checked,
+                Mark {
+                    keep,
+                    checked,
+                    soak,
+                },
                 poster.as_deref(),
                 playing,
             )
@@ -1885,8 +2021,11 @@ fn member_slot(
             member_row(
                 group_index,
                 &member,
-                keep,
-                checked,
+                Mark {
+                    keep,
+                    checked,
+                    soak,
+                },
                 poster.as_deref(),
                 playing,
             )
@@ -1948,20 +2087,28 @@ fn playable_preview(thumb: &Thumb, path: &Path, size: PreviewSize, playing: bool
     }
 }
 
+/// Where one copy stands: the keeper, ticked to go, and whether that has just
+/// changed (its wash soaks in).
+#[derive(Clone, Copy)]
+struct Mark {
+    keep: bool,
+    checked: bool,
+    soak: bool,
+}
+
 /// One copy in the grid layout: large preview, then the name, its folder and
 /// the same controls a row carries. Only the edge and the badge move when the
 /// keeper changes, so the group never reflows during a decision.
 fn media_card(
     group_index: usize,
     member: &GroupMember,
-    keep: bool,
-    checked: bool,
+    mark: Mark,
     poster: Option<&Path>,
     playing: bool,
 ) -> View {
     let thumb = thumb_for(member, poster);
     let video_member = is_video(&thumb);
-    tile(decision(keep, checked))
+    tile(decision(mark.keep, mark.checked))
         .flex_col()
         .flex_1()
         .min_w(px(0.0))
@@ -1987,8 +2134,7 @@ fn media_card(
         .child(member_actions(
             group_index,
             member,
-            keep,
-            checked,
+            mark,
             // Videos only: a photo has nothing to play and gets no control.
             video_member.then_some(playing),
         ))
@@ -2000,8 +2146,7 @@ fn media_card(
 fn member_row(
     group_index: usize,
     member: &GroupMember,
-    keep: bool,
-    checked: bool,
+    mark: Mark,
     poster: Option<&Path>,
     playing: bool,
 ) -> View {
@@ -2025,11 +2170,10 @@ fn member_row(
         .child(member_actions(
             group_index,
             member,
-            keep,
-            checked,
+            mark,
             video_member.then_some(playing),
         ));
-    let surface = tile(decision(keep, checked)).gap(px(space::SM));
+    let surface = tile(decision(mark.keep, mark.checked)).gap(px(space::SM));
     if playing && video_member {
         return surface
             .flex_col()
@@ -2065,10 +2209,14 @@ fn member_row(
 fn member_actions(
     group_index: usize,
     member: &GroupMember,
-    keep: bool,
-    checked: bool,
+    mark: Mark,
     play: Option<bool>,
 ) -> View {
+    let Mark {
+        keep,
+        checked,
+        soak,
+    } = mark;
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
@@ -2088,13 +2236,14 @@ fn member_actions(
                 .tooltip(hint("Inside a locked folder: this copy is never deleted."))
         } else if keep {
             // The copy the group keeps: a badge, not a checkbox.
-            badge("Keeping", BadgeTone::Keep)
+            keeper_badge(soak)
         } else {
-            view().child(tick(
+            tick(
                 if checked { "Delete" } else { "Keep too" },
                 decision(keep, checked),
+                soak,
                 move || actions::toggle_selected(&toggle_path),
-            ))
+            )
         })
         .child(caption(util::human_bytes(member.size)).tabular_nums())
         .child(when(similarity.is_some(), move || {
@@ -2143,7 +2292,18 @@ fn mode_workspace() -> View {
                 .child(mode_header())
                 .child(dynamic(mode_actions)),
         )
-        .child(fast_scroll(&MODE_AT, dynamic(mode_list)))
+        // Acting on the last findings lifts them off the paper, as a
+        // duplicate clean-up does; a restore is not an ending.
+        .child(ink_lift(
+            || {
+                app().with(|s| {
+                    s.findings_done
+                        .is_some_and(|done| done.went != FindingsWent::Restored)
+                        && s.mode_result.as_ref().is_some_and(|r| r.is_empty())
+                })
+            },
+            fast_scroll(&MODE_AT, dynamic(mode_list)),
+        ))
 }
 
 /// What the cleanup workspace's toolbar renders from.
@@ -2502,7 +2662,10 @@ fn mode_finding_row(finding: &crate::modes::Finding) -> View {
         .gap(px(space::MD))
         .px(px(space::SM))
         .py(px(space::SM))
-        .child(badge(finding.kind, BadgeTone::Neutral))
+        .child(badge(
+            finding.kind,
+            BadgeTone::Kind(finding_kind(finding.kind)),
+        ))
         .child(
             view()
                 .flex_col()
