@@ -5,7 +5,7 @@
 //! Colours come from [`crate::ui::palette`] — no raw hex below this module.
 
 use std::cell::Cell;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 use std::thread::LocalKey;
 
 /// The item of an [`option_select`] list: features build their lists from it.
@@ -20,7 +20,7 @@ use nsh_core::element::{
 };
 use nsh_core::prelude::*;
 
-use crate::ui::palette::{colors, radius, size, space, text};
+use crate::ui::palette::{colors, faces, radius, size, space, text};
 use crate::ui::state::app;
 
 /// Transition length for colour and transform changes.
@@ -230,8 +230,8 @@ impl ControlStates for ButtonElement {
     }
 }
 
-/// The one container: a white card on the ground, one line at its edge, no
-/// shadow and no tray around it.
+/// The one container: a lighter sheet of paper laid on the ground, one soft
+/// edge, no shadow and no tray around it.
 pub(crate) fn card() -> View {
     view()
         .flex_col()
@@ -243,10 +243,13 @@ pub(crate) fn card() -> View {
 }
 
 /// The screen's title, one per screen. Screen readers hear it as a header.
+/// Medium, not bold, drawn slightly tight: a title set like a book's, not a
+/// dashboard's.
 pub(crate) fn heading(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::HEADING))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::MEDIUM)
+        .letter_spacing(px(-0.5))
         .text_color(colors::TEXT)
         .role(AccessibilityRole::Header)
 }
@@ -269,12 +272,14 @@ pub(crate) fn panel_title(label: impl IntoReactive<SharedString>) -> Text {
 }
 
 /// The figure a screen answers with: the space a delete gives back. The one
-/// hue, the largest number on the screen, digits of equal width so it does
-/// not jitter as the selection changes.
+/// hue, the largest number on the screen, set light the way a brush numeral
+/// sits on a page, digits of equal width so it does not jitter as the
+/// selection changes.
 pub(crate) fn figure(label: impl IntoReactive<SharedString>) -> Text {
     text(label)
         .text_size(px(text::FIGURE))
-        .font_weight(FontWeight::SEMIBOLD)
+        .font_weight(FontWeight::LIGHT)
+        .letter_spacing(px(-0.8))
         .text_color(colors::ACCENT)
         .tabular_nums()
 }
@@ -776,8 +781,168 @@ pub(crate) fn wordmark() -> impl IntoElement {
             text("dedupe")
                 .text_size(px(text::TITLE))
                 .font_weight(FontWeight::SEMIBOLD)
+                .letter_spacing(px(-0.2))
                 .text_color(colors::TEXT),
         )
+}
+
+// ---------------------------------------------------------------------------
+// Brush marks: the running head's stroke, the seal and the ensō.
+// ---------------------------------------------------------------------------
+
+/// Every face the app sets, embedded so a single-file install carries them.
+/// Registered once at bootstrap ([`crate::ui::actions::bootstrap`]).
+pub(crate) const FACES: [&[u8]; 4] = [
+    include_bytes!("../../assets/fonts/Inter-300.ttf"),
+    include_bytes!("../../assets/fonts/Inter-400.ttf"),
+    include_bytes!("../../assets/fonts/Inter-500.ttf"),
+    include_bytes!("../../assets/fonts/Inter-600.ttf"),
+];
+
+/// A brush lands with a quick, decelerating touch: out-expo.
+const BRUSH: Easing = Easing::Bezier(0.16, 1.0, 0.3, 1.0);
+
+/// The running head's stroke, drawn down the margin: it grows from nothing
+/// to its length as it settles.
+const STROKE_MS: f32 = 360.0;
+
+fn brush_stroke() -> MotionSpec {
+    MotionSpec::new(KeyframeTiming::new(STROKE_MS).easing(BRUSH))
+        .values(MotionChannel::ScaleY, [0.0, 1.0])
+        .values(MotionChannel::TranslateY, [-space::SM, 0.0])
+        .values(MotionChannel::Opacity, [0.0, 1.0])
+}
+
+/// The running head's stroke: as long as the title's capitals and set on
+/// them, so the page's title reads as marked in the margin.
+const HEAD_STROKE_H: f32 = 22.0;
+
+/// A page's running head: one vermilion brush stroke in the margin beside
+/// its title, drawn down as the page arrives. Decorative.
+fn head_stroke() -> View {
+    let stroke = nsh_core::element::motion().entering(brush_stroke());
+    view()
+        .flex_shrink_0()
+        .pt(px(space::XS + space::XXS))
+        .accessibility_elements_hidden(true)
+        .child(
+            view()
+                .w(px(2.0))
+                .h(px(HEAD_STROKE_H))
+                .bg(colors::ACCENT)
+                .bind_motion(&stroke),
+        )
+}
+
+/// Every screen's title block: the running head's stroke, then the title
+/// over its one line of description. Grows to fill the title row beside the
+/// screen's action or figure.
+pub(crate) fn title_block(title: Text, line: Text) -> View {
+    view()
+        .flex_row()
+        .flex_1()
+        .min_w(px(0.0))
+        .items_start()
+        .gap(px(space::MD + space::XXS))
+        .child(head_stroke())
+        .child(
+            view()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(space::XS))
+                .child(title)
+                .child(line),
+        )
+}
+
+/// The tick a settled seal carries, brushed in the paper's colour.
+const SEAL_TICK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" \
+fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.6\" stroke-linecap=\"round\" \
+stroke-linejoin=\"round\"><path d=\"M6.2 12.8 10.4 16.8 18 7.4\"/></svg>";
+
+/// A round hanko seal: a vermilion disc pressed into the paper, its rim ring
+/// and tick left in the paper's own colour. Round, ringed and turned a few
+/// degrees, as a hand-pressed seal is — never mistaken for a checkbox.
+/// Decorative: the card's title carries the meaning.
+fn seal(side: f32) -> View {
+    view()
+        .size(px(side))
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .bg(colors::ACCENT)
+        .rounded_full()
+        .rotate(deg(-6.0))
+        .accessibility_elements_hidden(true)
+        .child(
+            view()
+                .size(px(side - 2.0 * SEAL_RIM_INSET))
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .border(px(1.5))
+                .border_color(colors::ON_ACCENT)
+                .child(icon(SEAL_TICK, side * 0.5, colors::ON_ACCENT)),
+        )
+}
+
+/// How far inside a seal's edge its rim ring runs.
+const SEAL_RIM_INSET: f32 = 3.5;
+
+/// The press: the seal comes down from above the paper (larger, a little
+/// more turned), meets it a touch past flat and settles. It waits for the
+/// card it marks to land first.
+fn seal_press() -> MotionSpec {
+    MotionSpec::new(
+        KeyframeTiming::new(560.0)
+            .delay(220.0)
+            .easing(Easing::Bezier(0.2, 0.9, 0.3, 1.0)),
+    )
+    .values(MotionChannel::Opacity, [0.0, 1.0, 1.0])
+    .values(MotionChannel::Scale, [1.45, 0.94, 1.0])
+    .values(MotionChannel::Rotate, [-9.0, 1.0, 0.0])
+}
+
+/// [`seal`] arriving the way a seal is pressed. The press turns a wrapper,
+/// so the seal keeps its own resting angle underneath.
+pub(crate) fn pressed_seal(side: f32) -> View {
+    let press = nsh_core::element::motion().entering(seal_press());
+    view().flex_shrink_0().child(seal(side)).bind_motion(&press)
+}
+
+/// An ensō: one brush stroke round an open circle, heavy where the brush
+/// lands and thinning to a dry tail before it closes. Authored as one filled
+/// outline, so it stays crisp at any size and takes the element's ink.
+const ENSO: &str = concat!(
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\">",
+    "<path fill=\"currentColor\" d=\"",
+    include_str!("../../assets/enso.path"),
+    "\"/></svg>"
+);
+
+/// One turn of the brush while a scan reads: the ensō circles slowly in
+/// vermilion. With reduce-motion on it rests.
+const ENSO_TURN_MS: f32 = 2600.0;
+
+/// The ensō turning, for work in progress: the scan card's mark. It is only
+/// ever shown turning, so an open circle always means "working".
+/// Decorative; the phase beside it says what is happening.
+pub(crate) fn turning_enso(side: f32) -> View {
+    let turn = nsh_core::element::motion();
+    let _ = turn.play(
+        MotionSpec::new(
+            KeyframeTiming::new(ENSO_TURN_MS)
+                .easing(Easing::Linear)
+                .infinite(),
+        )
+        .values(MotionChannel::Rotate, [0.0, 360.0]),
+    );
+    view()
+        .flex_shrink_0()
+        .accessibility_elements_hidden(true)
+        .child(icon(ENSO, side, colors::ACCENT))
+        .bind_motion(&turn)
 }
 
 // ---------------------------------------------------------------------------
@@ -830,25 +995,93 @@ pub(crate) fn error_notice(message: impl IntoReactive<SharedString>) -> View {
 // Regions.
 // ---------------------------------------------------------------------------
 
-/// The window's ground, under every pane.
+/// The window's ground, under every pane: kinari paper with its fibre grain.
+/// The grain is one layer behind everything; panes on the ground are
+/// transparent so it runs under them, and only a sheet (a card) covers it.
 pub(crate) fn ground() -> View {
-    view().bg(colors::BACKGROUND)
+    view()
+        .bg(colors::BACKGROUND)
+        .font_family(faces::SANS)
+        .child(dynamic(|| paper_grain(dark())))
 }
 
-/// A side pane on the ground (the folder pane, the settings nav): one rule
-/// at its trailing edge separates it from the work.
+/// One grain texture, decoded once per appearance. The source is built once
+/// and cloned into every tile, so the tiles share one image (a fresh
+/// `ImageSrc::rgba` would be a new image each).
+type Grain = (f32, ImageSrc);
+
+/// Decode an embedded texture. It is built into the binary, so a failure
+/// means the repository's PNG is corrupt: draw no grain rather than fail.
+fn decode_grain(bytes: &[u8]) -> Grain {
+    let (w, h, pixels): (u32, u32, Arc<[u8]>) = ::image::load_from_memory(bytes).ok().map_or_else(
+        || (1, 1, Arc::from([0_u8, 0, 0, 0].as_slice())),
+        |decoded| {
+            let rgba = decoded.into_rgba8();
+            let (w, h) = rgba.dimensions();
+            (w, h, rgba.into_raw().into())
+        },
+    );
+    // The textures are square; a tile is laid out at the texture's own size.
+    (w.max(h) as f32, ImageSrc::rgba(w, h, pixels))
+}
+
+static GRAIN_LIGHT: LazyLock<Grain> =
+    LazyLock::new(|| decode_grain(include_bytes!("../../assets/textures/washi-light.png")));
+static GRAIN_DARK: LazyLock<Grain> =
+    LazyLock::new(|| decode_grain(include_bytes!("../../assets/textures/washi-dark.png")));
+
+/// How many grain tiles run across and down: enough to cover an 8K-wide
+/// window at 1024 pt tiles. The layer crops whatever the window leaves out.
+const GRAIN_COLS: usize = 8;
+const GRAIN_ROWS: usize = 5;
+
+/// The grain layer's test id: its tiles run past the window by design (the
+/// layer crops them), so layout checks leave them out.
+pub(crate) const GRAIN_TEST_ID: &str = "paper-grain";
+
+/// The kozo fibres and pulp clouds of washi, as an alpha layer the ground's
+/// colour shows through: brown fibres on light paper, pale ones on dark. Two
+/// textures because a fibre is darker than light paper and lighter than dark
+/// paper. Generated procedurally (tileable noise and tapered curves) and
+/// repeated at its own size from the top-left corner, so the fibres keep
+/// one scale whatever the window's size or shape.
+fn paper_grain(dark: bool) -> View {
+    let (tile, src) = if dark { &*GRAIN_DARK } else { &*GRAIN_LIGHT };
+    let tiles =
+        (0..GRAIN_COLS * GRAIN_ROWS).map(|_| image(src.clone()).size(px(*tile)).flex_shrink_0());
+    view()
+        .test_id(GRAIN_TEST_ID)
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .w_full()
+        .h_full()
+        .overflow_hidden()
+        .pointer_events(PointerEvents::None)
+        .accessibility_elements_hidden(true)
+        .child(
+            view()
+                .flex_row()
+                .flex_wrap()
+                .flex_shrink_0()
+                .w(px(*tile * GRAIN_COLS as f32))
+                .children(tiles),
+        )
+}
+
+/// A side pane on the ground (the folder pane, the settings nav): the same
+/// paper as the work, one rule at its trailing edge separating the two.
 pub(crate) fn side_pane(width: f32) -> View {
     view()
         .flex_col()
         .w(px(width))
         .h_full()
         .flex_shrink_0()
-        .bg(colors::SIDEBAR)
         .border_r_1()
         .border_color(colors::BORDER)
 }
 
-/// The status line at the foot of the window.
+/// The status line at the foot of the window, on the page's own paper.
 pub(crate) fn status_strip() -> View {
     view()
         .flex_row()
@@ -857,7 +1090,6 @@ pub(crate) fn status_strip() -> View {
         .gap(px(space::LG))
         .px(px(space::XXL))
         .py(px(space::SM))
-        .bg(colors::BACKGROUND)
         .border_t_1()
         .border_color(colors::BORDER)
 }
@@ -1381,16 +1613,34 @@ pub(crate) fn side_tabs<T: Copy + PartialEq + 'static>(
 /// A rail slot's side: a 20 pt glyph with 8 pt around it.
 const RAIL_SLOT: f32 = 36.0;
 
-/// One slot of the icon rail: the active view's slot is a neutral pill.
-/// The rail is icons only, so the pointer gets the name too, not just the
-/// screen reader.
+/// One slot of the icon rail: the active view's slot is a neutral pill, and
+/// a short vermilion stroke — the running head's — is drawn down the rail's
+/// edge beside it as the page arrives. The rail is icons only, so the
+/// pointer gets the name too, not just the screen reader.
 pub(crate) fn rail_button(
     markup: &'static str,
     label: &'static str,
     active: bool,
     on_press: fn(),
 ) -> View {
-    view().tooltip(hint(label)).child(
+    let slot = view().tooltip(hint(label));
+    let slot = if active {
+        let stroke = nsh_core::element::motion().entering(brush_stroke());
+        slot.child(
+            view()
+                .absolute()
+                .left(px(-RAIL_STROKE_INSET))
+                .top(px((RAIL_SLOT - space::LG) / 2.0))
+                .w(px(2.0))
+                .h(px(space::LG))
+                .bg(colors::ACCENT)
+                .accessibility_elements_hidden(true)
+                .bind_motion(&stroke),
+        )
+    } else {
+        slot
+    };
+    slot.child(
         button()
             .on_press(on_press)
             .accessibility_label(label)
@@ -1420,6 +1670,10 @@ pub(crate) fn rail_button(
             )),
     )
 }
+
+/// How far the active stroke sits out from a rail slot: to the rail's own
+/// edge, 10 pt out, less one so the stroke is not clipped by the window.
+const RAIL_STROKE_INSET: f32 = 9.0;
 
 /// Whether a control can be pressed right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

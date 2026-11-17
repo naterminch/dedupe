@@ -99,16 +99,35 @@ fn shell_shows_the_core_controls() {
 
 /// The window edge is not a scroll: every view the layout places has to end
 /// inside the client, or the bottom of the app is unreachable. This pins the
-/// 1120x640 viewport the rest of the suite lays out against.
+/// 1120x640 viewport the rest of the suite lays out against. The paper
+/// grain's tiles are the one exception: decorative, and cropped by design.
 #[test]
 fn no_view_extends_past_the_window() {
     let (mut app, _guard) = start();
     app.wait_for("text:dedupe").expect("header");
-    let overflow: Vec<String> = app
-        .screen()
-        .layout_nodes()
+    let nodes = app.screen().layout_nodes();
+    let grain: Vec<_> = nodes
+        .iter()
+        .filter(|n| n.test_id.as_deref() == Some(crate::ui::widgets::GRAIN_TEST_ID))
+        .map(|n| n.id)
+        .collect();
+    assert!(!grain.is_empty(), "the ground carries its grain layer");
+    let in_grain = |mut id| {
+        while let Some(node) = nodes.iter().find(|n| n.id == id) {
+            if grain.contains(&node.id) {
+                return true;
+            }
+            if node.parent == id {
+                break;
+            }
+            id = node.parent;
+        }
+        false
+    };
+    let overflow: Vec<String> = nodes
         .iter()
         .filter(|node| node.bounds.origin.y.0 + node.bounds.size.height.0 > 640.5)
+        .filter(|node| !in_grain(node.id))
         .map(|node| {
             format!(
                 "{:?} at y={:.1} h={:.1}",

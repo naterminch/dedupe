@@ -21,11 +21,11 @@ use crate::ui::widgets::{
     BadgeTone, Decision, Ink, PreviewFill, PreviewGlyph, PreviewSize, SelectItem, action_bar,
     action_group, alert_dialog, amount, badge, body, caption, card, danger_button, description,
     disclosure, divider, dropdown_trigger, entering, error_notice, fading_in, fast_scroll,
-    fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, ground, heading,
-    hint, icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name,
-    notice, option_select, panel_title, press_to_play, preview_frame, preview_glyph, preview_image,
-    primary_button, progress_bar, quiet_button, radio_segmented, secondary_button, section_title,
-    segmented, tick, tile, video_player,
+    fast_scroll_by, fast_scroll_max, field, field_label, figure, ghost_button, heading, hint,
+    icon_button, icon_ghost_button, icon_secondary_button, icon_segmented, icons, name, notice,
+    option_select, panel_title, press_to_play, pressed_seal, preview_frame, preview_glyph,
+    preview_image, primary_button, progress_bar, quiet_button, radio_segmented, secondary_button,
+    section_title, segmented, tick, tile, title_block, turning_enso, video_player,
 };
 use crate::ui_helpers::{counted, fit_text};
 use crate::util;
@@ -110,7 +110,8 @@ fn path_source(path: &Path) -> String {
 }
 
 pub(crate) fn results() -> View {
-    ground()
+    // On the root ground: transparent, so its grain runs on under the pane.
+    view()
         .flex_col()
         .flex_1()
         .h_full()
@@ -176,7 +177,8 @@ fn duplicate_workspace() -> View {
         .flex_1()
         .h_full()
         .gap(px(space::XL))
-        .p(px(space::XXL))
+        .px(px(space::MA))
+        .py(px(space::XXL))
         // Before the first scan the workspace is the setup form, which brings
         // its own title row. Once a scan runs the results header and toolbars
         // take over until Back returns to the form.
@@ -233,25 +235,20 @@ fn header_row() -> View {
         .justify_between()
         .items_end()
         .gap(px(space::LG))
-        .child(
-            view()
-                .flex_col()
-                .min_w(px(0.0))
-                .flex_1()
-                .gap(px(space::XS))
-                .child(heading(|| {
-                    app().with(|s| {
-                        if s.scanning {
-                            "Scanning"
-                        } else if s.groups.is_empty() && s.cleared.is_some() {
-                            "Duplicates cleared"
-                        } else {
-                            "Review duplicates"
-                        }
-                    })
-                }))
-                .child(summary_line()),
-        )
+        .child(title_block(
+            heading(|| {
+                app().with(|s| {
+                    if s.scanning {
+                        "Scanning"
+                    } else if s.groups.is_empty() && s.cleared.is_some() {
+                        "Duplicates cleared"
+                    } else {
+                        "Review duplicates"
+                    }
+                })
+            }),
+            summary_line(),
+        ))
         .child(dynamic(|| {
             let shown = computed(|| app().with(answer));
             match shown.get() {
@@ -270,8 +267,9 @@ fn header_row() -> View {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     /// No figure: the scan is running (a count of bytes found so far would
-    /// read as the result), or copies came back from the trash and the
-    /// numbers wait for the next scan.
+    /// read as the result), it found nothing (a vermilion "0 B" would shout
+    /// over the card that says so), or copies came back from the trash and
+    /// the numbers wait for the next scan.
     Waiting,
     /// The space the marked copies would give back.
     Reclaimable,
@@ -300,6 +298,7 @@ fn answer(s: &AppState) -> Answer {
             moved,
         },
         Some(Cleared::Restored { .. }) if s.groups.is_empty() => Answer::Waiting,
+        None if s.groups.is_empty() => Answer::Waiting,
         _ => Answer::Reclaimable,
     }
 }
@@ -368,7 +367,7 @@ fn answer_figure(label: &'static str, value: impl Fn() -> String + 'static) -> V
 /// The one line under the title: what the scan found, in the order a reader
 /// acts on it — how many groups, and how many of their copies are marked to
 /// delete. With no group left it says why the list is empty.
-fn summary_line() -> impl IntoElement {
+fn summary_line() -> Text {
     description(|| {
         app().with(|s| {
             if s.scanning {
@@ -1021,7 +1020,7 @@ fn list_body((_, scanning, has_scanned, total, limit, ffprobe_note): ListSignatu
     // the window instead of wrapping inside it.
     let mut list = view().flex_col().w_full().min_w(px(0.0)).gap(px(space::MD));
     if scanning {
-        list = list.child(dynamic(progress_card));
+        list = list.child(scan_card());
     }
     if !has_scanned && !scanning {
         list = list.child(dynamic(setup));
@@ -1081,9 +1080,11 @@ fn progress_card() -> View {
     } else {
         phase.clone()
     };
-    card()
+    view()
+        .flex_col()
+        .flex_1()
+        .min_w(px(0.0))
         .gap(px(space::MD))
-        .p(px(space::LG))
         .child(
             view()
                 .flex_row()
@@ -1102,6 +1103,21 @@ fn progress_card() -> View {
         )
         .child(progress_bar(fraction, determinate))
 }
+
+/// A running scan: the ensō turning beside its progress. The ensō lives
+/// outside the part a tick rebuilds, so its turn never restarts.
+fn scan_card() -> View {
+    card()
+        .flex_row()
+        .items_center()
+        .gap(px(space::LG))
+        .p(px(space::LG))
+        .child(turning_enso(ENSO_SIDE))
+        .child(dynamic(progress_card))
+}
+
+/// The ensō's side on the scan card: the height of the phase and its count.
+const ENSO_SIDE: f32 = 36.0;
 
 /// The setup page: what the next scan covers and how it decides, as one
 /// form, with the scan itself as the screen's one primary action. Its title
@@ -1127,15 +1143,7 @@ fn setup_header() -> View {
         .items_end()
         .justify_between()
         .gap(px(space::LG))
-        .child(
-            view()
-                .flex_col()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap(px(space::XS))
-                .child(heading("New scan"))
-                .child(description(scope_line)),
-        )
+        .child(title_block(heading("New scan"), description(scope_line)))
         .child(primary_button(scan_label, actions::start_scan))
 }
 
@@ -1553,18 +1561,36 @@ fn cleared_card(cleared: Cleared) -> View {
             actions::undo_delete,
         ));
     }
-    card()
-        .gap(px(space::MD))
-        .p(px(space::XL))
-        .child(
-            view()
-                .flex_col()
-                .gap(px(space::XS))
-                .child(section_title(title))
-                .child(description(detail)),
-        )
-        .child(buttons)
+    // The clean-up is settled: the seal says so in the margin of the card.
+    // Copies that came back from the trash are not a settled clean-up.
+    let settled = matches!(cleared, Cleared::Removed { .. });
+    outcome_card(title, detail, settled).child(buttons)
 }
+
+/// The card a finished act leaves: its title over what happened, and for a
+/// clean-up that went through, the 済 (settled) seal pressed beside them.
+fn outcome_card(title: String, detail: String, settled: bool) -> View {
+    card().gap(px(space::LG)).p(px(space::XL)).child(
+        view()
+            .flex_row()
+            .items_start()
+            .gap(px(space::XL))
+            .child(
+                view()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .gap(px(space::XS))
+                    .child(section_title(title))
+                    .child(description(detail)),
+            )
+            .child(when(settled, || pressed_seal(SEAL_SIDE))),
+    )
+}
+
+/// The settled seal's side: it reads as a seal across the card's two lines
+/// of text, not as an icon.
+const SEAL_SIDE: f32 = 44.0;
 
 /// A scan that found nothing: what to change and where. `rescan` adds the
 /// button that runs the same scan again — on the duplicates page the scan form
@@ -1617,13 +1643,8 @@ fn findings_cleared_card(done: FindingsDone) -> View {
             format!("{bytes} freed. The photos themselves stay where they were."),
         ),
     };
-    let mut card = card().gap(px(space::MD)).p(px(space::XL)).child(
-        view()
-            .flex_col()
-            .gap(px(space::XS))
-            .child(section_title(title))
-            .child(description(detail)),
-    );
+    let settled = done.went != FindingsWent::Restored;
+    let mut card = outcome_card(title, detail, settled);
     let can_restore = done.went == FindingsWent::Trash
         && actions::CAN_RESTORE
         && app().with_untracked(|s| !s.last_trashed.is_empty());
@@ -2113,7 +2134,8 @@ fn mode_workspace() -> View {
         .flex_1()
         .h_full()
         .gap(px(space::XL))
-        .p(px(space::XXL))
+        .px(px(space::MA))
+        .py(px(space::XXL))
         .child(
             view()
                 .flex_col()
@@ -2233,51 +2255,44 @@ fn mode_header() -> View {
         .items_end()
         .justify_between()
         .gap(px(space::LG))
-        .child(
-            view()
-                .flex_col()
-                .flex_1()
-                .min_w(px(0.0))
-                .gap(px(space::XS))
-                .child(heading(|| {
-                    app().with(|s| {
-                        s.mode_result
-                            .as_ref()
-                            .map(|r| mode_title(r.mode))
-                            .unwrap_or("Cleanup scan")
-                            .to_string()
-                    })
-                }))
-                .child(description(|| {
-                    app().with(|s| match s.mode_result.as_ref() {
-                        Some(r) => {
-                            let found = match actions::findings_act(r.mode) {
-                                actions::FindingsAct::StripMetadata => {
-                                    counted(r.finding_count() as u64, "photo", "photos")
-                                }
-                                _ => counted(r.finding_count() as u64, "finding", "findings"),
-                            };
-                            let mut line = format!(
-                                "{found} in {} scanned",
-                                counted(r.files_scanned, "file", "files"),
-                            );
-                            let plan = actions::findings_plan(s);
-                            if actions::findings_act(r.mode) == actions::FindingsAct::ReportOnly {
-                                line.push_str(
-                                    " · listed only: check each one and remove it yourself",
-                                );
-                            } else if plan.protected > 0 {
-                                line.push_str(&format!(
-                                    " · {} in a protected folder stay",
-                                    counted(plan.protected as u64, "item", "items")
-                                ));
+        .child(title_block(
+            heading(|| {
+                app().with(|s| {
+                    s.mode_result
+                        .as_ref()
+                        .map(|r| mode_title(r.mode))
+                        .unwrap_or("Cleanup scan")
+                        .to_string()
+                })
+            }),
+            description(|| {
+                app().with(|s| match s.mode_result.as_ref() {
+                    Some(r) => {
+                        let found = match actions::findings_act(r.mode) {
+                            actions::FindingsAct::StripMetadata => {
+                                counted(r.finding_count() as u64, "photo", "photos")
                             }
-                            line
+                            _ => counted(r.finding_count() as u64, "finding", "findings"),
+                        };
+                        let mut line = format!(
+                            "{found} in {} scanned",
+                            counted(r.files_scanned, "file", "files"),
+                        );
+                        let plan = actions::findings_plan(s);
+                        if actions::findings_act(r.mode) == actions::FindingsAct::ReportOnly {
+                            line.push_str(" · listed only: check each one and remove it yourself");
+                        } else if plan.protected > 0 {
+                            line.push_str(&format!(
+                                " · {} in a protected folder stay",
+                                counted(plan.protected as u64, "item", "items")
+                            ));
                         }
-                        None => "Run a cleanup scan to see findings.".to_string(),
-                    })
-                })),
-        )
+                        line
+                    }
+                    None => "Run a cleanup scan to see findings.".to_string(),
+                })
+            }),
+        ))
         .child(
             view()
                 .flex_row()
@@ -2404,7 +2419,7 @@ fn mode_list() -> View {
     };
     let mut list = view().flex_col().gap(px(space::MD));
     if app().with(|s| s.scanning) {
-        list = list.child(progress_card());
+        list = list.child(scan_card());
     }
     if result.is_empty() {
         if let Some(done) = app().with(|s| s.findings_done) {
