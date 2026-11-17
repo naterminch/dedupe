@@ -37,7 +37,7 @@ pub(crate) const FIND_LABELS: [&str; 12] = [
 ];
 
 const MATCH_LABELS: [&str; 4] = ["Content", "Size", "Name", "Fuzzy name"];
-const HASH_LABELS: [&str; 3] = ["blake3", "sha256", "md5"];
+const HASH_LABELS: [&str; 3] = ["BLAKE3", "SHA-256", "MD5"];
 const IMAGE_HASH_LABELS: [&str; 5] = ["Auto (dHash)", "dHash", "pHash", "aHash", "Color grid"];
 const KEEP_LABELS: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best quality"];
 const MUSIC_LABELS: [&str; 2] = ["Embedded tags", "Audio fingerprint"];

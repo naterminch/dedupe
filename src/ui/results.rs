@@ -266,8 +266,9 @@ fn header_row() -> View {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Answer {
     /// No figure: the scan is running (a count of bytes found so far would
-    /// read as the result), or copies came back from the trash and the
-    /// numbers wait for the next scan.
+    /// read as the result), it found nothing (a vermilion "0 B" would shout
+    /// over the card that says so), or copies came back from the trash and
+    /// the numbers wait for the next scan.
     Waiting,
     /// The space the marked copies would give back.
     Reclaimable,
@@ -296,6 +297,7 @@ fn answer(s: &AppState) -> Answer {
             moved,
         },
         Some(Cleared::Restored { .. }) if s.groups.is_empty() => Answer::Waiting,
+        None if s.groups.is_empty() => Answer::Waiting,
         _ => Answer::Reclaimable,
     }
 }
