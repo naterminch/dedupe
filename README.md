@@ -139,9 +139,11 @@ a `dedupe.app` bundle on macOS (for the CLI, run or symlink
 `dedupe.app/Contents/MacOS/dedupe`). The GUI never opens a terminal window on any
 platform.
 
-The macOS app is ad-hoc signed, not notarized, so the first launch is blocked as
-coming from an unidentified developer: open it via right-click → Open (or System
-Settings → Privacy & Security → Open Anyway), or clear the download quarantine with
+Releases built with the repository's Developer ID secrets ship a signed and
+notarized macOS app that opens without a prompt. Without them the app is ad-hoc
+signed, so the first launch is blocked as coming from an unidentified developer:
+open it via right-click → Open (or System Settings → Privacy & Security → Open
+Anyway), or clear the download quarantine with
 `xattr -dr com.apple.quarantine dedupe.app`.
 
 ## How it works
