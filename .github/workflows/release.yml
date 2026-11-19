@@ -146,24 +146,8 @@ jobs:
       # macOS opens a bare executable in Terminal, so the GUI is shipped as an
       # .app bundle (double-click, no terminal). The bundle is the only binary
       # in the archive; CLI use runs dedupe.app/Contents/MacOS/dedupe.
-      #
-      # Signing: with the Developer ID secrets set, the bundle is signed with
-      # the hardened runtime, notarized and stapled, so it opens with no
-      # Gatekeeper prompt. Without them it is ad-hoc signed (first launch shows
-      # the unidentified-developer prompt). Secrets:
-      #   MACOS_CERTIFICATE_P12       base64 of the "Developer ID Application" .p12
-      #   MACOS_CERTIFICATE_PASSWORD  that .p12's export password
-      #   APPLE_API_KEY_P8            base64 of an App Store Connect API key (.p8)
-      #   APPLE_API_KEY_ID            that key's ID
-      #   APPLE_API_ISSUER_ID         the App Store Connect issuer ID
       - name: Package (macOS)
         if: runner.os == 'macOS'
-        env:
-          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
         run: |
           name="dedupe-$TAG-${{ matrix.target }}"
           version="$TAG"
@@ -211,52 +195,12 @@ jobs:
           </dict>
           </plist>
           PLIST
-          # The bundle must be signed as a whole: the linker's ad-hoc signature
-          # covers only the Mach-O, and a downloaded (quarantined) bundle
-          # without one is reported "damaged".
-          if [ -n "$MACOS_CERTIFICATE_P12" ]; then
-            # A throwaway keychain holds the certificate for this job only.
-            keychain="$RUNNER_TEMP/signing.keychain-db"
-            kc_pass="$(uuidgen)"
-            echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-            security create-keychain -p "$kc_pass" "$keychain"
-            security set-keychain-settings -lut 21600 "$keychain"
-            security unlock-keychain -p "$kc_pass" "$keychain"
-            security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
-              -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-            rm "$RUNNER_TEMP/cert.p12"
-            security set-key-partition-list -S apple-tool:,apple: -s -k "$kc_pass" "$keychain" > /dev/null
-            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-            identity="$(security find-identity -v -p codesigning "$keychain" \
-              | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')"
-            if [ -z "$identity" ]; then
-              echo "No Developer ID Application identity in MACOS_CERTIFICATE_P12" >&2
-              exit 1
-            fi
-            echo "Signing as $identity"
-            codesign --force --options runtime --timestamp \
-              --sign "$identity" --keychain "$keychain" "$app"
-            codesign --verify --deep --strict --verbose=2 "$app"
-
-            # Notarize, then staple the ticket so Gatekeeper accepts the app
-            # offline too.
-            echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/api_key.p8"
-            ditto -c -k --keepParent "$app" "$RUNNER_TEMP/dedupe-notarize.zip"
-            xcrun notarytool submit "$RUNNER_TEMP/dedupe-notarize.zip" \
-              --key "$RUNNER_TEMP/api_key.p8" \
-              --key-id "$APPLE_API_KEY_ID" \
-              --issuer "$APPLE_API_ISSUER_ID" \
-              --wait --timeout 30m
-            rm "$RUNNER_TEMP/api_key.p8"
-            xcrun stapler staple "$app"
-            xcrun stapler validate "$app"
-            spctl --assess --type execute --verbose=2 "$app"
-            security delete-keychain "$keychain"
-          else
-            echo "::warning::No Developer ID secrets set: the macOS app is ad-hoc signed and not notarized"
-            codesign --force --deep --sign - "$app"
-            codesign --verify --deep --strict --verbose=2 "$app"
-          fi
+          # The linker's ad-hoc signature covers only the Mach-O, not the
+          # bundle, so a downloaded (quarantined) .app is reported "damaged".
+          # Ad-hoc sign the whole bundle so Gatekeeper sees a valid, if
+          # unidentified, signature.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
           tar -czf "dist/$name.tar.gz" -C staging dedupe.app
 
       # Linux: the bare binary is both surfaces. Double-clicking an ELF is
