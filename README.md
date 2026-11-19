@@ -135,8 +135,14 @@ video comparison, and audio fingerprints for `--music-by content`.
 
 Release downloads: `dedupe.exe` on Windows, the bare binary plus a `dedupe.desktop`
 launcher on Linux (put the binary on `PATH` or point `Exec=`/`TryExec=` at it), and
-a `dedupe.app` bundle next to the binary on macOS. The GUI never opens a terminal
-window on any platform.
+a `dedupe.app` bundle on macOS (for the CLI, run or symlink
+`dedupe.app/Contents/MacOS/dedupe`). The GUI never opens a terminal window on any
+platform.
+
+The macOS app is ad-hoc signed, not notarized, so the first launch is blocked as
+coming from an unidentified developer: open it via right-click → Open (or System
+Settings → Privacy & Security → Open Anyway), or clear the download quarantine with
+`xattr -dr com.apple.quarantine dedupe.app`.
 
 ## How it works
 

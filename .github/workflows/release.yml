@@ -144,16 +144,15 @@ jobs:
             -DestinationPath "dist/$name.zip"
 
       # macOS opens a bare executable in Terminal, so the GUI is shipped as an
-      # .app bundle (double-click, no terminal). The plain binary stays in the
-      # archive next to it for CLI use.
+      # .app bundle (double-click, no terminal). The bundle is the only binary
+      # in the archive; CLI use runs dedupe.app/Contents/MacOS/dedupe.
       - name: Package (macOS)
         if: runner.os == 'macOS'
         run: |
           name="dedupe-$TAG-${{ matrix.target }}"
           version="$TAG"
-          app=dist/dedupe.app
+          app=staging/dedupe.app
           mkdir -p dist "$app/Contents/MacOS"
-          cp "target/${{ matrix.target }}/release/dedupe" dist/dedupe
           cp "target/${{ matrix.target }}/release/dedupe" "$app/Contents/MacOS/dedupe"
           cat > "$app/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -181,7 +180,13 @@ jobs:
           </dict>
           </plist>
           PLIST
-          tar -czf "dist/$name.tar.gz" -C dist dedupe dedupe.app
+          # The linker's ad-hoc signature covers only the Mach-O, not the
+          # bundle, so a downloaded (quarantined) .app is reported "damaged".
+          # Ad-hoc sign the whole bundle so Gatekeeper sees a valid, if
+          # unidentified, signature.
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          tar -czf "dist/$name.tar.gz" -C staging dedupe.app
 
       # Linux: the bare binary is both surfaces. Double-clicking an ELF is
       # unreliable across file managers, so the archive also carries a
@@ -202,7 +207,7 @@ jobs:
       # the dispatch guard only checks before the build starts, and
       # softprops/action-gh-release would have created the release here instead.
       # The archive name is spelled out because the Windows runner's pwsh does
-      # not expand globs, and the macOS step also leaves a bare binary in dist/.
+      # not expand globs.
       # `--clobber` keeps a re-dispatch from failing on the assets it already made.
       - name: Upload to release
         shell: bash
