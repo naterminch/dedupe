@@ -156,13 +156,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/dedupe" "$app/Contents/MacOS/dedupe"
 
           # Finder/Dock icon, built from the same logo the GUI shows. The logo
-          # is 512px, so the iconset stops at 512x512 (no 512@2x upscale).
+          # is 1024px, so the iconset carries every slot the format defines,
+          # 512x512@2x (1024) included.
           iconset="$RUNNER_TEMP/dedupe.iconset"
           mkdir -p "$iconset"
           for s in 16 32 128 256 512; do
             sips -z $s $s assets/icons/logo.png --out "$iconset/icon_${s}x${s}.png" > /dev/null
             d=$((s * 2))
-            if [ $d -le 512 ]; then
+            if [ $d -le 1024 ]; then
               sips -z $d $d assets/icons/logo.png --out "$iconset/icon_${s}x${s}@2x.png" > /dev/null
             fi
           done
@@ -208,6 +209,12 @@ jobs:
       # .desktop launcher with `Terminal=false`: opening the GUI from the
       # desktop never spawns a terminal (the binary itself creates none —
       # only an inherited terminal, i.e. a shell run, is ever shown).
+      # The entry's `Icon=dedupe` is a themed icon name, not a path: the
+      # Desktop Entry spec resolves a non-absolute name only through the
+      # icon-theme search path (Icon Theme spec), never beside the .desktop.
+      # So the archive carries the icon at the hicolor path that lookup reads,
+      # and README says to unpack share/ into ~/.local. A dispatch can rebuild
+      # a tag that predates the file, so its absence must not fail the run.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -215,7 +222,15 @@ jobs:
           mkdir -p dist staging
           cp "target/${{ matrix.target }}/release/dedupe" staging/dedupe
           cp assets/dedupe.desktop staging/dedupe.desktop
-          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop
+          icon=()
+          if [ -f assets/icons/dedupe.png ]; then
+            mkdir -p staging/share/icons/hicolor/256x256/apps
+            cp assets/icons/dedupe.png staging/share/icons/hicolor/256x256/apps/dedupe.png
+            icon=(share/icons/hicolor/256x256/apps/dedupe.png)
+          else
+            echo "::warning::assets/icons/dedupe.png is absent at this ref; archiving without the launcher icon"
+          fi
+          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop "${icon[@]}"
 
       # `gh release upload` uploads to an existing release and fails when the
       # tag has none, so a release deleted mid-run is not silently recreated:

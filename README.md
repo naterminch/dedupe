@@ -139,6 +139,14 @@ a `dedupe.app` bundle on macOS (for the CLI, run or symlink
 `dedupe.app/Contents/MacOS/dedupe`). The GUI never opens a terminal window on any
 platform.
 
+The Linux launcher names its icon as a themed name (`Icon=dedupe`), and a desktop
+looks that up in the icon-theme directories, not next to the `.desktop` file.
+Unpack the archive's `share/` into `~/.local` so the icon lands where it is read:
+
+```
+tar -xzf dedupe-*.tar.gz -C ~/.local share
+```
+
 The macOS app is ad-hoc signed, not notarized, so the first launch is blocked as
 coming from an unidentified developer: open it via right-click → Open (or System
 Settings → Privacy & Security → Open Anyway), or clear the download quarantine with
