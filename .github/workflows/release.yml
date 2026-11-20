@@ -209,10 +209,12 @@ jobs:
       # .desktop launcher with `Terminal=false`: opening the GUI from the
       # desktop never spawns a terminal (the binary itself creates none —
       # only an inherited terminal, i.e. a shell run, is ever shown).
-      # The launcher names its icon (`Icon=dedupe`), so the archive carries
-      # dedupe.png beside it; without the file the entry falls back to the
-      # desktop's generic icon (nsh's packaging guide, "Icons": Linux gets
-      # the icon as `<id>.png`, named by the .desktop).
+      # The entry's `Icon=dedupe` is a themed icon name, not a path: the
+      # Desktop Entry spec resolves a non-absolute name only through the
+      # icon-theme search path (Icon Theme spec), never beside the .desktop.
+      # So the archive carries the icon at the hicolor path that lookup reads,
+      # and README says to unpack share/ into ~/.local. A dispatch can rebuild
+      # a tag that predates the file, so its absence must not fail the run.
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -220,8 +222,15 @@ jobs:
           mkdir -p dist staging
           cp "target/${{ matrix.target }}/release/dedupe" staging/dedupe
           cp assets/dedupe.desktop staging/dedupe.desktop
-          cp assets/icons/dedupe.png staging/dedupe.png
-          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop dedupe.png
+          icon=()
+          if [ -f assets/icons/dedupe.png ]; then
+            mkdir -p staging/share/icons/hicolor/256x256/apps
+            cp assets/icons/dedupe.png staging/share/icons/hicolor/256x256/apps/dedupe.png
+            icon=(share/icons/hicolor/256x256/apps/dedupe.png)
+          else
+            echo "::warning::assets/icons/dedupe.png is absent at this ref; archiving without the launcher icon"
+          fi
+          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop "${icon[@]}"
 
       # `gh release upload` uploads to an existing release and fails when the
       # tag has none, so a release deleted mid-run is not silently recreated:
