@@ -57,6 +57,11 @@ thiserror = "2.0.21"
 # target. `default-features = false` drops the embedded JS runtime (`js`):
 # this app is Rust-only. `shader` keeps the GPU shader views (wgpu): the
 # results list lifts its ink off the paper through one when a clean-up ends.
+# Windows needs `media` on top: nsh 0.6 moved Media Foundation behind it, so
+# without it a playing clip's inline player shows nothing at all (a black
+# box) while the poster, the controls and the rest of the card stay. Linux
+# plays through GTK's media support and macOS through AVFoundation, neither
+# of which has a feature to ask for.
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-platform-linux = { version = "0.6.1", default-features = false, features = ["shader"] }
 
@@ -64,7 +69,7 @@ nsh-platform-linux = { version = "0.6.1", default-features = false, features = [
 nsh-platform-macos = { version = "0.6.1", default-features = false, features = ["shader"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-nsh-platform-windows = { version = "0.6.1", default-features = false, features = ["shader"] }
+nsh-platform-windows = { version = "0.6.1", default-features = false, features = ["shader", "media"] }
 # The direct Win32 calls here and in `src/ui/window_state.rs` (console
 # attach/reopen for CLI runs, the single-instance mutex and the frame
 # sampler). Listed explicitly: nsh-platform-windows enables the graphics
