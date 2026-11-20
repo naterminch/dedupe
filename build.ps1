@@ -37,29 +37,22 @@ if (-not $cargoPath) {
 
 Push-Location $root
 try {
-    # Cargo prints progress on stderr, which PS 5.1 surfaces as noisy error
-    # records, so stderr goes to a log inside the project and is printed only
-    # when the build fails. Real failures are caught via $LASTEXITCODE.
-    # Create target/ first: PowerShell cannot redirect into a missing
-    # directory, and a fresh clone has no target/ yet.
-    $targetDir = Join-Path $root "target"
-    if (-not (Test-Path -LiteralPath $targetDir)) {
-        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+    # The build writes straight to this console, with nothing redirected.
+    # That is what keeps cargo's live progress: given a pipe or a file it
+    # falls back to one plain line per crate. Its bars and "Compiling …"
+    # lines are stderr, so Windows PowerShell 5.1 paints them red; the text
+    # is intact and PowerShell 7 shows them plainly. Only the exit code
+    # decides success, and cargo has already printed why if it failed.
+    $buildArgs = @("build")
+    if (-not $Debug) {
+        $buildArgs += "--release"
     }
-    $errLog = Join-Path $targetDir "build-stderr.log"
-    if ($Debug) {
-        & $cargoPath build 2> $errLog
-    } else {
-        & $cargoPath build --release 2> $errLog
-    }
+    & $cargoPath @buildArgs
     if ($LASTEXITCODE -ne 0) {
-        $log = if (Test-Path -LiteralPath $errLog) { Get-Content $errLog -Raw } else { "" }
-        if ($log) { Write-Host $log }
         throw "cargo build failed with exit code $LASTEXITCODE"
     }
-    Remove-Item -LiteralPath $errLog -ErrorAction SilentlyContinue
 
-    # Copy the built binaries to the project root (never the user profile root).
+    # Copy the built binary to the project root (never the user profile root).
     $rootFull = [System.IO.Path]::GetFullPath($root)
     foreach ($name in @("dedupe")) {
         $source = Join-Path $root "target/$profile/$name.exe"
