@@ -208,6 +208,10 @@ jobs:
       # .desktop launcher with `Terminal=false`: opening the GUI from the
       # desktop never spawns a terminal (the binary itself creates none —
       # only an inherited terminal, i.e. a shell run, is ever shown).
+      # The launcher names its icon (`Icon=dedupe`), so the archive carries
+      # dedupe.png beside it; without the file the entry falls back to the
+      # desktop's generic icon (nsh's packaging guide, "Icons": Linux gets
+      # the icon as `<id>.png`, named by the .desktop).
       - name: Package (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -215,7 +219,8 @@ jobs:
           mkdir -p dist staging
           cp "target/${{ matrix.target }}/release/dedupe" staging/dedupe
           cp assets/dedupe.desktop staging/dedupe.desktop
-          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop
+          cp assets/icons/dedupe.png staging/dedupe.png
+          tar -czf "dist/$name.tar.gz" -C staging dedupe dedupe.desktop dedupe.png
 
       # `gh release upload` uploads to an existing release and fails when the
       # tag has none, so a release deleted mid-run is not silently recreated:
