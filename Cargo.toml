@@ -37,7 +37,12 @@ md-5 = "0.11.0"
 # Native Shell: the GUI is an nsh app written in Rust. `nsh-base` holds the
 # unstyled behavior components; the styled layer lives in `src/ui`.
 nsh-base = { version = "0.6.1", default-features = false }
-nsh-core = "0.6.1"
+# `svg` carries the vector renderer (resvg). Without it nsh 0.6 compiles a
+# stub module that recognizes an SVG and never draws it, which blanks every
+# inline SVG in the UI at once: the rail and row icons, the chevrons, the
+# wordmark. nsh 0.5 drew them either way, and the platform crates' own `svg`
+# feature only forwards to this one.
+nsh-core = { version = "0.6.1", features = ["svg"] }
 rayon = "1.12.0"
 rfd = "0.18.0"
 serde = { version = "1.0.229", features = ["derive"] }
