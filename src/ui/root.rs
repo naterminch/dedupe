@@ -32,6 +32,7 @@ pub fn DedupeApp() -> impl IntoElement {
             when: When::Always,
             repeat: false,
             pass_through: false,
+            for_focus: false,
         },
         |_| dismiss_keyboard(),
     );
@@ -41,6 +42,7 @@ pub fn DedupeApp() -> impl IntoElement {
             when: When::NotEditing,
             repeat: false,
             pass_through: false,
+            for_focus: false,
         },
         |_| actions::escape_leaves_settings(),
     );
