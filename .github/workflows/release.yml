@@ -156,13 +156,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/dedupe" "$app/Contents/MacOS/dedupe"
 
           # Finder/Dock icon, built from the same logo the GUI shows. The logo
-          # is 512px, so the iconset stops at 512x512 (no 512@2x upscale).
+          # is 1024px, so the iconset carries every slot the format defines,
+          # 512x512@2x (1024) included.
           iconset="$RUNNER_TEMP/dedupe.iconset"
           mkdir -p "$iconset"
           for s in 16 32 128 256 512; do
             sips -z $s $s assets/icons/logo.png --out "$iconset/icon_${s}x${s}.png" > /dev/null
             d=$((s * 2))
-            if [ $d -le 512 ]; then
+            if [ $d -le 1024 ]; then
               sips -z $d $d assets/icons/logo.png --out "$iconset/icon_${s}x${s}@2x.png" > /dev/null
             fi
           done
