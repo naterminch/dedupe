@@ -95,16 +95,20 @@ pub fn write_html(
                 ),
             );
             body.push_str(
-                "<table><thead><tr><th>Role</th><th>Path</th><th>Size</th></tr></thead><tbody>",
+                "<table><thead><tr><th>Role</th><th>Path</th><th>Size</th><th>Keep reason</th></tr></thead><tbody>",
             );
             for member in &group.members {
                 let _ = write!(
                     body,
-                    "<tr><td class=\"{}\">{}</td><td class=\"path\">{}</td><td>{}</td></tr>",
+                    "<tr><td class=\"{}\">{}</td><td class=\"path\">{}</td><td>{}</td><td>{}</td></tr>",
                     if member.keep { "keep" } else { "dup" },
                     if member.keep { "KEEP" } else { "DUP" },
                     escape_html(&member.path.to_string_lossy()),
                     human_bytes(member.size),
+                    group
+                        .reason_for(member)
+                        .map(|r| escape_html(&r.to_string()))
+                        .unwrap_or_default(),
                 );
             }
             body.push_str("</tbody></table>");

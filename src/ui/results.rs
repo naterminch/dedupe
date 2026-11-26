@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use nsh_core::prelude::*;
 
-use crate::matching::{Group, GroupMember};
+use crate::matching::{Group, GroupMember, KeepReason};
 use crate::media;
 use crate::modes::mode_title;
 use crate::ui::actions;
@@ -1972,10 +1972,11 @@ fn member_parent(member: &GroupMember) -> String {
         .unwrap_or_default()
 }
 
-/// One member's slot, with its own rebuild signature: its keeper flag, its
-/// tick and its poster frame. Pressing Keep on another member therefore
-/// updates the two cards involved and nothing else — the group keeps its
-/// order, its scroll and its other cards untouched.
+/// One member's slot, with its own rebuild signature: its keeper flag (and,
+/// on the keeper, the group's keep reason), its tick and its poster frame.
+/// Pressing Keep on another member therefore updates the two cards
+/// involved and nothing else — the group keeps its order, its scroll and
+/// its other cards untouched.
 fn member_slot(
     group_pos: usize,
     group_index: usize,
@@ -1986,12 +1987,11 @@ fn member_slot(
     let path = member.path.clone();
     let signature = computed(move || {
         app().with(|s| {
-            let current = s
-                .groups
-                .get(group_pos)
-                .and_then(|g| g.members.get(member_pos));
+            let group = s.groups.get(group_pos);
+            let current = group.and_then(|g| g.members.get(member_pos));
             (
                 current.is_some_and(|m| m.keep),
+                group.zip(current).and_then(|(g, m)| g.reason_for(m)),
                 s.selected.contains(&path),
                 s.posters.get(&path).cloned(),
                 s.playing.as_deref() == Some(path.as_path()),
@@ -2002,33 +2002,19 @@ fn member_slot(
     // a poster landing or a clip playing) soaks the new wash in.
     let shown: Rc<Cell<Option<Decision>>> = Rc::new(Cell::new(None));
     view().child(dynamic(move || {
-        let (keep, checked, poster, playing) = signature.get();
+        let (keep, reason, checked, poster, playing) = signature.get();
         let now = decision(keep, checked);
         let soak = shown.replace(Some(now)).is_some_and(|was| was != now);
+        let mark = Mark {
+            keep,
+            reason,
+            checked,
+            soak,
+        };
         if grid {
-            media_card(
-                group_index,
-                &member,
-                Mark {
-                    keep,
-                    checked,
-                    soak,
-                },
-                poster.as_deref(),
-                playing,
-            )
+            media_card(group_index, &member, mark, poster.as_deref(), playing)
         } else {
-            member_row(
-                group_index,
-                &member,
-                Mark {
-                    keep,
-                    checked,
-                    soak,
-                },
-                poster.as_deref(),
-                playing,
-            )
+            member_row(group_index, &member, mark, poster.as_deref(), playing)
         }
     }))
 }
@@ -2087,11 +2073,12 @@ fn playable_preview(thumb: &Thumb, path: &Path, size: PreviewSize, playing: bool
     }
 }
 
-/// Where one copy stands: the keeper, ticked to go, and whether that has just
-/// changed (its wash soaks in).
+/// Where one copy stands: the keeper (and why), ticked to go, and whether
+/// that has just changed (its wash soaks in).
 #[derive(Clone, Copy)]
 struct Mark {
     keep: bool,
+    reason: Option<KeepReason>,
     checked: bool,
     soak: bool,
 }
@@ -2202,10 +2189,11 @@ fn member_row(
 ///
 /// One verb pair says where every copy stands: the keeper wears "Keeping"
 /// (a badge, not a checkbox — there is no choice to make about the copy
-/// that stays), a ticked copy reads "Delete", an unticked one "Keep too".
-/// The keeper pick is the one action that moves the mark: it makes this
-/// copy the keeper and puts the retiring keeper on the delete list, where
-/// the amber edge and the Delete word show it at once.
+/// that stays) with why it stays beside it, a ticked copy reads "Delete",
+/// an unticked one "Keep too". The keeper pick is the one action that
+/// moves the mark: it makes this copy the keeper and puts the retiring
+/// keeper on the delete list, where the amber edge and the Delete word show
+/// it at once.
 fn member_actions(
     group_index: usize,
     member: &GroupMember,
@@ -2214,6 +2202,7 @@ fn member_actions(
 ) -> View {
     let Mark {
         keep,
+        reason,
         checked,
         soak,
     } = mark;
@@ -2235,8 +2224,15 @@ fn member_actions(
             badge("Protected", BadgeTone::Raised)
                 .tooltip(hint("Inside a locked folder: this copy is never deleted."))
         } else if keep {
-            // The copy the group keeps: a badge, not a checkbox.
-            keeper_badge(soak)
+            // The copy the group keeps: a badge, not a checkbox, and why it
+            // stays held close to it ("Keeping  the others look like
+            // copies"), apart from the size and the rest of the line.
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(space::XS))
+                .child(keeper_badge(soak))
+                .child(caption(reason.map(|r| r.to_string()).unwrap_or_default()))
         } else {
             tick(
                 if checked { "Delete" } else { "Keep too" },

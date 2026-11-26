@@ -538,6 +538,45 @@ fn keep_oldest_prefers_least_recently_modified() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// `photo (1).jpg` sorts before `photo.jpg` byte-wise, but the default rule
+/// keeps the original by name and every report says why.
+#[test]
+fn default_keeps_the_original_name_and_says_why() {
+    let dir = tmpdir("copyname");
+    fs::write(dir.join("photo.jpg"), b"same picture bytes").unwrap();
+    fs::write(dir.join("photo (1).jpg"), b"same picture bytes").unwrap();
+
+    let (out, stdout) = run(&["--json", dir.to_str().unwrap()]);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    let group = &parsed["groups"][0];
+    assert_eq!(group["keep_reason"], "the others look like copies");
+    let members = group["members"].as_array().unwrap();
+    assert!(members[0]["keep"].as_bool().unwrap());
+    assert!(members[0]["path"].as_str().unwrap().ends_with("photo.jpg"));
+
+    let csv_path = dir.join("report.csv");
+    let (out, _) = run(&["--csv", csv_path.to_str().unwrap(), dir.to_str().unwrap()]);
+    assert!(out.status.success());
+    let csv = fs::read_to_string(&csv_path).unwrap();
+    assert!(
+        csv.starts_with("mode,kind,group,path,size,detail,keep_reason\n"),
+        "{csv}"
+    );
+    assert!(
+        csv.lines()
+            .any(|l| l.starts_with("duplicates,keep,")
+                && l.ends_with(",the others look like copies")),
+        "{csv}"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn min_and_max_size_bound_the_scan() {
     let dir = tmpdir("sizes");

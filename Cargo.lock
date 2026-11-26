@@ -690,6 +690,7 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake3",
+ "chrono",
  "clap",
  "console",
  "image",

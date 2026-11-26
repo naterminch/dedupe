@@ -1,7 +1,7 @@
 use super::*;
 use crate::cli::HashAlgo;
 use crate::hashing::HashEngine;
-use crate::matching::{Group, GroupMember};
+use crate::matching::{Group, GroupMember, KeepReason};
 use crate::media::MediaKind;
 use crate::modes::{Finding, FindingGroup};
 use std::fs;
@@ -67,6 +67,7 @@ fn keeper_group(keep_path: PathBuf, dup_path: PathBuf, reference_keeper: bool) -
         hash: hash.clone(),
         media_kind: MediaKind::Other,
         similarity: None,
+        keep_reason: KeepReason::FirstAlphabetically,
         members: vec![keeper, member(dup_path, 15, false, Some(hash))],
     }
 }
@@ -185,6 +186,7 @@ fn delete_duplicates_yes_removes_only_non_keep() {
         hash: hash.clone(),
         media_kind: MediaKind::Other,
         similarity: None,
+        keep_reason: KeepReason::FirstAlphabetically,
         members: vec![
             member(keep.clone(), 15, true, Some(hash.clone())),
             member(dup.clone(), 15, false, Some(hash.clone())),

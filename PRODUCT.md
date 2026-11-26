@@ -60,7 +60,12 @@ chosen.
 - Cleanup scans can delete their findings after a confirmation (duplicate
   folders stay report-only); Photo metadata removes EXIF/XMP from photos.
 - The keep rule (First / Smallest / Newest / Oldest / Best quality) can change
-  after a scan without rescanning.
+  after a scan without rescanning. When the rule ties, the copy that looks like
+  the original stays (`photo.jpg` over `photo (1).jpg`, Pictures over
+  Downloads), then the first by name.
+- Every keeper carries its reason in plain words (in a protected folder,
+  highest resolution, newest, the others look like copies, chosen by you), the
+  same in the GUI and every CLI report.
 - Folders can be marked protected: their copies always win the keep decision
   and are never deleted.
 - FFmpeg is optional. It adds media info, video comparison and audio
@@ -76,10 +81,10 @@ chosen.
   mode.
 - Ways to clean up without losing data: dry run, move-aside, hard links,
   consolidate.
-- Terms used across the UI: **Keeping** (the badge on the copy that stays),
-  **Delete** / **Keep too** (a copy ticked / unticked for deletion),
-  **Reclaimable** (the space a delete frees), **protected** folder,
-  **Consolidate**, cleanup scan / findings.
+- Terms used across the UI: **Keeping** (the badge on the copy that stays,
+  followed by why it stays), **Delete** / **Keep too** (a copy ticked /
+  unticked for deletion), **Reclaimable** (the space a delete frees),
+  **protected** folder, **Consolidate**, cleanup scan / findings.
 - One binary per OS. The GUI never opens a terminal window.
 
 ## Brand Commitments

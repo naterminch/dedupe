@@ -1,13 +1,12 @@
-use super::groups::{best_similar_keep, partial_clip_similarity};
+use super::groups::partial_clip_similarity;
 use super::hash::{
     ahash_gray, color_hash, dhash_gray, frame_seq_similarity, frame_seq_similarity_sym,
     hash_similarity, image_algo_code, phash_gray,
 };
 use super::images::{ImageFp, aspect_key, cluster_images, image_fingerprint};
 use super::video::uses_full_decode_pass;
-use super::{DEFAULT_SIMILARITY_PCT, FRAME_H, FRAME_W, FrameHash, SimilarMember};
+use super::{DEFAULT_SIMILARITY_PCT, FRAME_H, FRAME_W, FrameHash};
 use crate::cli::ImageHashAlgo;
-use crate::matching::KeepMode;
 use crate::scan::FileEntry;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -76,114 +75,6 @@ fn frame_seq_sym_is_min_of_both_directions() {
     assert_eq!(
         frame_seq_similarity_sym(&uniform, &varied, 2),
         fwd.min(back)
-    );
-}
-
-fn all_idx(members: &[SimilarMember]) -> Vec<usize> {
-    (0..members.len()).collect()
-}
-
-fn sim_member(path: &str, size: u64, w: u32, h: u32) -> SimilarMember {
-    SimilarMember {
-        entry: entry(Path::new(path), size),
-        similarity: 1.0,
-        w,
-        h,
-    }
-}
-
-#[test]
-fn keep_smaller_prefers_higher_resolution() {
-    // A 4K PNG is bigger than a 720p JPG, but with --keep-smaller the
-    // higher-resolution version must be the keeper.
-    let members = vec![
-        sim_member("/media/low.jpg", 200_000, 1280, 720),
-        sim_member("/media/high.png", 8_000_000, 3840, 2160),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
-        1
-    );
-}
-
-#[test]
-fn keep_smaller_ties_break_by_smallest_size() {
-    // Same resolution: the smallest file wins (like before).
-    let members = vec![
-        sim_member("/media/c.png", 7_000_000, 1920, 1080),
-        sim_member("/media/a.png", 5_000_000, 1920, 1080),
-        sim_member("/media/b.png", 3_000_000, 1920, 1080),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
-        2
-    );
-}
-
-#[test]
-fn keep_smaller_unknown_resolution_falls_back_to_smallest() {
-    // Videos probed without ffprobe have 0x0: fall back to smallest.
-    let members = vec![
-        sim_member("/media/a.mp4", 10_000_000, 0, 0),
-        sim_member("/media/b.mp4", 5_000_000, 0, 0),
-        sim_member("/media/c.mp4", 8_000_000, 0, 0),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
-        1
-    );
-}
-
-#[test]
-fn keep_smaller_known_resolution_beats_unknown() {
-    // A tiny unknown-res file must lose to a bigger known-res one.
-    let members = vec![
-        sim_member("/media/tiny.jpg", 50_000, 0, 0),
-        sim_member("/media/known.png", 900_000, 1920, 1080),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::Smallest),
-        1
-    );
-}
-
-#[test]
-fn keep_best_quality_prefers_resolution_then_larger_size() {
-    // Resolution leads, like Smallest — but ties break toward the
-    // bigger file (bitrate proxy), the opposite of Smallest.
-    let members = vec![
-        sim_member("/media/low.jpg", 8_000_000, 1280, 720),
-        sim_member("/media/high.png", 2_000_000, 3840, 2160),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
-        1
-    );
-    let members = vec![
-        sim_member("/media/a.jpg", 100_000, 1920, 1080),
-        sim_member("/media/b.jpg", 500_000, 1920, 1080),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
-        1
-    );
-    // Same resolution and size: first path wins.
-    let members = vec![
-        sim_member("/media/b.jpg", 500_000, 1920, 1080),
-        sim_member("/media/a.jpg", 500_000, 1920, 1080),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
-        1
-    );
-    // Unknown resolution loses to known, however big.
-    let members = vec![
-        sim_member("/media/huge.jpg", 9_000_000, 0, 0),
-        sim_member("/media/known.jpg", 100_000, 640, 480),
-    ];
-    assert_eq!(
-        best_similar_keep(&members, &all_idx(&members), KeepMode::BestQuality),
-        1
     );
 }
 

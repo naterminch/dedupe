@@ -17,7 +17,7 @@ use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
 use crate::actions::Disposition;
-use crate::matching::{Group, GroupMember};
+use crate::matching::{Group, GroupMember, KeepReason};
 use crate::media::MediaKind;
 use crate::prefs::ENV_LOCK;
 use crate::ui::actions;
@@ -80,6 +80,7 @@ fn group(index: usize, members: Vec<GroupMember>) -> Group {
         hash: format!("test-hash-{index}"),
         media_kind: MediaKind::Other,
         similarity: None,
+        keep_reason: KeepReason::FirstAlphabetically,
         members,
     }
 }
@@ -413,6 +414,8 @@ fn keeper_picks_move_only_the_highlight() {
             .collect(),
         ..AppState::default()
     };
+    // The pristine copy the similarity floor re-derives the list from.
+    s.base_groups = s.groups.clone();
     let order: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
     actions::set_keeper_in(&mut s, 1, Path::new("c"));
     let after: Vec<PathBuf> = s.groups[0].members.iter().map(|m| m.path.clone()).collect();
@@ -439,6 +442,12 @@ fn keeper_picks_move_only_the_highlight() {
     assert!(s.selected.contains(Path::new("b")));
     assert!(!s.selected.contains(Path::new("c")));
     assert!(s.selected.contains(Path::new("e")));
+    // The group now says the user chose its keeper — in the live list and
+    // in the copy a floor change rebuilds it from — and the other group
+    // keeps the scan's reason.
+    assert_eq!(s.groups[0].keep_reason, KeepReason::ChosenByYou);
+    assert_eq!(s.base_groups[0].keep_reason, KeepReason::ChosenByYou);
+    assert_eq!(s.groups[1].keep_reason, KeepReason::FirstAlphabetically);
 }
 
 /// The confirmation lists every marked copy of every group — it is the last
@@ -562,6 +571,44 @@ fn scan_reports_the_duplicate_groups_it_found() {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("scan produces the duplicate summary");
+}
+
+/// The keeper's tile says why it stays: a scan of `notes.txt` and its
+/// `notes (1).txt` twin keeps the original, as "the others look like
+/// copies", and picking the other copy by hand turns the reason into
+/// "chosen by you".
+#[test]
+fn keeper_tile_shows_why_it_stays() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-reason-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    for name in ["notes.txt", "notes (1).txt"] {
+        std::fs::write(dir.join(name), vec![b'x'; 4096]).expect("fixture file");
+    }
+    let result = (|| {
+        app.wait_for("text:Scan a folder")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Scan a folder", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within(
+            "text:the others look like copies",
+            std::time::Duration::from_secs(60),
+        )?;
+        app.press("text:Keep this one instead")?;
+        app.wait_for("text:chosen by you")
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("the keeper's reason shows, and follows a manual pick");
 }
 
 /// A scan that finds media must render its groups: every member row draws a
