@@ -6,8 +6,11 @@ mod findings;
 mod guard;
 mod hardlink;
 mod quarantine;
+mod restore;
 
 use std::path::PathBuf;
+
+use crate::history;
 
 pub use consolidate::{consolidate_keepers, move_targets, plan_consolidation};
 pub use delete::{delete_duplicates, delete_targets};
@@ -15,6 +18,9 @@ pub use error::ActionError;
 pub use findings::{delete_finding_groups, delete_findings, is_protected, remove_findings};
 pub use hardlink::{can_hardlink, hardlink_duplicates, link_targets};
 pub use quarantine::{move_duplicates, plan_move_aside};
+pub use restore::{
+    CAN_RESTORE_TRASH, PlannedItem, RestoreOutcome, Verdict, plan_restore, restore_run,
+};
 
 #[derive(Debug, Default)]
 pub struct DeletionStats {
@@ -23,6 +29,8 @@ pub struct DeletionStats {
     pub files_skipped: u64,
     /// Removals that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every file that went, as the clean-up history records it.
+    pub items: Vec<history::Item>,
 }
 
 /// Where deleted files go.
@@ -53,6 +61,8 @@ pub struct DeleteOutcome {
     pub skipped: Vec<PathBuf>,
     /// Removals that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every file that went, as the clean-up history records it.
+    pub items: Vec<history::Item>,
     pub bytes_freed: u64,
 }
 
@@ -85,6 +95,8 @@ pub struct MoveOutcome {
     pub skipped: Vec<PathBuf>,
     /// Moves that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every file that moved, as the clean-up history records it.
+    pub items: Vec<history::Item>,
     pub bytes_moved: u64,
 }
 
@@ -111,6 +123,8 @@ pub struct LinkOutcome {
     pub skipped: Vec<PathBuf>,
     /// Links that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every file that was linked, as the clean-up history records it.
+    pub items: Vec<history::Item>,
     pub bytes_saved: u64,
 }
 
@@ -125,6 +139,8 @@ pub struct FindingOutcome {
     pub protected: Vec<PathBuf>,
     /// Removals that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every item that went, as the clean-up history records it.
+    pub items: Vec<history::Item>,
     pub bytes_freed: u64,
 }
 
@@ -135,6 +151,8 @@ pub struct ConsolidateStats {
     pub files_skipped: u64,
     /// Moves that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every keeper that moved, as the clean-up history records it.
+    pub items: Vec<history::Item>,
 }
 
 #[derive(Debug, Default)]
@@ -144,6 +162,8 @@ pub struct FindingDeleteStats {
     pub skipped: u64,
     /// Removals that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every item that went, as the clean-up history records it.
+    pub items: Vec<history::Item>,
 }
 
 #[derive(Debug, Default)]
@@ -153,6 +173,8 @@ pub struct MoveDuplicateStats {
     pub files_skipped: u64,
     /// Moves that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every copy that moved, as the clean-up history records it.
+    pub items: Vec<history::Item>,
 }
 
 #[derive(Debug, Default)]
@@ -162,6 +184,8 @@ pub struct HardlinkStats {
     pub files_skipped: u64,
     /// Links that failed, with the reason, so a front end can explain them.
     pub failures: Vec<(PathBuf, ActionError)>,
+    /// Every copy that was linked, as the clean-up history records it.
+    pub items: Vec<history::Item>,
 }
 
 #[cfg(test)]

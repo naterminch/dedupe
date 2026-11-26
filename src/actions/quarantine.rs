@@ -104,6 +104,7 @@ pub fn move_duplicates(
         stats.bytes_moved += outcome.bytes_moved;
         stats.files_skipped += outcome.skipped.len() as u64;
         stats.failures.extend(outcome.failures);
+        stats.items.extend(outcome.items);
     }
     Ok(stats)
 }

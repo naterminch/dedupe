@@ -7,6 +7,7 @@
 use anyhow::Result;
 use clap::Parser;
 use console::style;
+use dedupe::history::{self, Method, RunKind};
 use dedupe::pipeline::{self, ScanPhase};
 use dedupe::{cache, cancel, cli, report};
 
@@ -36,6 +37,19 @@ fn main() {
         if cli.paths.is_empty() {
             return;
         }
+    }
+    // The history is read and restored without a scan: handle both before
+    // the GUI and before a scan path is required.
+    if cli.history {
+        print_history();
+        return;
+    }
+    if let Some(id) = cli.restore {
+        if let Err(e) = run_restore(&cli, id) {
+            eprintln!("{} {e:#}", style("error:").red().bold());
+            std::process::exit(1);
+        }
+        return;
     }
     // GUI mode: explicit --gui, or the app launched with no arguments at
     // all. Any argument or flag (paths, options, a scan request) means the
@@ -144,6 +158,16 @@ fn run(cli: &cli::Cli) -> Result<()> {
                 );
             }
         }
+        if exif.applied {
+            record_run(
+                cli,
+                &cli.paths,
+                RunKind::StripMetadata,
+                Method::Rewritten,
+                exif.bytes_saved,
+                exif.items,
+            );
+        }
     }
 
     let out = pipeline::run_scan(
@@ -239,6 +263,14 @@ fn run(cli: &cli::Cli) -> Result<()> {
                         dest.display(),
                         moved.files_skipped
                     );
+                    record_run(
+                        cli,
+                        &out.paths,
+                        RunKind::Consolidate,
+                        Method::Moved,
+                        moved.bytes_moved,
+                        moved.items,
+                    );
                 }
             }
             if let Some(dest) = &cli.move_dir {
@@ -279,6 +311,14 @@ fn run(cli: &cli::Cli) -> Result<()> {
                         dest.display(),
                         moved.files_skipped
                     );
+                    record_run(
+                        cli,
+                        &out.paths,
+                        RunKind::MoveAside,
+                        Method::Moved,
+                        moved.bytes_moved,
+                        moved.items,
+                    );
                 }
             } else if cli.hardlink {
                 if cli.dry_run {
@@ -309,6 +349,14 @@ fn run(cli: &cli::Cli) -> Result<()> {
                             .green()
                             .bold(),
                         linked.files_skipped
+                    );
+                    record_run(
+                        cli,
+                        &out.paths,
+                        RunKind::HardLink,
+                        Method::Linked,
+                        linked.bytes_saved,
+                        linked.items,
                     );
                 }
             } else if cli.delete {
@@ -373,6 +421,14 @@ fn run(cli: &cli::Cli) -> Result<()> {
                             .green()
                             .bold(),
                         deletion.files_skipped
+                    );
+                    record_run(
+                        cli,
+                        &out.paths,
+                        RunKind::Duplicates,
+                        disposition.into(),
+                        deletion.bytes_freed,
+                        deletion.items,
                     );
                 }
             }
@@ -496,6 +552,7 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
     let mut deleted = 0u64;
     let mut bytes = 0u64;
     let mut skipped = 0u64;
+    let mut items = Vec::new();
     if !result.findings.is_empty() {
         let stats = dedupe::actions::delete_findings(
             &result.findings,
@@ -507,6 +564,7 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;
+        items.extend(stats.items);
     }
     if !result.groups.is_empty() {
         let stats = dedupe::actions::delete_finding_groups(
@@ -519,6 +577,7 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
         deleted += stats.deleted;
         bytes += stats.bytes_freed;
         skipped += stats.skipped;
+        items.extend(stats.items);
     }
     let verb = if cli.trash {
         "Moved to trash"
@@ -531,6 +590,187 @@ fn run_mode_actions(cli: &cli::Cli, result: &dedupe::modes::ModeResult) -> Resul
         style(deleted).green().bold(),
         style(dedupe::util::human_bytes(bytes)).green().bold(),
         skipped
+    );
+    record_run(
+        cli,
+        &cli.paths,
+        RunKind::Findings,
+        disposition.into(),
+        bytes,
+        items,
+    );
+    Ok(())
+}
+
+/// Record a finished clean-up in the history and say how to put it back.
+/// Nothing is recorded for a run that changed nothing.
+fn record_run(
+    cli: &cli::Cli,
+    roots: &[String],
+    kind: RunKind,
+    method: Method,
+    bytes: u64,
+    items: Vec<history::Item>,
+) {
+    let restorable = items.iter().any(|item| match item.went {
+        history::Went::Moved { .. } => true,
+        history::Went::Trash => dedupe::actions::CAN_RESTORE_TRASH,
+        _ => false,
+    });
+    let Some(id) = history::record(history::NewRun {
+        kind,
+        method,
+        roots,
+        hash_algo: dedupe::hashing::HashEngine::new(cli.hash).name(),
+        bytes,
+        items,
+    }) else {
+        return;
+    };
+    if cli.quiet || cli.json {
+        return;
+    }
+    if restorable {
+        eprintln!(
+            "{} Recorded as clean-up #{id}; `dedupe --restore {id}` puts it back.",
+            style("◆").cyan().bold()
+        );
+    } else {
+        eprintln!(
+            "{} Recorded as clean-up #{id} (see `dedupe --history`).",
+            style("◆").cyan().bold()
+        );
+    }
+}
+
+/// `dedupe --history`: every recorded clean-up, newest first.
+fn print_history() {
+    let runs = history::load();
+    if runs.is_empty() {
+        println!("No clean-ups recorded yet.");
+        return;
+    }
+    for run in &runs {
+        let back = match run.back() {
+            0 => String::new(),
+            n if n == run.items.len() => "; all back".to_string(),
+            n => format!("; {n} of {} back", run.items.len()),
+        };
+        println!(
+            "{} {}  {} ({}{back})",
+            style(format!("#{:<4}", run.id)).cyan().bold(),
+            history::local_stamp(run.when),
+            run.describe(),
+            run.size_label(),
+        );
+        if !run.roots.is_empty() {
+            let roots: Vec<String> = run.roots.iter().map(|r| r.display().to_string()).collect();
+            println!("      {}", style(format!("in {}", roots.join(", "))).dim());
+        }
+    }
+}
+
+/// `dedupe --restore ID [PATH...]`: list what would come back and what
+/// cannot, ask, then put it back.
+fn run_restore(cli: &cli::Cli, id: u64) -> Result<()> {
+    let Some(run) = history::find(id) else {
+        anyhow::bail!("there is no clean-up #{id} in the history (see `dedupe --history`)");
+    };
+    let filters: Vec<std::path::PathBuf> = cli
+        .paths
+        .iter()
+        .map(|p| std::path::absolute(p).unwrap_or_else(|_| std::path::PathBuf::from(p)))
+        .collect();
+    let wanted =
+        |path: &std::path::Path| filters.is_empty() || filters.iter().any(|f| path.starts_with(f));
+    let plan: Vec<_> = dedupe::actions::plan_restore(&run)
+        .into_iter()
+        .filter(|item| wanted(&item.path))
+        .collect();
+    if plan.is_empty() {
+        anyhow::bail!("clean-up #{id} holds none of the given files");
+    }
+    if !cli.quiet {
+        println!(
+            "Clean-up #{id}, {}: {}",
+            history::local_stamp(run.when),
+            run.describe()
+        );
+        for item in &plan {
+            let mark = if item.verdict.comes_back() {
+                style("↩").green().bold()
+            } else {
+                style("–").dim()
+            };
+            println!(
+                "  {mark} {}  {}",
+                item.path.display(),
+                style(item.verdict.says()).dim()
+            );
+        }
+    }
+    let ready: Vec<_> = plan.iter().filter(|i| i.verdict.comes_back()).collect();
+    let bytes: u64 = ready.iter().map(|i| i.size).sum();
+    if ready.is_empty() {
+        println!("{}", style("Nothing here can come back.").dim());
+        return Ok(());
+    }
+    let files = format!(
+        "{} file(s) ({})",
+        ready.len(),
+        dedupe::util::human_bytes(bytes)
+    );
+    if cli.dry_run {
+        println!(
+            "{} Dry run: would put back {files}; nothing was moved.",
+            style("◌").cyan().bold()
+        );
+        return Ok(());
+    }
+    if !cli.yes {
+        use std::io::Write;
+        print!(
+            "{} Put back {files}? {} ",
+            style("?").yellow().bold(),
+            style("[y/N]").dim()
+        );
+        let _ = std::io::stdout().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            println!("Nothing was put back.");
+            return Ok(());
+        }
+    }
+    let Some(outcome) = dedupe::actions::restore_run(id, wanted) else {
+        anyhow::bail!("clean-up #{id} left the history meanwhile");
+    };
+    // What was ready a moment ago and still stayed: the place filled up, the
+    // trash was emptied, or the move failed.
+    let stayed: Vec<_> = outcome
+        .items
+        .iter()
+        .filter(|item| {
+            item.verdict != dedupe::actions::Verdict::Restored
+                && ready.iter().any(|r| r.path == item.path)
+        })
+        .collect();
+    for item in &stayed {
+        eprintln!(
+            "{} {}: {}",
+            style("⚠").yellow(),
+            item.path.display(),
+            style(item.verdict.says()).dim()
+        );
+    }
+    println!(
+        "{} Put back {} file(s) ({}); {} stayed where they are.",
+        style("✔").green().bold(),
+        style(outcome.restored.len()).green().bold(),
+        style(dedupe::util::human_bytes(outcome.bytes))
+            .green()
+            .bold(),
+        stayed.len()
     );
     Ok(())
 }

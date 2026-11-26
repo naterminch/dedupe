@@ -620,7 +620,8 @@ fn layout_toggle() -> View {
 struct DeleteBar {
     count: usize,
     bytes: u64,
-    can_undo: bool,
+    /// Undo's label while this session's last clean-up can come back.
+    undo: Option<&'static str>,
     trash: bool,
     removal: Removal,
     /// The ticked copies a hard link can replace, and their size: only those
@@ -639,7 +640,7 @@ fn delete_bar() -> View {
                 DeleteBar {
                     count,
                     bytes,
-                    can_undo: !s.last_trashed.is_empty(),
+                    undo: actions::undo_label(s),
                     trash: s.trash,
                     removal: s.removal,
                     linkable: if s.removal == Removal::Link {
@@ -655,7 +656,7 @@ fn delete_bar() -> View {
         let DeleteBar {
             count,
             bytes,
-            can_undo,
+            undo,
             trash,
             removal,
             linkable,
@@ -722,11 +723,11 @@ fn delete_bar() -> View {
                 .tooltip(hint("Tick every copy that is not a keeper")),
             );
         }
-        if can_undo && actions::CAN_RESTORE {
+        if let Some(label) = undo {
             row = row.child(icon_secondary_button(
                 icons::UNDO,
-                "Restore from trash",
-                actions::undo_delete,
+                label,
+                actions::undo_last,
             ));
         }
         row
@@ -1677,14 +1678,14 @@ fn cleared_card(cleared: Cleared) -> View {
         .flex_row()
         .gap(px(space::SM))
         .child(primary_button("Scan again", actions::start_scan));
-    let can_restore = matches!(cleared, Cleared::Removed { trashed, .. } if trashed > 0)
-        && actions::CAN_RESTORE
-        && app().with_untracked(|s| !s.last_trashed.is_empty());
-    if can_restore {
+    let undo = matches!(cleared, Cleared::Removed { .. })
+        .then(|| app().with_untracked(actions::undo_label))
+        .flatten();
+    if let Some(label) = undo {
         buttons = buttons.child(icon_secondary_button(
             icons::UNDO,
-            "Restore from trash",
-            actions::undo_delete,
+            label,
+            actions::undo_last,
         ));
     }
     // The clean-up is settled: the seal says so in the margin of the card.
@@ -1771,14 +1772,14 @@ fn findings_cleared_card(done: FindingsDone) -> View {
     };
     let settled = done.went != FindingsWent::Restored;
     let mut card = outcome_card(title, detail, settled);
-    let can_restore = done.went == FindingsWent::Trash
-        && actions::CAN_RESTORE
-        && app().with_untracked(|s| !s.last_trashed.is_empty());
-    if can_restore {
+    let undo = (done.went == FindingsWent::Trash)
+        .then(|| app().with_untracked(actions::undo_label))
+        .flatten();
+    if let Some(label) = undo {
         card = card.child(view().flex_row().child(icon_secondary_button(
             icons::UNDO,
-            "Restore from trash",
-            actions::undo_delete,
+            label,
+            actions::undo_last,
         )));
     }
     card
@@ -2309,7 +2310,8 @@ struct ModeBar {
     act: actions::FindingsAct,
     plan: actions::FindingsPlan,
     trash: bool,
-    can_undo: bool,
+    /// Undo's label while this session's last clean-up can come back.
+    undo: Option<&'static str>,
 }
 
 /// The cleanup workspace's toolbar: the one act its findings allow (delete
@@ -2330,7 +2332,7 @@ fn mode_actions() -> View {
                 }),
                 plan: actions::findings_plan(s),
                 trash: s.trash,
-                can_undo: !s.last_trashed.is_empty(),
+                undo: actions::undo_label(s),
             }
         })
     });
@@ -2339,7 +2341,7 @@ fn mode_actions() -> View {
         act,
         plan,
         trash,
-        can_undo,
+        undo,
     } = bar.get();
     if !shown {
         return view();
@@ -2382,11 +2384,11 @@ fn mode_actions() -> View {
             actions::FindingsAct::ReportOnly => decide,
         };
     }
-    if can_undo && actions::CAN_RESTORE {
+    if let Some(label) = undo {
         decide = decide.child(icon_secondary_button(
             icons::UNDO,
-            "Restore from trash",
-            actions::undo_delete,
+            label,
+            actions::undo_last,
         ));
     }
     view().w_full().child(action_bar(

@@ -15,8 +15,19 @@ fn tmpdir(tag: &str) -> PathBuf {
     dir
 }
 
+/// The binary, recording its clean-ups in a history file of this test run
+/// instead of the user's `~/.dedupe/history.json`.
+fn dedupe() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dedupe"));
+    cmd.env(
+        "DEDUPE_HISTORY",
+        std::env::temp_dir().join(format!("dedupe-e2e-history-{}.json", std::process::id())),
+    );
+    cmd
+}
+
 fn run(args: &[&str]) -> (std::process::Output, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args(args)
         .output()
         .expect("failed to run dedupe binary");
@@ -25,7 +36,7 @@ fn run(args: &[&str]) -> (std::process::Output, String) {
 }
 
 fn run_with_env(args: &[&str], envs: &[(&str, &str)]) -> (std::process::Output, String) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_dedupe"));
+    let mut cmd = dedupe();
     cmd.args(args);
     for (k, v) in envs {
         cmd.env(k, v);
@@ -388,7 +399,7 @@ fn help_flag_prints_usage_and_succeeds() {
     // NOTE: a bare `dedupe` invocation now opens the GUI (needs a display),
     // so it is intentionally not exercised here.
     // `--help` still exits 0 and prints to stdout.
-    let help = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let help = dedupe()
         .arg("--help")
         .output()
         .expect("failed to run dedupe binary");
@@ -397,7 +408,7 @@ fn help_flag_prints_usage_and_succeeds() {
     assert!(help_stdout.contains("Usage:"));
 
     // Unknown flags are still CLI usage errors (exit 2).
-    let bad = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let bad = dedupe()
         .arg("--no-such-flag")
         .output()
         .expect("failed to run dedupe binary");
@@ -438,7 +449,7 @@ fn reference_dir_is_protected_from_deletion() {
     assert!(members[0]["path"].as_str().unwrap().ends_with("z.txt"));
 
     // Deleting removes only the unprotected copy.
-    let del = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let del = dedupe()
         .args([
             "--reference-dir",
             backup.to_str().unwrap(),
@@ -465,7 +476,7 @@ fn dry_run_deletes_nothing() {
     fs::write(dir.join("a.txt"), b"payload").unwrap();
     fs::write(dir.join("b.txt"), b"payload").unwrap();
 
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args(["--delete", "--yes", "--dry-run", dir.to_str().unwrap()])
         .output()
         .expect("failed to run dedupe binary");
@@ -692,7 +703,7 @@ fn invalid_options_fail_with_usage_error() {
     fs::write(dir.join("a.txt"), b"payload").unwrap();
 
     // Similarity outside 0–100 is rejected.
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args(["--similarity", "101", dir.to_str().unwrap()])
         .output()
         .expect("failed to run dedupe binary");
@@ -704,7 +715,7 @@ fn invalid_options_fail_with_usage_error() {
     );
 
     // Conflicting keep flags are rejected.
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args(["--keep-smaller", "--keep-newest", dir.to_str().unwrap()])
         .output()
         .expect("failed to run dedupe binary");
@@ -716,7 +727,7 @@ fn invalid_options_fail_with_usage_error() {
     );
 
     // Unparsable size filter is rejected.
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args(["--min-size", "huge-ish", dir.to_str().unwrap()])
         .output()
         .expect("failed to run dedupe binary");
@@ -823,7 +834,7 @@ fn keep_best_quality_wires_through_and_conflicts() {
     assert!(members[0]["path"].as_str().unwrap().ends_with("a.txt"));
 
     // Conflicts with the other keep modes.
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args([
             "--keep-best-quality",
             "--keep-newest",
@@ -862,7 +873,7 @@ fn consolidate_dry_run_moves_nothing() {
     fs::write(dir.join("b.txt"), b"payload").unwrap();
     let dest = dir.join("vault");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_dedupe"))
+    let out = dedupe()
         .args([
             "--consolidate-dir",
             dest.to_str().unwrap(),
@@ -1055,4 +1066,81 @@ fn clear_cache_removes_cache_files() {
 
     let _ = fs::remove_dir_all(&dir);
     let _ = fs::remove_dir_all(&home);
+}
+
+/// `--move-dir` is recorded, `--history` lists it, and `--restore ID -y`
+/// moves the copies back, except one whose place was taken meanwhile: that
+/// file is never overwritten, and its copy stays in the move folder.
+#[test]
+fn move_dir_run_restores_without_overwriting() {
+    let dir = tmpdir("restore");
+    let photos = dir.join("photos");
+    let aside = dir.join("aside");
+    fs::create_dir_all(&photos).unwrap();
+    let names = ["a.txt", "b.txt", "c.txt"];
+    for name in names {
+        fs::write(photos.join(name), b"same payload").unwrap();
+    }
+    let history = dir.join("history.json");
+    let envs = [("DEDUPE_HISTORY", history.to_str().unwrap())];
+
+    let (out, _) = run_with_env(
+        &[
+            "--move-dir",
+            aside.to_str().unwrap(),
+            "--yes",
+            photos.to_str().unwrap(),
+        ],
+        &envs,
+    );
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let gone: Vec<PathBuf> = names
+        .iter()
+        .map(|name| photos.join(name))
+        .filter(|path| !path.exists())
+        .collect();
+    assert_eq!(gone.len(), 2, "two copies are moved aside");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("dedupe --restore 1"),
+        "the run names its way back"
+    );
+
+    let (_, listed) = run_with_env(&["--history"], &envs);
+    assert!(listed.contains("#1"), "history: {listed}");
+    assert!(listed.contains("Moved 2 duplicate copies to"), "{listed}");
+
+    // Something new now stands where one of the copies was.
+    fs::write(&gone[0], b"a new file").unwrap();
+
+    let (out, _) = run_with_env(&["--restore", "1", "--dry-run"], &envs);
+    assert!(out.status.success());
+    assert!(!gone[1].exists(), "a dry run moves nothing");
+
+    let (out, stdout) = run_with_env(&["--restore", "1", "--yes"], &envs);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("Put back 1 file(s)"), "stdout: {stdout}");
+    assert_eq!(fs::read(&gone[1]).unwrap(), b"same payload");
+    assert_eq!(
+        fs::read(&gone[0]).unwrap(),
+        b"a new file",
+        "never overwritten"
+    );
+    assert_eq!(
+        fs::read_dir(&aside).unwrap().count(),
+        1,
+        "the skipped copy stays aside"
+    );
+
+    let (_, listed) = run_with_env(&["--history"], &envs);
+    assert!(listed.contains("1 of 2 back"), "history: {listed}");
+
+    let _ = fs::remove_dir_all(&dir);
 }

@@ -18,6 +18,7 @@
 
 mod actions;
 mod app;
+mod history;
 mod palette;
 mod results;
 mod root;

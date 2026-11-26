@@ -10,12 +10,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use nsh_core::prelude::*;
 
-use crate::actions::Disposition;
+use crate::actions::{Disposition, PlannedItem};
 use crate::cancel::CancelToken;
 use crate::cli::HashAlgo;
+use crate::history::Run;
 use crate::matching::Group;
 use crate::modes::ModeResult;
 use crate::prefs::GuiPrefs;
@@ -34,11 +36,13 @@ pub(crate) struct FolderEntry {
     pub(crate) reference: bool,
 }
 
-/// Top-level view: main scan/results flow vs the full Settings page.
+/// Top-level view: the scan workspace, the History page or the Settings
+/// page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum AppView {
     #[default]
     Main,
+    History,
     Settings,
 }
 
@@ -123,7 +127,7 @@ pub(crate) enum Cleared {
         freed: u64,
         moved: u64,
     },
-    /// Undo put copies back from the trash; the numbers wait for a scan.
+    /// Undo put copies back where they were; the numbers wait for a scan.
     Restored { files: u64 },
 }
 
@@ -182,8 +186,20 @@ pub(crate) enum FindingsWent {
     Deleted,
     /// Photos rewritten without their metadata; they are still there.
     Stripped,
-    /// Undo put the trashed findings back; the list waits for a scan.
+    /// Undo put the findings back; the list waits for a scan.
     Restored,
+}
+
+/// The open restore confirmation: one recorded run with what a restore would
+/// do with each of its files, read from the disk and the trash when it
+/// opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestoreAsk {
+    pub(crate) run: Run,
+    pub(crate) items: Vec<PlannedItem>,
+    /// Files that could come back but the user chose to leave where they
+    /// are.
+    pub(crate) left_out: HashSet<PathBuf>,
 }
 
 /// Owned report data carried into the async save task.
@@ -299,9 +315,15 @@ pub(crate) struct AppState {
     /// Results layout picked in the toolbar.
     pub(crate) layout: Layout,
     pub(crate) selected: HashSet<PathBuf>,
-    /// Original paths from the last trash run: enables one-step undo.
-    /// Cleared on permanent deletes and after a successful restore.
-    pub(crate) last_trashed: Vec<PathBuf>,
+    /// The clean-up history, newest first: read at start-up and after every
+    /// clean-up and restore. The History page lists it; the Undo buttons put
+    /// back [`AppState::last_run`] from it.
+    pub(crate) history: Arc<Vec<Run>>,
+    /// The run this session's last clean-up recorded. Undo puts it back
+    /// through the history while any of it can still come back.
+    pub(crate) last_run: Option<u64>,
+    /// The restore confirmation, once its plan is read.
+    pub(crate) restore: Option<RestoreAsk>,
     /// What the deletes since the last scan removed. Reset by a scan and by
     /// Back; read by the results page once no group is left.
     pub(crate) cleared: Option<Cleared>,
@@ -324,9 +346,8 @@ pub(crate) struct AppState {
     /// The cleanup findings' confirmation is open (delete, or remove photo
     /// metadata). Nothing changes on disk until it is confirmed.
     pub(crate) confirm_findings: bool,
-    /// A delete, move, link, consolidate or findings act is running. A second
-    /// one waits for it: both would act on the same files, and the later
-    /// outcome would overwrite the earlier one's trash receipt.
+    /// A delete, move, link, consolidate, findings act or restore is running.
+    /// A second one waits for it: both would act on the same files.
     pub(crate) acting: bool,
     /// What the findings' act did since the cleanup scan; reset by a scan.
     pub(crate) findings_done: Option<FindingsDone>,
@@ -407,7 +428,9 @@ impl Default for AppState {
             playing: None,
             layout: Layout::Grid,
             selected: HashSet::new(),
-            last_trashed: Vec::new(),
+            history: Arc::new(Vec::new()),
+            last_run: None,
+            restore: None,
             cleared: None,
             consolidate_dest: None,
             consolidating: false,

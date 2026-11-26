@@ -1,6 +1,7 @@
 use super::guard::prompt;
 use super::{ActionError, Disposition, FindingDeleteStats, FindingOutcome};
 use crate::hashing::HashEngine;
+use crate::history::Item;
 use crate::modes::Finding;
 use crate::modes::FindingGroup;
 use crate::modes::content_hash;
@@ -163,9 +164,14 @@ fn remove_into(
     match remove_verified(finding, expected_hash, disposition, engine) {
         Removal::Removed => {
             outcome.removed.push(finding.path.clone());
-            if !finding.is_dir {
-                outcome.bytes_freed += finding.size;
-            }
+            let size = if finding.is_dir { 0 } else { finding.size };
+            outcome.bytes_freed += size;
+            outcome.items.push(Item::new(
+                finding.path.clone(),
+                size,
+                disposition.into(),
+                expected_hash.map(str::to_string),
+            ));
         }
         Removal::Changed => {
             eprintln!(
@@ -259,6 +265,7 @@ impl FindingDeleteStats {
         self.bytes_freed += outcome.bytes_freed;
         self.skipped += (outcome.skipped.len() + outcome.protected.len()) as u64;
         self.failures.extend(outcome.failures);
+        self.items.extend(outcome.items);
     }
 }
 

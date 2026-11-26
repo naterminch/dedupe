@@ -1,9 +1,10 @@
 use super::fileops::move_file;
 use super::fileops::{Claimed, free_dest_path};
 use super::guard::prompt;
-use super::guard::verify_expected;
+use super::guard::{known_hash, verify_expected};
 use super::{ConsolidateStats, MoveOutcome, MoveTarget, PlannedMove};
 use crate::hashing::HashEngine;
+use crate::history::{Item, Went};
 use crate::matching::{self, Group};
 use crate::util::human_bytes;
 use console::style;
@@ -84,6 +85,14 @@ pub fn move_targets(targets: &[MoveTarget], engine: &HashEngine) -> MoveOutcome 
                 // The planned name may have been taken meanwhile: the file
                 // lands on the next free one, and the outcome says which.
                 Ok(landed) => {
+                    outcome.items.push(Item::new(
+                        target.from.clone(),
+                        target.size,
+                        Went::Moved {
+                            path: landed.clone(),
+                        },
+                        known_hash(&target.expected_hash),
+                    ));
                     outcome.moved.push((target.from.clone(), landed));
                     outcome.bytes_moved += target.size;
                 }
@@ -189,6 +198,7 @@ pub fn consolidate_keepers(
         stats.bytes_moved += outcome.bytes_moved;
         stats.files_skipped += outcome.skipped.len() as u64;
         stats.failures.extend(outcome.failures);
+        stats.items.extend(outcome.items);
     }
 
     stats

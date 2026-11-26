@@ -34,3 +34,9 @@ pub(super) fn verify_expected(
         Ok(hash == expected)
     }
 }
+
+/// `expected` as the clean-up history records it: a content hash, or nothing
+/// for a size or name label, which says nothing about the bytes.
+pub(super) fn known_hash(expected: &str) -> Option<String> {
+    (!label_expected(expected)).then(|| expected.to_string())
+}

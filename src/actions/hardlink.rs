@@ -1,9 +1,10 @@
 use super::fileops::backup_path;
 use super::guard::label_expected;
 use super::guard::prompt;
-use super::guard::verify_expected;
+use super::guard::{known_hash, verify_expected};
 use super::{ActionError, HardlinkStats, LinkOutcome, LinkTarget};
 use crate::hashing::HashEngine;
+use crate::history::{Item, Went};
 use crate::matching::Group;
 use crate::util::human_bytes;
 use console::style;
@@ -94,6 +95,7 @@ pub fn link_targets(targets: &[LinkTarget], engine: &HashEngine) -> LinkOutcome 
             Ok(()) => {
                 outcome.linked.push(target.path.clone());
                 outcome.bytes_saved += target.size;
+                outcome.items.push(linked_item(target));
             }
             // Linked, but the old copy is still on disk: the path is done
             // (it is the keeper's file now), the space is not.
@@ -105,6 +107,7 @@ pub fn link_targets(targets: &[LinkTarget], engine: &HashEngine) -> LinkOutcome 
                     style(err.to_string()).dim()
                 );
                 outcome.linked.push(target.path.clone());
+                outcome.items.push(linked_item(target));
                 outcome.failures.push((target.path.clone(), err));
             }
             Err(err) => {
@@ -205,6 +208,19 @@ fn replace_with_link(target: &LinkTarget) -> Result<(), ActionError> {
     }
 }
 
+/// A replaced copy as the clean-up history records it: what it was, and the
+/// keeper its path now shares.
+fn linked_item(target: &LinkTarget) -> Item {
+    Item::new(
+        target.path.clone(),
+        target.size,
+        Went::Linked {
+            keeper: target.keeper.clone(),
+        },
+        known_hash(&target.expected_hash),
+    )
+}
+
 /// Replace every deletable member of each byte-identical group with a hard
 /// link to the group's keeper (see [`link_targets`]).
 ///
@@ -283,6 +299,7 @@ pub fn hardlink_duplicates(groups: &[Group], engine: &HashEngine, yes: bool) -> 
         stats.bytes_saved += outcome.bytes_saved;
         stats.files_skipped += outcome.skipped.len() as u64;
         stats.failures.extend(outcome.failures);
+        stats.items.extend(outcome.items);
     }
     stats
 }

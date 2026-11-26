@@ -61,6 +61,19 @@ Cleanup scans (empty files, temp files, …) list their findings with a
 folders stay report-only. **Photo metadata** lists JPEG and PNG photos that
 carry EXIF or XMP data and removes it after a confirmation, like `--strip-exif`.
 
+**History** (the clock on the rail) lists every clean-up dedupe has run —
+deletes, moves, hard links, Consolidate and metadata removal, from the app and
+from the command line — newest first, with when it happened, what it did, how
+much space it took and what is already back. **Put back…** opens a
+confirmation that lists, file by file, what comes back and what cannot (and
+why); a file can be left out of it. Trashed files come back from the trash
+(Windows and Linux; on macOS the list says to use the Trash itself), moved and
+consolidated ones from their folder. Nothing is ever overwritten: a file whose
+place is taken now, or that is gone from the trash or its folder, stays where
+it is. Files deleted for good, hard links and removed metadata are listed as
+not restorable. Right after a clean-up, **Restore from trash** / **Move back**
+on the results page puts that clean-up back the same way.
+
 Folders can be marked as **protected**: their copies win the keep decision and
 are never deleted, whatever the scan is looking for. The keep rule (First / Smallest / Newest /
 Oldest / Best quality) is chosen on **New scan** and applies to the next scan; a
@@ -89,7 +102,14 @@ dedupe ~/downloads --find empty-dirs -D --trash -y  # cleanup scan
 dedupe ~/music --find music --music-by content      # needs FFmpeg
 dedupe ~/photos --match fuzzy --fuzzy-threshold 90
 dedupe ~/photos --csv report.csv --html report.html
+dedupe --history                              # every clean-up, with its ID
+dedupe --restore 12 --dry-run                 # what would come back, and what cannot
+dedupe --restore 12 -y                        # put clean-up #12 back
+dedupe --restore 12 ~/Photos/2019 -y          # only its files under that folder
 ```
+
+Every run that changes files prints its clean-up number; `--history` lists
+them all.
 
 `--delete` on its own removes files permanently; add `--trash`, or leave out `-y`
 to be asked before anything goes.
@@ -107,6 +127,7 @@ Useful flags:
 | `--reference-dir` | Never delete anything inside this folder (repeatable); scan it too to use it as a matching reference |
 | `--jobs N` | Worker threads (`0` = all but one core) |
 | `--json` / `--csv` / `--html` | Machine-readable, spreadsheet or shareable report |
+| `--history` / `--restore ID` | List past clean-ups; put one back (asks first unless `-y`, `--dry-run` only lists) |
 
 Every report says why each group's keeper stays, in the desktop app's words:
 the terminal report on the keeper's line, `keep_reason` on each JSON group, a
@@ -127,6 +148,10 @@ column in HTML.
   they can be restored, instead of removing them outright.
 - `--dry-run`, `--move-dir` and `--hardlink` give you ways to clean up without
   losing anything.
+- Every clean-up is recorded in `~/.dedupe/history.json` (the newest 200).
+  `--history` and the **History** page list them, and `--restore ID` or
+  **Put back…** returns what can still come back — never over a file that is
+  there now.
 - Re-scans are fast: unchanged files are skipped using the size + mtime caches in
   `~/.dedupe/`. `--no-cache` bypasses them without refreshing them;
   `--clear-cache` wipes them.
