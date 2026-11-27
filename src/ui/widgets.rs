@@ -13,13 +13,14 @@ use std::time::Duration;
 /// The item of an [`option_select`] list: features build their lists from it.
 pub(crate) use nsh_base::SelectItem;
 use nsh_base::{
-    ButtonElement, button, checkbox, collapsible, dialog, number_input, progress, radio,
-    radio_group, select, switch, tab, tabs, toggle, toggle_group, toolbar, toolbar_group, tooltip,
+    ButtonElement, SliderValue, button, checkbox, collapsible, dialog, number_input, progress,
+    radio, radio_group, select, slider, switch, tab, tabs, toggle, toggle_group, toolbar,
+    toolbar_group, tooltip,
 };
 use nsh_core::AccessibilityState;
 use nsh_core::element::{
-    BorderCurve, ImageSrc, Motion, MotionPreset, StyleRefinement, input, shader_transition, svg,
-    video,
+    BorderCurve, ImageSrc, Motion, MotionPreset, StyleRefinement, Video, input, shader_transition,
+    svg, video,
 };
 use nsh_core::prelude::*;
 use nsh_core::shader::{Shader, TransitionKey, UniformValue};
@@ -626,6 +627,9 @@ pub(crate) mod icons {
     pub(crate) const LOCK: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5\" y=\"11\" width=\"14\" height=\"9\" rx=\"2\"/><path d=\"M8 11V8a4 4 0 0 1 8 0v3\"/></svg>";
     pub(crate) const CHEVRON_DOWN: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m6 9 6 6 6-6\"/></svg>";
     pub(crate) const ARROW_LEFT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M19 12H5\"/><path d=\"m11 18-6-6 6-6\"/></svg>";
+    pub(crate) const ARROW_RIGHT: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 12h14\"/><path d=\"m13 6 6 6-6 6\"/></svg>";
+    pub(crate) const MINUS: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M5 12h14\"/></svg>";
+    pub(crate) const PAUSE: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"6.5\" y=\"5.5\" width=\"4\" height=\"13\" rx=\"1\" fill=\"currentColor\" stroke=\"none\"/><rect x=\"13.5\" y=\"5.5\" width=\"4\" height=\"13\" rx=\"1\" fill=\"currentColor\" stroke=\"none\"/></svg>";
 }
 
 /// The app's own mark, embedded in the binary: a single-file install has no
@@ -1362,21 +1366,34 @@ pub(crate) enum Decision {
 /// the edge and the badge carry the hue, so a group of five reads as five
 /// tiles with two marks, not five coloured blocks.
 pub(crate) fn tile(decision: Decision) -> View {
+    tile_surface().border_color(decision_edge(decision))
+}
+
+/// [`tile`] whose edge follows a decision that changes while it stays on
+/// screen: a compare pane keeps its picture mounted while the keeper moves.
+pub(crate) fn live_tile(decision: impl Fn() -> Decision + 'static) -> View {
+    tile_surface().border_color(move || color(decision_edge(decision())))
+}
+
+fn tile_surface() -> View {
     view()
         .p(px(space::SM))
         .bg(colors::PANE)
         .rounded(px(radius::CARD))
         .border_curve(BorderCurve::Continuous)
         .border_1()
-        .border_color(match decision {
-            Decision::Keep => colors::KEEP,
-            Decision::Delete => colors::SELECT,
-            Decision::Undecided => colors::PANE,
-        })
         // Picking the keeper or ticking a copy changes only the edge: the
         // change crosses over instead of snapping.
         .transition_colors()
         .duration(motion(timing::FAST))
+}
+
+fn decision_edge(decision: Decision) -> AdaptiveColor {
+    match decision {
+        Decision::Keep => colors::KEEP,
+        Decision::Delete => colors::SELECT,
+        Decision::Undecided => colors::PANE,
+    }
 }
 
 /// The tick's box: a caption's height, its corner a quarter of its side.
@@ -1614,42 +1631,169 @@ pub(crate) fn video_player(source: String) -> impl IntoElement {
         .controls(false)
 }
 
+/// The window a compared copy is seen through: the inset surface at its
+/// corner, clipping the picture as it zooms and pans. Fills what its pane
+/// leaves.
+pub(crate) fn viewer_frame() -> View {
+    view()
+        .relative()
+        .flex_1()
+        .min_h(px(0.0))
+        .w_full()
+        .overflow_hidden()
+        .rounded(px(radius::INSET))
+        .bg(colors::INSET)
+}
+
+/// A picture inside a [`viewer_frame`], laid out at `box_w` × `box_h`
+/// points (one picture pixel per device pixel, so NSH decodes it at full
+/// resolution once) and placed by a scale and a shift that follow the
+/// shared zoom frame by frame without a relayout or a reload. It takes no
+/// pointer: the frame around it hears the wheel and the drag.
+///
+/// `glide` is how long a change of zoom takes, read as it happens: a button
+/// or a key glides ([`timing::BASE`]), while the wheel and a drag pass 0 so
+/// the picture stays under the pointer. Reduce-motion lands every change at
+/// once.
+pub(crate) fn viewer_image(
+    source: String,
+    (box_w, box_h): (f32, f32),
+    scale: impl Fn() -> f32 + 'static,
+    (x, y): (impl Fn() -> f32 + 'static, impl Fn() -> f32 + 'static),
+    glide: impl Fn() -> bool + Copy + 'static,
+) -> View {
+    let duration = move || {
+        if glide() && !reduce_motion() {
+            timing::BASE
+        } else {
+            0.0
+        }
+    };
+    view()
+        .absolute()
+        .top(px(0.0))
+        .left(px(0.0))
+        .pointer_events(PointerEvents::None)
+        .translate_x(move || DefiniteLength::from(px(x())))
+        .translate_y(move || DefiniteLength::from(px(y())))
+        .transition_transform()
+        .duration(duration)
+        .ease_out()
+        .child(
+            image(source)
+                .w(px(box_w))
+                .h(px(box_h))
+                .object_fit(ResizeMode::Stretch)
+                .origin_top_left()
+                .scale(scale)
+                .transition_transform()
+                .duration(duration)
+                .ease_out(),
+        )
+}
+
+/// A clip in a [`viewer_frame`] that plays in step with its neighbour: muted
+/// (two soundtracks at once would be noise) and without nsh's control bar,
+/// for the reason [`video_player`] gives; the compare view's own transport
+/// plays, pauses and seeks both.
+pub(crate) fn synced_player(source: String) -> Video {
+    video(source).w_full().h_full().muted(true).controls(false)
+}
+
+/// The scrubber under compared clips: a thin ink rail filled up to the
+/// playhead, a round thumb the pointer or the arrow keys move.
+pub(crate) fn scrubber(
+    label: &'static str,
+    value: impl Fn() -> f64 + 'static,
+    max: impl Fn() -> f64 + 'static,
+    on_change: impl Fn(f64) + 'static,
+) -> impl IntoElement {
+    slider()
+        .accessibility_label(label)
+        .min(0.0)
+        .max(move || max().max(0.001))
+        .step(0.0)
+        .value(move || Some(SliderValue::from(value())))
+        .on_change(move |v: &SliderValue| on_change(v.end()))
+        .flex_1()
+        .min_w(px(SCRUBBER_MIN_W))
+        .track_style(|s| s.h(px(size::CONTROL)).w_full().justify_center())
+        .indicator_style(|s| {
+            s.h(px(PROGRESS_H))
+                .w_full()
+                .rounded(px(PROGRESS_H / 2.0))
+                .bg(colors::INSET)
+        })
+        .range_style(|s| s.rounded(px(PROGRESS_H / 2.0)).bg(colors::PRIMARY))
+        .thumb_style(|s| {
+            s.w(px(SCRUBBER_THUMB))
+                .h(px(SCRUBBER_THUMB))
+                .rounded_full()
+                .bg(colors::PRIMARY)
+                .border_2()
+                .border_color(colors::CARD)
+                // Drawn only while the keyboard has the thumb (the class).
+                .outline_color(colors::ACCENT)
+        })
+        .thumb_class(
+            "transition-transform hover:scale-110 active:scale-110 focus-visible:outline-2",
+        )
+}
+
+/// The scrubber's thumb, and the narrowest it gets beside its buttons.
+const SCRUBBER_THUMB: f32 = 14.0;
+const SCRUBBER_MIN_W: f32 = 160.0;
+
 /// A disclosure card: the whole header is the trigger (one large target
 /// instead of a 16 pt chevron), it reports its expanded state to screen
 /// readers, and the body springs open and shut. The card's 4 pt inset puts
 /// the header's hover on a concentric corner.
+///
+/// `accessory` is an action at the header's far end (a group's Compare):
+/// beside the trigger, not inside it, so it is its own button and pressing
+/// it never folds the card.
 pub(crate) fn disclosure(
     open: bool,
     on_toggle: impl Fn() + 'static,
     header: impl IntoElement + 'static,
+    accessory: Option<View>,
     body: View,
 ) -> View {
+    let trigger = view()
+        .role(AccessibilityRole::Button)
+        .accessibility_state(move || AccessibilityState {
+            expanded: Some(open),
+            ..AccessibilityState::default()
+        })
+        .on_press(on_toggle)
+        .min_w(px(0.0))
+        .flex_row()
+        .items_center()
+        .gap(px(space::SM))
+        .p(px(space::SM))
+        .rounded(px(radius::INSET))
+        .transition_colors()
+        .duration(motion(timing::FAST))
+        .hover(|s| s.bg(colors::PANE))
+        .active(|s| s.bg(colors::ELEVATED))
+        .focus_visible(focus_ring)
+        .child(chevron(open))
+        .child(header);
+    let head = match accessory {
+        Some(action) => view()
+            .w_full()
+            .flex_row()
+            .items_center()
+            .gap(px(space::XS))
+            .child(trigger.flex_1())
+            .child(action.flex_shrink_0().pr(px(space::XS))),
+        None => trigger.w_full(),
+    };
     card().p(px(space::XS)).child(
         collapsible()
             .open(open)
             .reveal(true)
-            .child(
-                view()
-                    .role(AccessibilityRole::Button)
-                    .accessibility_state(move || AccessibilityState {
-                        expanded: Some(open),
-                        ..AccessibilityState::default()
-                    })
-                    .on_press(on_toggle)
-                    .w_full()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(space::SM))
-                    .p(px(space::SM))
-                    .rounded(px(radius::INSET))
-                    .transition_colors()
-                    .duration(motion(timing::FAST))
-                    .hover(|s| s.bg(colors::PANE))
-                    .active(|s| s.bg(colors::ELEVATED))
-                    .focus_visible(focus_ring)
-                    .child(chevron(open))
-                    .child(header),
-            )
+            .child(head)
             .content(body.px(px(space::SM)).pb(px(space::SM))),
     )
 }
@@ -1691,9 +1835,9 @@ fn selection(active: bool) -> (AdaptiveColor, AdaptiveColor, AdaptiveColor) {
 }
 
 /// The label of a labelled segment.
-fn segment_label(label: &'static str, active: bool) -> Text {
+fn segment_label(label: impl Into<SharedString>, active: bool) -> Text {
     let (_, _, ink) = selection(active);
-    text(label)
+    text(label.into())
         .text_size(px(text::BODY))
         .font_weight(FontWeight::MEDIUM)
         .text_color(ink)
@@ -1705,6 +1849,16 @@ fn segment_label(label: &'static str, active: bool) -> Text {
 /// set with nothing picked.
 pub(crate) fn segmented<const N: usize>(
     labels: [&'static str; N],
+    selected: usize,
+    on_pick: impl Fn(usize) + Clone + 'static,
+) -> View {
+    segmented_names(labels.map(SharedString::from).to_vec(), selected, on_pick)
+}
+
+/// [`segmented`] over names known only at run time: the copies of a group
+/// in the compare view.
+pub(crate) fn segmented_names(
+    labels: Vec<SharedString>,
     selected: usize,
     on_pick: impl Fn(usize) + Clone + 'static,
 ) -> View {
@@ -1721,7 +1875,7 @@ pub(crate) fn segmented<const N: usize>(
                         pick(index);
                     }
                 })
-                .accessibility_label(label)
+                .accessibility_label(label.clone())
                 .flex_row()
                 .items_center()
                 .justify_center()
@@ -2293,6 +2447,30 @@ pub(crate) fn alert_dialog(
                         .child(panel),
                 ),
         )
+}
+
+/// A view that takes the whole window for a while (the compare view): nsh's
+/// dialog layer, so the focus moves in, Escape arrives as `on_cancel` and
+/// screen readers hear a dialog named `label`; the paper is the window's own
+/// ground, so it reads as another page, not as a box on top. It fades in
+/// and out in place: a whole page sliding up would carry the work with it.
+pub(crate) fn window_sheet(
+    label: &'static str,
+    on_cancel: fn(),
+    content: impl IntoElement + 'static,
+) -> View {
+    view().child(
+        dialog()
+            .animation(ModalAnimation::Fade)
+            .label(label)
+            .on_cancel(on_cancel)
+            .child(
+                overlay()
+                    .inset_0()
+                    .flex_col()
+                    .child(ground().flex_col().flex_1().w_full().child(content)),
+            ),
+    )
 }
 
 /// One choice out of `items`, as nsh's Select: nsh owns the behaviour (the

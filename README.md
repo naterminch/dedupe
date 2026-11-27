@@ -45,6 +45,18 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
    that stays; **Keep this one instead** swaps the keeper (the retiring keeper
    joins the delete list, one untick takes it back), and the reason then reads
    "chosen by you".
+   A photo or video group also has **Compare**: the copies open side by side
+   over the window, the keeper on the left (a larger group pages its other
+   copies on the right). Photos zoom and pan together — wheel, drag, `+`/`-`,
+   **Fit** (`0`) and **100%** (`1`) — so the same spot of each copy is in view;
+   clips play, pause and seek together. A table underneath lists each copy's
+   picture size, file size, format, length, date taken, camera, modified
+   date, similarity and folder, sets what differs in ink and names the copy
+   with **More detail** (or the **Longer** clip). **Keep this one instead** and
+   the Delete / Keep too tick work there too, with the group's Reclaimable
+   figure following them. Left and Right step to the previous and next group,
+   Esc goes back. Compare is a way of looking, so it has no CLI flag: every
+   decision it makes is one the list (and `--delete`'s per-group review) makes.
 3. **Delete** follows your Trash setting: with it on the ticked copies go to the
    system trash, with it off they are deleted permanently (the button and the
    dialog both say which). The dialog lists every group and file that will go

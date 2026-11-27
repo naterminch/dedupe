@@ -36,7 +36,7 @@ const KEEP_MODES: [&str; 5] = ["First", "Smallest", "Newest", "Oldest", "Best"];
 
 /// Photo extensions the image element decodes. Formats it cannot (HEIC, SVG,
 /// ICO, TIFF) keep the text-only row rather than a broken box.
-const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
+pub(crate) const THUMB_EXTS: [&str; 6] = ["jpg", "jpeg", "png", "gif", "bmp", "webp"];
 
 /// Extensions read as documents and as archives: only to choose a group's
 /// kind tag, so a miss reads as a plain "File", never as a wrong action.
@@ -49,7 +49,7 @@ const ARCHIVE_EXTS: [&str; 13] = [
 ];
 
 /// What sort of file a path is, for its kind tag and its preview's dye.
-fn file_kind(path: &Path) -> Kind {
+pub(crate) fn file_kind(path: &Path) -> Kind {
     match media::classify(path) {
         media::MediaKind::Image => return Kind::Photo,
         media::MediaKind::Video => return Kind::Video,
@@ -73,7 +73,7 @@ fn file_kind(path: &Path) -> Kind {
 }
 
 /// The word on a file kind's tag.
-fn kind_label(kind: Kind) -> &'static str {
+pub(crate) fn kind_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Photo => "Photo",
         Kind::Video => "Video",
@@ -435,7 +435,7 @@ const FIGURE_COUNT_MS: f32 = 700.0;
 
 /// The screen's answer, labelled above it: the largest number on the
 /// screen, right-aligned with the toolbar's far edge.
-fn answer_figure(label: &'static str, value: impl Fn() -> String + 'static) -> View {
+pub(crate) fn answer_figure(label: &'static str, value: impl Fn() -> String + 'static) -> View {
     view()
         .flex_col()
         .items_end()
@@ -1808,7 +1808,7 @@ fn card_step() -> f32 {
 /// The group's own line: how many copies, how big each one is, and how close
 /// they are when the group came from the similarity pass. No group number —
 /// the reader acts on files, not on row ids.
-fn group_header(group: &Group) -> String {
+pub(crate) fn group_header(group: &Group) -> String {
     let copies = group.members.len();
     let first = group.members.first().map(|m| m.size).unwrap_or(0);
     let size = if group.members.iter().all(|m| m.size == first) {
@@ -1948,16 +1948,27 @@ fn group_card(position: usize, group: &Group, expanded: bool, layout: Layout) ->
             }
             row
         }));
+    // Photos and clips can be looked at side by side; the action sits beside
+    // the header, not inside it, so pressing it never folds the card.
+    let compare =
+        actions::comparable(group).then(|| {
+            view()
+            .child(quiet_button("Compare", move || actions::open_compare(index)))
+            .tooltip(hint(
+                "Look at the copies side by side, zoomed together, before choosing which one stays",
+            ))
+        });
     disclosure(
         expanded,
         move || actions::toggle_expanded(index),
         header,
+        compare,
         body,
     )
 }
 
 /// File name for a member, or the whole path when the file has none.
-fn member_name(member: &GroupMember) -> String {
+pub(crate) fn member_name(member: &GroupMember) -> String {
     member.path.file_name().map_or_else(
         || member.path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -2026,7 +2037,7 @@ fn is_grid_preview(thumb: &Thumb) -> bool {
 }
 
 /// What one copy's tile says about it.
-fn decision(keep: bool, checked: bool) -> Decision {
+pub(crate) fn decision(keep: bool, checked: bool) -> Decision {
     if keep {
         Decision::Keep
     } else if checked {
@@ -2077,11 +2088,11 @@ fn playable_preview(thumb: &Thumb, path: &Path, size: PreviewSize, playing: bool
 /// Where one copy stands: the keeper (and why), ticked to go, and whether
 /// that has just changed (its wash soaks in).
 #[derive(Clone, Copy)]
-struct Mark {
-    keep: bool,
-    reason: Option<KeepReason>,
-    checked: bool,
-    soak: bool,
+pub(crate) struct Mark {
+    pub(crate) keep: bool,
+    pub(crate) reason: Option<KeepReason>,
+    pub(crate) checked: bool,
+    pub(crate) soak: bool,
 }
 
 /// One copy in the grid layout: large preview, then the name, its folder and
@@ -2201,16 +2212,10 @@ fn member_actions(
     mark: Mark,
     play: Option<bool>,
 ) -> View {
-    let Mark {
-        keep,
-        reason,
-        checked,
-        soak,
-    } = mark;
+    let keep = mark.keep;
     let similarity = member
         .similarity
         .map(|s| format!("{:.0}% similar", s * 100.0));
-    let toggle_path = member.path.clone();
     let keep_path = member.path.clone();
     let play_path = member.path.clone();
     let playing = play.unwrap_or(false);
@@ -2219,29 +2224,7 @@ fn member_actions(
         .flex_wrap()
         .items_center()
         .gap(px(space::SM))
-        .child(if member.reference && !keep {
-            // A locked copy is never deleted, so it has no tick to give: a
-            // disabled checkbox would promise a choice that does not exist.
-            badge("Protected", BadgeTone::Raised)
-                .tooltip(hint("Inside a locked folder: this copy is never deleted."))
-        } else if keep {
-            // The copy the group keeps: a badge, not a checkbox, and why it
-            // stays held close to it ("Keeping  the others look like
-            // copies"), apart from the size and the rest of the line.
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(space::XS))
-                .child(keeper_badge(soak))
-                .child(caption(reason.map(|r| r.to_string()).unwrap_or_default()))
-        } else {
-            tick(
-                if checked { "Delete" } else { "Keep too" },
-                decision(keep, checked),
-                soak,
-                move || actions::toggle_selected(&toggle_path),
-            )
-        })
+        .child(decision_mark(member, mark))
         .child(caption(util::human_bytes(member.size)).tabular_nums())
         .child(when(similarity.is_some(), move || {
             caption(similarity.clone().unwrap_or_default())
@@ -2263,15 +2246,58 @@ fn member_actions(
             })
         }))
         .child(when(!keep, move || {
-            let path = keep_path.clone();
-            view()
-                .child(quiet_button("Keep this one instead", move || {
-                    actions::set_keeper(group_index, &path);
-                }))
-                .tooltip(hint(
-                    "Keep this copy instead of the current keeper; the retiring keeper is marked to delete",
-                ))
+            keep_instead_button(group_index, &keep_path)
         }))
+}
+
+/// Where one copy stands, as the control that changes it: the keeper's
+/// "Keeping" badge, a protected copy's "Protected", or the tick that reads
+/// "Delete" / "Keep too". The results list and the compare view both show
+/// it, so a copy reads the same wherever it is decided.
+pub(crate) fn decision_mark(member: &GroupMember, mark: Mark) -> View {
+    let Mark {
+        keep,
+        reason,
+        checked,
+        soak,
+    } = mark;
+    let toggle_path = member.path.clone();
+    if member.reference && !keep {
+        // A locked copy is never deleted, so it has no tick to give: a
+        // disabled checkbox would promise a choice that does not exist.
+        badge("Protected", BadgeTone::Raised)
+            .tooltip(hint("Inside a locked folder: this copy is never deleted."))
+    } else if keep {
+        // The copy the group keeps: a badge, not a checkbox, and why it
+        // stays held close to it ("Keeping  the others look like
+        // copies"), apart from the size and the rest of the line.
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(space::XS))
+            .child(keeper_badge(soak))
+            .child(caption(reason.map(|r| r.to_string()).unwrap_or_default()))
+    } else {
+        tick(
+            if checked { "Delete" } else { "Keep too" },
+            decision(keep, checked),
+            soak,
+            move || actions::toggle_selected(&toggle_path),
+        )
+    }
+}
+
+/// "Keep this one instead": makes this copy the group's keeper and puts the
+/// retiring keeper on the delete list.
+pub(crate) fn keep_instead_button(group_index: usize, path: &Path) -> View {
+    let path = path.to_path_buf();
+    view()
+        .child(quiet_button("Keep this one instead", move || {
+            actions::set_keeper(group_index, &path);
+        }))
+        .tooltip(hint(
+            "Keep this copy instead of the current keeper; the retiring keeper is marked to delete",
+        ))
 }
 
 fn mode_workspace() -> View {

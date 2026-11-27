@@ -1,4 +1,4 @@
-use super::exif::{strip_jpeg_metadata, strip_png_metadata};
+use super::exif::{camera_and_taken, strip_jpeg_metadata, strip_png_metadata};
 use super::extensions::bad_name_reason;
 use super::findings::temp_reason;
 use super::music::normalize_tag;
@@ -470,4 +470,49 @@ fn strip_exif_leaves_reference_dir_photos_alone() {
     );
 
     let _ = fs::remove_dir_all(&root);
+}
+
+/// The compare view's camera and date taken come from the EXIF block: IFD0's
+/// make and model (one name when the model already starts with the make)
+/// and the EXIF sub-IFD's original date. A block that is not TIFF reads as
+/// nothing, never as an error.
+#[test]
+fn exif_block_yields_camera_and_date_taken() {
+    fn entry(out: &mut Vec<u8>, tag: u16, kind: u16, count: u32, value: u32) {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    let make = b"Canon\0";
+    let model = b"Canon EOS R6\0";
+    let date = b"2024:05:01 12:34:56\0";
+    // Header (8) + IFD0 (2 + 3 entries + next) = 50, then the values.
+    let make_at = 50u32;
+    let model_at = make_at + make.len() as u32;
+    let sub_at = model_at + model.len() as u32;
+    let date_at = sub_at + 2 + 12 + 4;
+    let mut tiff = b"Exif\0\0II*\0".to_vec();
+    tiff.extend_from_slice(&8u32.to_le_bytes());
+    let mut ifd = Vec::new();
+    ifd.extend_from_slice(&3u16.to_le_bytes());
+    entry(&mut ifd, 0x010F, 2, make.len() as u32, make_at);
+    entry(&mut ifd, 0x0110, 2, model.len() as u32, model_at);
+    entry(&mut ifd, 0x8769, 4, 1, sub_at);
+    ifd.extend_from_slice(&0u32.to_le_bytes());
+    ifd.extend_from_slice(make);
+    ifd.extend_from_slice(model);
+    ifd.extend_from_slice(&1u16.to_le_bytes());
+    entry(&mut ifd, 0x9003, 2, date.len() as u32, date_at);
+    ifd.extend_from_slice(&0u32.to_le_bytes());
+    ifd.extend_from_slice(date);
+    tiff.extend_from_slice(&ifd);
+    assert_eq!(
+        camera_and_taken(&tiff),
+        (
+            Some("Canon EOS R6".to_string()),
+            Some("2024:05:01 12:34:56".to_string())
+        )
+    );
+    assert_eq!(camera_and_taken(b"not a tiff at all"), (None, None));
 }

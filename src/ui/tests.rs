@@ -1072,3 +1072,203 @@ fn report_format_follows_the_chosen_extension() {
     assert_eq!(report_format(Path::new("r.json")), ReportFormat::Json);
     assert_eq!(report_format(Path::new("report")), ReportFormat::Json);
 }
+
+/// The part of a picture a pane shows under a lens, as fractions of its
+/// width and height: `(left, top, right, bottom)`.
+fn visible(frame: crate::ui::compare::Frame, lens: crate::ui::compare::Lens) -> [f32; 4] {
+    let scale = frame.scale(lens);
+    let (x, y) = frame.offset(lens);
+    let (w, h) = (frame.picture.0 * scale, frame.picture.1 * scale);
+    [
+        -x / w,
+        -y / h,
+        (frame.view.0 - x) / w,
+        (frame.view.1 - y) / h,
+    ]
+}
+
+/// Zooming one pane moves the other with it: one lens drives both, so a
+/// photo re-saved at half the size shows the same region as its original,
+/// and the point under the wheel stays under it.
+#[test]
+fn the_compare_lens_keeps_both_panes_on_the_same_region() {
+    use crate::ui::compare::{Frame, Lens, ZOOM_STEP};
+    let big = Frame {
+        view: (400.0, 300.0),
+        picture: (4000.0, 3000.0),
+    };
+    let small = Frame {
+        view: (400.0, 300.0),
+        picture: (2000.0, 1500.0),
+    };
+    let at = (100.0, 75.0);
+    let mut lens = Lens::default();
+    for _ in 0..6 {
+        lens = lens.zoomed(big, ZOOM_STEP, at);
+    }
+    assert!(lens.zoom > 3.0, "six notches zoom in: {lens:?}");
+    let (a, b) = (visible(big, lens), visible(small, lens));
+    for (x, y) in a.iter().zip(b) {
+        assert!((x - y).abs() < 1e-4, "panes drifted apart: {a:?} vs {b:?}");
+    }
+    // The picture point under the pointer did not move.
+    let under = |frame: Frame, lens: Lens| {
+        let scale = frame.scale(lens);
+        let (x, _) = frame.offset(lens);
+        (at.0 - x) / (frame.picture.0 * scale)
+    };
+    let before = under(big, Lens::default());
+    assert!((under(big, lens) - before).abs() < 1e-4);
+    // A drag moves both the same way, and never past the picture's edge.
+    let panned = lens.panned(big, (10_000.0, 0.0));
+    assert!(
+        visible(big, panned)[0].abs() < 1e-4,
+        "held at the left edge"
+    );
+    assert!(visible(small, panned)[0].abs() < 1e-4);
+    // 100% shows the lead pane pixel for pixel; Fit is the whole picture.
+    assert!((big.scale(lens.actual(big)) - 1.0).abs() < 1e-4);
+    assert_eq!(visible(big, Lens::default()), [0.0, 0.0, 1.0, 1.0]);
+}
+
+/// The details table names the copy with more detail in words, marks what
+/// differs, and leaves out lines neither copy has.
+#[test]
+fn compare_details_name_the_better_copy_and_skip_empty_lines() {
+    use crate::ui::compare::{Facts, fact_rows};
+    let mut jpg = member("C:/photos/beach.jpg", 900_000, true, Some(1.0));
+    jpg.mtime_secs = Some(1_764_115_200);
+    let mut png = member("C:/backup/beach.png", 2_400_000, false, Some(0.97));
+    png.mtime_secs = Some(1_764_115_200);
+    let jpg_facts = Facts {
+        pixels: Some((4032, 3024)),
+        format: "JPG".to_string(),
+        camera: Some("Canon EOS R6".to_string()),
+        taken: Some("2025:11:26 09:30:00".to_string()),
+        ..Facts::default()
+    };
+    let png_facts = Facts {
+        pixels: Some((2016, 1512)),
+        format: "PNG".to_string(),
+        ..Facts::default()
+    };
+    let rows = fact_rows([&jpg, &png], [&jpg_facts, &png_facts], false);
+    let row = |label: &str| rows.iter().find(|r| r.label == label);
+    let size = row("Picture size").expect("picture size line");
+    assert_eq!(size.values, ["4032 × 3024", "2016 × 1512"]);
+    assert_eq!(size.better, Some((0, "More detail")));
+    assert!(size.differs());
+    assert!(row("Length").is_none(), "photos have no length line");
+    assert_eq!(
+        row("Taken").expect("date taken").values[0],
+        "26 Nov 2025, 09:30"
+    );
+    assert_eq!(row("Camera").expect("camera").values[1], "—");
+    let modified = row("Modified").expect("modified");
+    assert_eq!(modified.values[0], "26 Nov 2025");
+    assert!(!modified.differs(), "the same day reads as the same");
+    assert_eq!(row("Similarity").expect("similarity").values[1], "97%");
+    assert_eq!(row("File size").expect("file size").better, None);
+}
+
+/// Compare opens with the keeper on the left, steps over groups with
+/// nothing to look at, and a keeper swap inside it is the list's own: the
+/// delete confirmation follows it and the panes stay where they were.
+#[test]
+fn compare_swaps_the_keeper_through_the_lists_own_actions() {
+    let photos = |index, a: &str, b: &str| {
+        let mut g = group(
+            index,
+            vec![member(a, 100, true, None), member(b, 80, false, Some(0.97))],
+        );
+        g.similarity = Some(0.97);
+        g
+    };
+    let mut s = AppState {
+        groups: vec![
+            photos(1, "a.jpg", "a.png"),
+            group(
+                2,
+                vec![
+                    member("x.txt", 5, true, None),
+                    member("y.txt", 5, false, None),
+                ],
+            ),
+            photos(3, "b.jpg", "b.png"),
+        ],
+        playing: Some(PathBuf::from("clip.mp4")),
+        ..AppState::default()
+    };
+    actions::reselect_all_dups(&mut s);
+    actions::open_compare_in(&mut s, 1);
+    let pair = s.comparing.clone().expect("compare opens");
+    assert_eq!(pair.left, PathBuf::from("a.jpg"));
+    assert_eq!(pair.right, PathBuf::from("a.png"));
+    assert_eq!(s.playing, None, "the card's clip stops");
+
+    actions::set_keeper_in(&mut s, 1, Path::new("a.png"));
+    assert_eq!(s.comparing, Some(pair), "the panes keep their pictures");
+    let plan = actions::confirm_groups(&s);
+    assert_eq!(plan[0].keeper, "a.png");
+    assert_eq!(plan[0].rows[0].path, PathBuf::from("a.jpg"));
+
+    actions::step_compare_group_in(&mut s, 1);
+    assert_eq!(s.comparing.as_ref().map(|c| c.group), Some(3));
+    assert_eq!(actions::compare_position(&s), Some((2, 2)));
+    actions::step_compare_group_in(&mut s, 1);
+    assert_eq!(
+        s.comparing.as_ref().map(|c| c.group),
+        Some(3),
+        "stays at the end"
+    );
+    actions::step_compare_group_in(&mut s, -1);
+    let back = s.comparing.clone().expect("still open");
+    assert_eq!(back.group, 1);
+    assert_eq!(back.left, PathBuf::from("a.png"), "the new keeper leads");
+}
+
+/// The real window: a scan of one photo saved as JPEG and PNG offers
+/// Compare, the view opens over the list, and Close puts the list back.
+#[test]
+fn compare_opens_from_a_similar_photo_group_and_closes() {
+    let (mut app, _guard) = start();
+    let dir = std::env::temp_dir().join(format!(
+        "dedupe-compare-fixture-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("fixture dir");
+    let picture = image::RgbImage::from_fn(64, 48, |x, y| {
+        image::Rgb([(x * 4) as u8, (y * 5) as u8, ((x + y) * 2) as u8])
+    });
+    picture.save(dir.join("beach.png")).expect("write png");
+    picture.save(dir.join("beach.jpg")).expect("write jpg");
+    let result = (|| {
+        app.wait_for("text:Scan a folder")?;
+        let mut pasted = nsh_core::PasteEvent::default();
+        pasted.text = dir.display().to_string();
+        app.paste("text:Scan a folder", &pasted)?;
+        app.press("label:Add folder")?;
+        app.wait_for("label:Remove folder")?;
+        app.press("text:Scan for duplicates")?;
+        app.wait_for_within("text:/group/", std::time::Duration::from_secs(60))?;
+        app.press("text:Compare")?;
+        app.wait_for("text:Compare copies")?;
+        app.wait_for("text:Reclaimable in this group")?;
+        app.wait_for("text:Picture size")?;
+        app.wait_for("text:64 × 48")?;
+        app.press("text:Close")?;
+        for _ in 0..40 {
+            if !app.shows("Compare copies") {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err("Close did not dismiss the compare view".to_string())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("compare opens on the photo pair and closes");
+}
