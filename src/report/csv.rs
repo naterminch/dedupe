@@ -11,8 +11,9 @@ pub fn write_csv(
     groups: &[Group],
     mode_result: Option<&crate::modes::ModeResult>,
 ) -> std::io::Result<()> {
-    let mut out = String::from("mode,kind,group,path,size,detail\n");
+    let mut out = String::from("mode,kind,group,path,size,detail");
     if let Some(result) = mode_result {
+        out.push('\n');
         for finding in &result.findings {
             out.push_str(&csv_row(&[
                 crate::modes::mode_name(result.mode),
@@ -40,6 +41,8 @@ pub fn write_csv(
         }
     } else {
         let _ = stats;
+        // Duplicate reports add why each keeper stays (empty on the copies).
+        out.push_str(",keep_reason\n");
         for group in groups {
             for member in &group.members {
                 let kind = if member.keep { "keep" } else { "duplicate" };
@@ -47,6 +50,10 @@ pub fn write_csv(
                     || group.hash.clone(),
                     |s| format!("{:.1}% similar", s * 100.0),
                 );
+                let reason = group
+                    .reason_for(member)
+                    .map(|r| r.to_string())
+                    .unwrap_or_default();
                 out.push_str(&csv_row(&[
                     "duplicates",
                     kind,
@@ -54,6 +61,7 @@ pub fn write_csv(
                     &member.path.to_string_lossy(),
                     &member.size.to_string(),
                     &detail,
+                    &reason,
                 ]));
             }
         }

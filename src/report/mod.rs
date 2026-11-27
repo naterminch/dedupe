@@ -69,7 +69,7 @@ pub fn reclaimable_bytes(groups: &[Group]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matching::GroupMember;
+    use crate::matching::{GroupMember, KeepReason};
 
     /// A file name that opens like a formula is written as text, so opening
     /// the CSV in a spreadsheet never runs it.
@@ -282,6 +282,7 @@ mod tests {
             hash: "abc123".to_string(),
             media_kind: kind,
             similarity: None,
+            keep_reason: KeepReason::FirstAlphabetically,
             members,
         }
     }
@@ -384,6 +385,10 @@ mod tests {
             hash: "img".to_string(),
             media_kind: MediaKind::Image,
             similarity: Some(0.981),
+            keep_reason: KeepReason::HighestResolution {
+                width: 1600,
+                height: 1200,
+            },
             members: vec![keeper, dup],
         }];
         // Verbose exercises the per-member media/codec line.

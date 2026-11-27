@@ -13,7 +13,7 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
-use crate::matching::GroupMember;
+use crate::matching::{GroupMember, KeepReason};
 use crate::ui::state::{
     AppState, AppView, Cleared, FindingsDone, FindingsWent, FolderEntry, Removal, ReportSnapshot,
     ScanStatus, SettingsTab, Went, app, scan_status,
@@ -1038,12 +1038,13 @@ pub(crate) fn sort_groups(s: &mut AppState) {
     }
 }
 
-/// Mirror keep flags and member order from the live view back into the
-/// pristine scan results, so re-thresholding never loses keeper choices.
-/// Members hidden by the floor keep their stored flags.
+/// Mirror keep flags, the keep reason and member order from the live view
+/// back into the pristine scan results, so re-thresholding never loses
+/// keeper choices. Members hidden by the floor keep their stored flags.
 pub(crate) fn sync_keep_to_base(s: &mut AppState) {
     for g in &s.groups {
         if let Some(base) = s.base_groups.iter_mut().find(|b| b.index == g.index) {
+            base.keep_reason = g.keep_reason;
             for m in &g.members {
                 if let Some(bm) = base.members.iter_mut().find(|bm| bm.path == m.path) {
                     bm.keep = m.keep;
@@ -1213,6 +1214,7 @@ pub(crate) fn set_keeper_in(s: &mut AppState, group_index: usize, path: &Path) {
             s.selected.remove(&member.path);
         }
     }
+    group.keep_reason = KeepReason::ChosenByYou;
     sync_keep_to_base(s);
     // Keeper swap changes which bytes count as reclaimable.
     recount(s);

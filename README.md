@@ -39,9 +39,12 @@ Run `dedupe` with no arguments (or `dedupe --gui`).
    form, or drop it on the window — then press **Scan for duplicates**.
 2. Results are grouped by content, with the space the ticked copies would free
    shown as **Reclaimable** beside the title. A green **Keeping** badge marks
-   the copy that stays, an amber tick reads **Delete** on a copy ticked to go
-   and **Keep too** on one that stays; **Keep this one instead** swaps the
-   keeper (the retiring keeper joins the delete list, one untick takes it back).
+   the copy that stays, with the reason beside it — "highest resolution
+   (4032×3024)", "in a protected folder", "the others look like copies" — an
+   amber tick reads **Delete** on a copy ticked to go and **Keep too** on one
+   that stays; **Keep this one instead** swaps the keeper (the retiring keeper
+   joins the delete list, one untick takes it back), and the reason then reads
+   "chosen by you".
 3. **Delete** follows your Trash setting: with it on the ticked copies go to the
    system trash, with it off they are deleted permanently (the button and the
    dialog both say which). The dialog lists every group and file that will go
@@ -61,7 +64,12 @@ carry EXIF or XMP data and removes it after a confirmation, like `--strip-exif`.
 Folders can be marked as **protected**: their copies win the keep decision and
 are never deleted, whatever the scan is looking for. The keep rule (First / Smallest / Newest /
 Oldest / Best quality) is chosen on **New scan** and applies to the next scan; a
-keeper can still be swapped by hand in any group. **Consolidate** gathers one copy
+keeper can still be swapped by hand in any group. When the rule cannot tell two
+copies apart (identical files under First, Smallest or Best quality), the one
+that looks like the original stays: `photo.jpg` over `photo (1).jpg`,
+`photo - Copy.jpg`, `Copy of photo.jpg` or `photo-1.jpg`, and a copy in
+Pictures over one in Downloads, Temp, a cache, the trash or a WhatsApp or
+Telegram folder; only then does alphabetical order decide. **Consolidate** gathers one copy
 of every group into a folder of your choosing, after a confirmation that lists
 every move, leaving protected keepers where they are. Settings also cover the scan type, match mode, image
 fingerprint and partial clips; light/dark and your preferences persist between
@@ -99,6 +107,11 @@ Useful flags:
 | `--reference-dir` | Never delete anything inside this folder (repeatable); scan it too to use it as a matching reference |
 | `--jobs N` | Worker threads (`0` = all but one core) |
 | `--json` / `--csv` / `--html` | Machine-readable, spreadsheet or shareable report |
+
+Every report says why each group's keeper stays, in the desktop app's words:
+the terminal report on the keeper's line, `keep_reason` on each JSON group, a
+`keep_reason` column in CSV (filled on the keeper's row) and a Keep reason
+column in HTML.
 
 `dedupe --help` has the full list.
 

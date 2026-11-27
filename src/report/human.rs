@@ -136,9 +136,15 @@ pub fn print_human(ctx: &ReportContext, stats: &ScanStats, groups: &[Group]) {
                 style(human_bytes(member.size)).magenta(),
                 width = path_w,
             );
-            if let Some(sim) = member.similarity
-                && !member.keep
-            {
+            if let Some(reason) = group.reason_for(member) {
+                // Why this copy stays, in the GUI's words.
+                let _ = write!(
+                    line,
+                    "  {} {}",
+                    style("·").dim(),
+                    style(format!("keeping: {reason}")).green()
+                );
+            } else if let Some(sim) = member.similarity {
                 let _ = write!(
                     line,
                     "  {} {}",

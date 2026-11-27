@@ -90,7 +90,7 @@ Each screen answers one question with its largest element:
 | Screen | Question | Answered by |
 | --- | --- | --- |
 | New scan | What will this scan look at, and how will it decide? | The setup form: folders, what to find, keep rule, similarity, where deletes go, video support; **Scan** is the one primary action in the title row |
-| Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the settled seal pressed beside it |
+| Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge, why it stays beside it as a caption) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the settled seal pressed beside it |
 | Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; one toolbar (Delete N, or Remove metadata for photo metadata; Export report…); the findings as one ruled list |
 | Settings | What does each default do? | Two columns: each section's title and purpose beside a panel of rows that say what they change |
 
@@ -254,7 +254,7 @@ nsh lands them at their end state when reduce-motion is on.
 | Group body opening and closing | `collapsible().reveal(true)` | nsh spring |
 | Toggle switch thumb | `transition-transform` class on the thumb | `FAST` |
 | Text-field focus edge | colour transition | `BASE`, `CONTROL_BORDER` → `ACCENT` |
-| Keeper pick and duplicate tick | colour transition on the member's edge; the new decision's wash (matcha "Keeping", ochre "Delete") soaks in from the tag's leading edge (`ScaleX` 0→1 on a layer under the words, origin left), only when that copy's decision changed | `FAST` edge; `BASE` soak, out-expo |
+| Keeper pick and duplicate tick | colour transition on the member's edge; the new decision's wash (matcha "Keeping", ochre "Delete") soaks in from the tag's leading edge (`ScaleX` 0→1 on a layer under the words, origin left), only when that copy's decision changed; the keep reason beside the badge arrives with it ("chosen by you" after a pick), without a motion of its own | `FAST` edge; `BASE` soak, out-expo |
 | Scan progress bar filling | `transition-all` on the indicator | `SLOW` |
 | Delete and Consolidate dialog scrim | `fading_in()` on the scrim | `FadeIn`, 300 ms |
 | Delete and Consolidate dialog panel | nsh's modal slide, panel-only (the scrim is a page-layer sibling) | platform `Slide` |

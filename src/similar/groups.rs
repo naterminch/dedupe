@@ -407,9 +407,11 @@ pub(super) fn partial_clip_similarity(short: &[FrameHash], long: &[FrameHash]) -
 ///   their similarity score against the keeper, a media probe and a
 ///   deletion-safety content hash.
 ///
-/// The target group's keeper stands (any later keep-mode change
-/// re-elects keepers across the merged group). Emptied groups are
-/// dropped and indices renumbered so they stay contiguous.
+/// The target group's keeper stands, and so does its keep reason: the
+/// reason the exact pass gave for picking it among its identical copies
+/// (any later keep-mode change re-elects keepers, and reasons, across the
+/// merged group). Emptied groups are dropped and indices renumbered so
+/// they stay contiguous.
 ///
 /// Returns the clusters that touch no exact group; the caller builds
 /// those as fresh similar groups.
@@ -615,30 +617,13 @@ fn build_one_similar_group(
         m.content_hash = engine.full(&m.path).ok();
     }
 
-    // Keeper: reference-dir members are protected and win; among
-    // the candidates the keep rule applies — for `Smallest` the
-    // highest-resolution version (a smaller file is usually the
-    // re-encoded/lower-res copy, so the best original is kept),
-    // falling back to smallest size when unknown; for `BestQuality`
-    // ties break toward the largest file instead.
-    let pool: Vec<usize> = {
-        let refs: Vec<usize> = sg
-            .members
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                matching::is_under_ref(&matching::canonical_member(&m.entry.path), reference_dirs)
-                    && !reference_dirs.is_empty()
-            })
-            .map(|(i, _)| i)
-            .collect();
-        if refs.is_empty() {
-            (0..sg.members.len()).collect()
-        } else {
-            refs
-        }
-    };
-    let keep_idx = best_similar_keep(&sg.members, &pool, keep);
+    // Keeper and its reason, by the same rule a later reassignment applies
+    // (see `matching::pick_keeper`): reference-dir members are protected
+    // and win; for `Smallest` the highest-resolution version stays (a
+    // smaller file is usually the re-encoded/lower-res copy), falling back
+    // to the smallest file when unknown; `BestQuality` breaks resolution
+    // ties toward the longer, then larger file instead.
+    let (keep_idx, keep_reason) = matching::pick_keeper(&members, keep, true);
     members[keep_idx].keep = true;
     let keeper = members.remove(keep_idx);
     let mut rest = members;
@@ -657,69 +642,7 @@ fn build_one_similar_group(
         hash: format!("similar#{index}"),
         media_kind: sg.kind,
         similarity: Some(similarity),
+        keep_reason,
         members: ordered,
     }
-}
-
-/// Best keeper index among `pool` under `keep`.
-///
-/// `Smallest` prefers the highest resolution (width ? height); members with
-/// unknown resolution (0?0, e.g. a video probed without ffprobe) rank below
-/// any member with known resolution, falling back to smallest size.
-/// `BestQuality` also leads with resolution, but ties break toward the
-/// largest file (bitrate proxy) instead of the smallest.
-pub(super) fn best_similar_keep(
-    members: &[SimilarMember],
-    pool: &[usize],
-    keep: KeepMode,
-) -> usize {
-    let area = |m: &SimilarMember| -> Option<u64> {
-        (m.w > 0 && m.h > 0).then_some(u64::from(m.w) * u64::from(m.h))
-    };
-    let mut best = pool[0];
-    for &i in &pool[1..] {
-        let (m, b) = (&members[i], &members[best]);
-        let better = match keep {
-            KeepMode::First => m.entry.path < b.entry.path,
-            KeepMode::Smallest => match (area(m), area(b)) {
-                (Some(a), Some(ba)) => {
-                    a > ba
-                        || (a == ba
-                            && (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path))
-                }
-                (Some(_), None) => true,
-                (None, None) => (m.entry.size, &m.entry.path) < (b.entry.size, &b.entry.path),
-                (None, Some(_)) => false,
-            },
-            KeepMode::BestQuality => match (area(m), area(b)) {
-                (Some(a), Some(ba)) => {
-                    (a, m.entry.size) > (ba, b.entry.size)
-                        || ((a, m.entry.size) == (ba, b.entry.size) && m.entry.path < b.entry.path)
-                }
-                (Some(_), None) => true,
-                (None, None) => {
-                    m.entry.size > b.entry.size
-                        || (m.entry.size == b.entry.size && m.entry.path < b.entry.path)
-                }
-                (None, Some(_)) => false,
-            },
-            KeepMode::Newest => {
-                (
-                    m.entry.mtime_secs.unwrap_or(i64::MIN),
-                    std::cmp::Reverse(&m.entry.path),
-                ) > (
-                    b.entry.mtime_secs.unwrap_or(i64::MIN),
-                    std::cmp::Reverse(&b.entry.path),
-                )
-            }
-            KeepMode::Oldest => {
-                (m.entry.mtime_secs.unwrap_or(i64::MAX), &m.entry.path)
-                    < (b.entry.mtime_secs.unwrap_or(i64::MAX), &b.entry.path)
-            }
-        };
-        if better {
-            best = i;
-        }
-    }
-    best
 }
