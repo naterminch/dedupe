@@ -101,6 +101,24 @@ pub(super) fn move_file(from: &Path, to: &Path) -> Result<PathBuf, ActionError> 
     })
 }
 
+/// Move `from` to exactly `to` — a file going back where it came from — and
+/// return `false`, leaving `from` alone, when something is at `to` now.
+/// Unlike [`move_file`] it never picks another name, and like it it never
+/// replaces what is there. `to`'s folder is made again if it went meanwhile.
+pub(super) fn move_back(from: &Path, to: &Path) -> Result<bool, ActionError> {
+    let parent = to.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|source| ActionError::Destination {
+        dir: parent.to_path_buf(),
+        file: to.to_path_buf(),
+        source,
+    })?;
+    match place(from, to) {
+        Ok(()) => Ok(true),
+        Err(Place::Taken(_)) => Ok(false),
+        Err(Place::Failed(err)) => Err(err),
+    }
+}
+
 /// Why one placement attempt did not land.
 enum Place {
     /// The destination exists; try another name.

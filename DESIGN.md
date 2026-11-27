@@ -93,6 +93,7 @@ Each screen answers one question with its largest element:
 | Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge, why it stays beside it as a caption) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the settled seal pressed beside it |
 | Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; one toolbar (Delete N, or Remove metadata for photo metadata; Export report…); the findings as one ruled list |
 | Settings | What does each default do? | Two columns: each section's title and purpose beside a panel of rows that say what they change |
+| History | What did dedupe change, and what can come back? | One ruled card of runs, newest first: what happened over when, where and what is back, its size on the right edge, and **Put back…** or the reason there is no way back. Put back… opens a confirmation that lists, file by file, what comes back and what cannot, and why |
 
 ## Tokens
 
@@ -162,7 +163,7 @@ so "What to find" is an `option_select`.
 
 ## Layout
 
-- Shell: a 56 pt icon rail (Home, Settings, and the theme switch
+- Shell: a 56 pt icon rail (Home, History, Settings, and the theme switch
   at its foot) and a 264 pt folder pane on the ground, separated from the work
   area by one `BORDER` rule. The pane opens with the product's mark and name;
   each folder row is the folder's name over its full path, cut from the front
@@ -178,12 +179,13 @@ so "What to find" is an `option_select`.
   duplicate scan. At the default 1120×640 window the form scrolls by its last
   row: the margins keep their ma rather than the form squeezing to fit.
 - Results: the title row with the Reclaimable figure; an action toolbar (Back,
-  Delete / Move / Link, Clear selection, Restore from trash | Consolidate,
+  Delete / Move / Link, Clear selection, Restore from trash or Move back | Consolidate,
   Export report…, expand, collapse); a list toolbar (sort, layout); then one card per group. The keep
   rule and the similarity floor belong to the scan and live on New scan only:
   on this page they would re-pick every keeper and drop the user's ticks. With
   no group left only Back stays, and the list shows the cleared card (what
-  went, where to, Scan again, Restore from trash where the OS can restore) or
+  went, where to, Scan again, and Restore from trash or Move back while that
+  clean-up can still come back) or
   "No duplicates found" for a scan that found nothing.
 - What happens to the ticked copies is chosen in the confirmation, where the
   plan is on screen: a `radio_segmented` of **Delete** (trash or permanent, per
@@ -201,6 +203,22 @@ so "What to find" is an `option_select`.
 - Export report… opens the system save dialog with JSON, CSV and HTML types;
   the chosen extension picks the format, the same writers as `--json`,
   `--csv` and `--html`.
+- History: the title row (running head, "History", a line counting the
+  runs), then the runs as one card of rows split by hairlines, as the
+  findings are. A row is the run in words ("Moved 12 duplicate copies to the
+  trash") over a caption of when ("Today, 14:03"), the scanned folders and
+  what is back; its size in `amount` on the shared right edge; then a
+  secondary **Put back…**, or a caption saying why there is no way back
+  ("Deleted for good", "Hard links stay", "Put back from the Trash" where the
+  OS gives apps no trash restore). No figure: the vermilion answers a
+  clean-up, and this page answers with the list. **Put back…** reads the
+  disk and the trash first, then opens an `alert_dialog` with two sections
+  under field labels, "Comes back · N" and "Can't come back · N": each file's
+  name over its folder and what happens to it, its size, and for a file that
+  comes back a quiet **Leave it** / **Put back too**. The commit is a
+  primary **Put back N**, not a danger button: nothing is destroyed, and
+  nothing is overwritten. Undo on the results page runs the same restore for
+  the session's last clean-up without the dialog.
 - Settings: a 200 pt nav, then sections split by full-width rules: a 240 pt
   label column (title and purpose) beside a panel whose rows show their own
   descriptions.
@@ -237,7 +255,7 @@ nsh lands them at their end state when reduce-motion is on.
 
 | Change | Tool | Tokens |
 | --- | --- | --- |
-| Page switch (workspace ⇄ Settings) | `entering()` bound to the page | `FadeInUp`, 450 ms |
+| Page switch (workspace ⇄ History ⇄ Settings) | `entering()` bound to the page | `FadeInUp`, 450 ms |
 | New scan page appearing | `entering()` | `FadeInUp`, 450 ms |
 | Results list rebuilt (filter, delete, Show more) | `fading_in()` on the list | `FadeIn`, 300 ms |
 | A scan landing: its group cards | `arriving(order)` on each card instead of the list fade: fade + settle 12 pt, each a beat after the one above, the eighth and later together; once per scan (`scan_gen`), never on a page coming back | 320 ms out-expo, 40 ms apart, ≤ 280 ms delay |
@@ -263,6 +281,10 @@ nsh lands them at their end state when reduce-motion is on.
 | Findings action bar arriving with the findings | part of the page's `entering()` | `FadeInUp`, 450 ms |
 | Findings confirmation scrim and panel | the same `alert_dialog` as Delete | `FadeIn` 300 ms / platform `Slide` |
 | Findings removed (delete or metadata) | the list rebuilds under `fading_in()`; a toast reports the outcome | `FadeIn`, 300 ms; toast `SLOW` |
+| History list rebuilt (a clean-up recorded, a run put back) | `fading_in()` on the list | `FadeIn`, 300 ms |
+| Restore confirmation scrim and panel | the same `alert_dialog` as Delete, opened once its plan is read | `FadeIn` 300 ms / platform `Slide` |
+| Restore confirmation: a file left out or taken back | the row's caption and quiet button swap in place, the title and commit count follow | none — the reader's eye stays on the row just pressed |
+| Files put back | a toast reports what came back and what stayed | toast `SLOW` |
 | Toast entering and leaving | all-property transition with starting/ending classes | `SLOW`, `translate-y-3` + opacity |
 | A clean-up settling (the last group or finding goes) | `ink_lift()`: a WGSL `shader_transition` (`assets/shaders/ink_lift.wgsl`) around the list. The old cards let go of their ink along fibre noise (dense ink first, drifting a point or two along the fibre), the ground's real grain shows through, and the outcome card is inked in behind through the same fibres. Only the moment of settling runs it; a restore or a new scan does not. No GPU: nsh's cross-fade | 900 ms |
 | Cleared card's seal | `pressed_seal()`: the seal comes down larger and more turned (`Scale` 1.45→0.94→1, `Rotate` −9°→1°→0 on a wrapper, so the seal keeps its −6°) and settles as the lift finishes | 560 ms, 720 ms delay |
@@ -287,5 +309,8 @@ fade there would flicker under the pointer.
   `virtual_list`. Each group is a variable-height card with its own media
   previews, so virtualization needs per-cell measurement of nested content
   first. Feeds and any tabular view must use `virtual_list` from the start.
+  The History page is built whole: the history keeps at most 200 runs, so
+  its rows are a bounded list like the dialogs', and its restore dialog draws
+  up to 100 files per section before it counts the rest.
 - Desktop only: no mobile or web target is shipped, so touch targets, sheets and
   the keyboard inset are unexercised.

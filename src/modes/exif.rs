@@ -5,6 +5,7 @@ use crate::actions::is_protected;
 use crate::cancel::CancelToken;
 use crate::cli::Cli;
 use crate::hashing::HashEngine;
+use crate::history::{Item, Went};
 use crate::util::human_bytes;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,8 @@ pub struct ExifReport {
     pub skipped: u64,
     /// Whether this run was allowed to write to disk.
     pub applied: bool,
+    /// Every photo rewritten, as the clean-up history records it.
+    pub items: Vec<Item>,
 }
 
 /// What [`strip_metadata`] did, per file, so callers (e.g. the GUI) can
@@ -40,6 +43,8 @@ pub struct StripOutcome {
     /// Reads or rewrites that failed, with the reason.
     pub failures: Vec<(PathBuf, String)>,
     pub bytes_saved: u64,
+    /// Every photo rewritten, as the clean-up history records it.
+    pub items: Vec<Item>,
 }
 
 /// Whether `path` names a format the stripper understands, judged by
@@ -108,6 +113,12 @@ pub fn strip_exif(cli: &Cli, cancel: &CancelToken) -> ExifReport {
             Ok(Rewrite::Done) => {
                 report.rewritten += 1;
                 report.bytes_saved += saved;
+                report.items.push(Item::new(
+                    file.path.clone(),
+                    saved,
+                    Went::Rewritten,
+                    Some(read),
+                ));
             }
             Ok(Rewrite::Changed) | Err(_) => report.skipped += 1,
         }
@@ -208,8 +219,15 @@ pub fn strip_metadata(
         };
         match rewrite_in_place(path, &stripped, Some((engine, expected))) {
             Ok(Rewrite::Done) => {
-                outcome.bytes_saved += metadata_bytes(&data, &stripped);
+                let saved = metadata_bytes(&data, &stripped);
+                outcome.bytes_saved += saved;
                 outcome.stripped.push(path.clone());
+                outcome.items.push(Item::new(
+                    path.clone(),
+                    saved,
+                    Went::Rewritten,
+                    Some(expected.to_string()),
+                ));
             }
             // Saved by someone else after the check: their version stays.
             Ok(Rewrite::Changed) => outcome.skipped.push(path.clone()),

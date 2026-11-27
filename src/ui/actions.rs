@@ -13,10 +13,11 @@ use std::time::Duration;
 use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
+use crate::history::{self, Method, RunKind};
 use crate::matching::{GroupMember, KeepReason};
 use crate::ui::state::{
     AppState, AppView, Cleared, FindingsDone, FindingsWent, FolderEntry, Removal, ReportSnapshot,
-    ScanStatus, SettingsTab, Went, app, scan_status,
+    RestoreAsk, ScanStatus, SettingsTab, Went, app, scan_status,
 };
 use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, counted, find_mode, image_hash_algo, is_no_limit, match_mode};
@@ -66,6 +67,12 @@ pub(crate) fn bootstrap() {
             s.media_checked = true;
         });
     });
+    // The history file can be long; read it off the first paint too.
+    app_spawn(async move {
+        if let Ok(runs) = blocking(history::load).await {
+            app().update(|s| s.history = Arc::new(runs));
+        }
+    });
 }
 
 // --- Navigation -------------------------------------------------------------
@@ -76,25 +83,43 @@ fn forget_pane_offsets() {
     crate::ui::results::reset_lists();
     crate::ui::shell::reset_scroll();
     crate::ui::settings::reset_scroll();
+    crate::ui::history::reset_scroll();
 }
 
-pub(crate) fn leave_settings() {
-    // Only a page switch remounts the panes. Pressing the rail item of the page
-    // already open leaves it mounted, so forgetting the offsets there would
-    // send the next wheel notch back to the top.
-    if app().with_untracked(|s| s.view != AppView::Settings) {
+/// Show `page`. Only a page switch remounts the panes: pressing the rail item
+/// of the page already open leaves it mounted, so forgetting the offsets
+/// there would send the next wheel notch back to the top.
+fn open_page(page: AppView) {
+    if app().with_untracked(|s| s.view == page) {
         return;
     }
-    app().update(|s| s.view = AppView::Main);
+    app().update(|s| s.view = page);
     forget_pane_offsets();
+}
+
+pub(crate) fn open_workspace() {
+    open_page(AppView::Main);
+}
+
+/// Open the History page, reading the history again on the way: a
+/// command-line run since start-up shows up too. The list only changes when
+/// the file says something new.
+pub(crate) fn open_history() {
+    open_page(AppView::History);
+    app_spawn(async move {
+        let Ok(runs) = blocking(history::load).await else {
+            return;
+        };
+        app().update(|s| {
+            if *s.history != runs {
+                s.history = Arc::new(runs);
+            }
+        });
+    });
 }
 
 pub(crate) fn open_settings() {
-    if app().with_untracked(|s| s.view == AppView::Settings) {
-        return;
-    }
-    app().update(|s| s.view = AppView::Settings);
-    forget_pane_offsets();
+    open_page(AppView::Settings);
 }
 
 pub(crate) fn set_settings_tab(tab: SettingsTab) {
@@ -184,27 +209,28 @@ pub(crate) fn drop_folders(uris: &[String]) {
 }
 
 /// Escape outside a text input: close the open confirmation (delete,
-/// consolidate or the findings' act), otherwise leave the Settings page when
-/// it is open.
-pub(crate) fn escape_leaves_settings() {
-    let was_settings = app().with_untracked(|s| s.view == AppView::Settings);
-    let confirming =
-        app().with_untracked(|s| s.confirm_delete || s.consolidating || s.confirm_findings);
+/// consolidate, the findings' act or a restore), otherwise leave the History
+/// or Settings page for the workspace.
+pub(crate) fn escape_leaves_page() {
+    let confirming = app().with_untracked(|s| {
+        s.confirm_delete || s.consolidating || s.confirm_findings || s.restore.is_some()
+    });
+    if !confirming {
+        open_workspace();
+        return;
+    }
     app().update(|s| {
         if s.confirm_delete {
             s.confirm_delete = false;
         } else if s.confirm_findings {
             s.confirm_findings = false;
-        } else if s.consolidating {
+        } else if s.restore.is_some() {
+            s.restore = None;
+        } else {
             s.consolidating = false;
             s.consolidate_dest = None;
-        } else if s.view == AppView::Settings {
-            s.view = AppView::Main;
         }
     });
-    if was_settings && !confirming {
-        forget_pane_offsets();
-    }
 }
 
 pub(crate) fn add_from_input() {
@@ -486,6 +512,8 @@ pub(crate) fn collect_options(s: &AppState) -> Result<cli::Cli, String> {
         hardlink: false,
         strip_exif: false,
         ignore: split_multi(&s.ignore_input),
+        history: false,
+        restore: None,
     })
 }
 
@@ -1540,6 +1568,48 @@ struct RemovalDone {
     /// failed; those are in `failures` too).
     skipped: Vec<PathBuf>,
     failures: Vec<(PathBuf, file_actions::ActionError)>,
+    recorded: Recorded,
+}
+
+/// A finished run as the clean-up history took it, with the history read
+/// back for the History page.
+struct Recorded {
+    /// The run's id; `None` when it changed nothing or could not be written.
+    id: Option<u64>,
+    runs: Vec<history::Run>,
+}
+
+/// Record a finished run and read the history back, on the worker thread
+/// that ran it so the window never waits on the file.
+fn record(
+    kind: RunKind,
+    method: Method,
+    roots: &[String],
+    hash: cli::HashAlgo,
+    bytes: u64,
+    items: Vec<history::Item>,
+) -> Recorded {
+    let id = history::record(history::NewRun {
+        kind,
+        method,
+        roots,
+        hash_algo: hashing::HashEngine::new(hash).name(),
+        bytes,
+        items,
+    });
+    Recorded {
+        id,
+        runs: history::load(),
+    }
+}
+
+/// Take a recorded run in: the History page lists it, and Undo offers it
+/// while any of it can still come back.
+fn take_recorded(s: &mut AppState, recorded: Recorded) {
+    s.history = Arc::new(recorded.runs);
+    if recorded.id.is_some() {
+        s.last_run = recorded.id;
+    }
 }
 
 /// Claim the one running file act, saying `status` while it runs, and return
@@ -1583,8 +1653,15 @@ pub(crate) fn perform_removal() {
         });
         return;
     }
-    let (removal, trash, hash, dest) =
-        state.with_untracked(|s| (s.removal, s.trash, s.last_hash, s.move_dest.clone()));
+    let (removal, trash, hash, dest, roots) = state.with_untracked(|s| {
+        (
+            s.removal,
+            s.trash,
+            s.last_hash,
+            s.move_dest.clone(),
+            s.last_paths.clone(),
+        )
+    });
     match removal {
         Removal::Delete => {
             let disposition = if trash {
@@ -1596,12 +1673,21 @@ pub(crate) fn perform_removal() {
                 return;
             };
             app_spawn(async move {
-                let outcome = blocking(move || {
+                let done = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
-                    file_actions::delete_targets(&targets, &engine, disposition)
+                    let mut outcome = file_actions::delete_targets(&targets, &engine, disposition);
+                    let recorded = record(
+                        RunKind::Duplicates,
+                        disposition.into(),
+                        &roots,
+                        hash,
+                        outcome.bytes_freed,
+                        std::mem::take(&mut outcome.items),
+                    );
+                    (outcome, recorded)
                 })
                 .await;
-                let Ok(outcome) = outcome else {
+                let Ok((outcome, recorded)) = done else {
                     worker_stopped("The delete stopped unexpectedly; nothing more was removed.");
                     return;
                 };
@@ -1613,6 +1699,7 @@ pub(crate) fn perform_removal() {
                     went: disposition.into(),
                     skipped: outcome.skipped,
                     failures: outcome.failures,
+                    recorded,
                 });
             });
         }
@@ -1628,12 +1715,21 @@ pub(crate) fn perform_removal() {
                 return;
             };
             app_spawn(async move {
-                let outcome = blocking(move || {
+                let done = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
-                    file_actions::move_targets(&moves, &engine)
+                    let mut outcome = file_actions::move_targets(&moves, &engine);
+                    let recorded = record(
+                        RunKind::MoveAside,
+                        Method::Moved,
+                        &roots,
+                        hash,
+                        outcome.bytes_moved,
+                        std::mem::take(&mut outcome.items),
+                    );
+                    (outcome, recorded)
                 })
                 .await;
-                let Ok(outcome) = outcome else {
+                let Ok((outcome, recorded)) = done else {
                     worker_stopped("The move stopped unexpectedly; nothing more was moved.");
                     return;
                 };
@@ -1645,6 +1741,7 @@ pub(crate) fn perform_removal() {
                     went: Went::Moved,
                     skipped: outcome.skipped,
                     failures: outcome.failures,
+                    recorded,
                 });
             });
         }
@@ -1661,12 +1758,21 @@ pub(crate) fn perform_removal() {
                 return;
             };
             app_spawn(async move {
-                let outcome = blocking(move || {
+                let done = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
-                    file_actions::link_targets(&links, &engine)
+                    let mut outcome = file_actions::link_targets(&links, &engine);
+                    let recorded = record(
+                        RunKind::HardLink,
+                        Method::Linked,
+                        &roots,
+                        hash,
+                        outcome.bytes_saved,
+                        std::mem::take(&mut outcome.items),
+                    );
+                    (outcome, recorded)
                 })
                 .await;
-                let Ok(outcome) = outcome else {
+                let Ok((outcome, recorded)) = done else {
                     worker_stopped("Linking stopped unexpectedly; nothing more was changed.");
                     return;
                 };
@@ -1678,6 +1784,7 @@ pub(crate) fn perform_removal() {
                     went: Went::Freed,
                     skipped: outcome.skipped,
                     failures: outcome.failures,
+                    recorded,
                 });
             });
         }
@@ -1738,15 +1845,9 @@ fn failed_note<E: std::fmt::Display>(failures: &[(PathBuf, E)], verb: &str) -> S
 fn apply_removal(run: RemovalDone) {
     app().update(|s| {
         s.acting = false;
-        // Trash receipts enable one-step undo, whatever page is up now. A
-        // permanent delete makes any older receipt stale (its copies' groups
-        // are re-derived); a move or a link leaves an earlier trash run
-        // restorable.
-        match run.went {
-            Went::Trash => s.last_trashed = run.done.clone(),
-            Went::Freed if run.removal == Removal::Delete => s.last_trashed.clear(),
-            Went::Freed | Went::Moved => {}
-        }
+        // Whatever page is up now, the History page lists the run and Undo
+        // offers it.
+        take_recorded(s, run.recorded);
         // A scan (or Back) since the run started: these results are not the
         // ones it acted on, so only the status says what happened.
         if s.scan_gen == run.generation {
@@ -1830,114 +1931,184 @@ fn apply_removal(run: RemovalDone) {
     });
 }
 
-/// Whether this platform can put trashed files back: `trash::os_limited`
-/// (list/restore) exists on Windows and Freedesktop-trash Unix only, so the
-/// app offers Undo there and nowhere else.
-pub(crate) const CAN_RESTORE: bool = cfg!(any(
-    target_os = "windows",
-    all(
-        unix,
-        not(target_os = "macos"),
-        not(target_os = "ios"),
-        not(target_os = "android")
-    )
-));
+// --- History and restore ----------------------------------------------------
 
-/// Restore the last trash run (undo). Permanent deletes have no receipt and
-/// cannot be restored. Restored files reappear on disk; press Scan to
-/// refresh the groups.
-pub(crate) fn undo_delete() {
-    let state = app();
-    let receipt = state.with_untracked(|s| s.last_trashed.clone());
-    if receipt.is_empty() {
-        state.update(|s| {
-            s.status = "Nothing to restore — nothing has been deleted yet.".to_string();
-        });
+/// Whether any file of `run` may still come back, by what the history knows:
+/// not back yet, and trashed where this system can restore, or moved.
+#[must_use]
+pub(crate) fn can_come_back(run: &history::Run) -> bool {
+    run.items.iter().any(|item| {
+        !item.restored
+            && match item.went {
+                history::Went::Trash => file_actions::CAN_RESTORE_TRASH,
+                history::Went::Moved { .. } => true,
+                _ => false,
+            }
+    })
+}
+
+/// The Undo button's label for this session's last clean-up, or `None` when
+/// nothing of it can come back.
+#[must_use]
+pub(crate) fn undo_label(s: &AppState) -> Option<&'static str> {
+    let run = s.history.iter().find(|run| Some(run.id) == s.last_run)?;
+    can_come_back(run).then_some(match run.method {
+        Method::Trash => "Restore from trash",
+        _ => "Move back",
+    })
+}
+
+/// Undo: put this session's last clean-up back through the history, like
+/// any restore. It asks nothing first: the files return to their own places
+/// and nothing there is ever overwritten.
+pub(crate) fn undo_last() {
+    if let Some(id) = app().with_untracked(|s| s.last_run) {
+        perform_restore(id, None);
+    }
+}
+
+/// Open the restore confirmation for run `id`. What comes back and what
+/// cannot is read from the disk and the trash first, off the UI thread; the
+/// dialog opens once it is known.
+pub(crate) fn request_restore(id: u64) {
+    if busy() {
         return;
     }
-    // `trash::os_limited` (list/restore) only exists on Windows and
-    // Freedesktop-trash Unix — there is no public macOS API for it, so the
-    // module is cfg-gated out there. Mirror the crate's gate here.
-    #[cfg(any(
-        target_os = "windows",
-        all(
-            unix,
-            not(target_os = "macos"),
-            not(target_os = "ios"),
-            not(target_os = "android")
-        )
-    ))]
-    {
-        app_spawn(async move {
-            let wanted: HashSet<PathBuf> = receipt.into_iter().collect();
-            let restored = blocking(move || {
-                let items = trash::os_limited::list().map_err(|e| e.to_string())?;
-                let mine: Vec<_> = items
-                    .into_iter()
-                    .filter(|it| wanted.contains(&it.original_path()))
-                    .collect();
-                if mine.is_empty() {
-                    return Ok::<usize, String>(0);
-                }
-                let n = mine.len();
-                trash::os_limited::restore_all(mine).map_err(|e| e.to_string())?;
-                Ok(n)
-            })
-            .await;
-            let restored = match restored {
-                Ok(result) => result,
-                Err(e) => Err(format!("restore worker stopped: {e}")),
-            };
-            app().update(|s| {
-                match restored {
-                    Ok(0) => {
-                        s.status =
-                            "Nothing to restore — the trash was already emptied.".to_string();
-                        s.last_trashed.clear();
-                    }
-                    Ok(n) => {
-                        s.status = format!(
-                            "Restored {}. Scan again to see them in the list.",
-                            counted(n as u64, "file", "files")
-                        );
-                        s.last_trashed.clear();
-                        if s.cleared.is_some() {
-                            s.cleared = Some(Cleared::Restored { files: n as u64 });
-                        }
-                        if s.findings_done.is_some() {
-                            s.findings_done = Some(FindingsDone {
-                                items: n as u64,
-                                bytes: 0,
-                                went: FindingsWent::Restored,
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        s.status = format!("Restore failed: {e}");
-                    }
-                }
-                // The done card offers the restore, so it follows its outcome.
-                s.results_rev += 1;
+    let Some(run) = app().with_untracked(|s| s.history.iter().find(|r| r.id == id).cloned()) else {
+        return;
+    };
+    crate::ui::history::reset_restore_scroll();
+    app_spawn(async move {
+        let planned = blocking(move || {
+            let items = file_actions::plan_restore(&run);
+            (run, items)
+        })
+        .await;
+        let Ok((run, items)) = planned else { return };
+        app().update(|s| {
+            s.restore = Some(RestoreAsk {
+                run,
+                items,
+                left_out: HashSet::new(),
             });
         });
+    });
+}
+
+/// Leave one file of the open restore where it is, or take it back in.
+pub(crate) fn toggle_restore_item(path: &Path) {
+    app().update(|s| {
+        if let Some(ask) = s.restore.as_mut()
+            && !ask.left_out.remove(path)
+        {
+            ask.left_out.insert(path.to_path_buf());
+        }
+    });
+}
+
+pub(crate) fn cancel_restore() {
+    app().update(|s| s.restore = None);
+}
+
+/// The restore confirmation's commit: the files it lists as coming back,
+/// less the ones left out, go back.
+pub(crate) fn confirm_restore() {
+    let mut taken = None;
+    app().update(|s| taken = s.restore.take());
+    let Some(ask) = taken else { return };
+    let chosen: HashSet<PathBuf> = ask
+        .items
+        .iter()
+        .filter(|item| item.verdict.comes_back() && !ask.left_out.contains(&item.path))
+        .map(|item| item.path.clone())
+        .collect();
+    if !chosen.is_empty() {
+        perform_restore(ask.run.id, Some(chosen));
     }
-    #[cfg(not(any(
-        target_os = "windows",
-        all(
-            unix,
-            not(target_os = "macos"),
-            not(target_os = "ios"),
-            not(target_os = "android")
-        )
-    )))]
-    {
-        state.update(|s| {
-            s.last_trashed.clear();
-            s.status =
-                "Undo is not supported on this platform (trash restore needs Windows/Linux)."
-                    .to_string();
+}
+
+/// Put back run `id` — all of it, or only the `chosen` files — and say what
+/// came back and what stayed where it is, and why.
+fn perform_restore(id: u64, chosen: Option<HashSet<PathBuf>>) {
+    if begin_act("Putting files back…").is_none() {
+        return;
+    }
+    app_spawn(async move {
+        let done = blocking(move || {
+            let outcome = file_actions::restore_run(id, |path| {
+                chosen.as_ref().is_none_or(|chosen| chosen.contains(path))
+            });
+            (outcome, history::load())
+        })
+        .await;
+        let Ok((outcome, runs)) = done else {
+            worker_stopped("Putting files back stopped unexpectedly; nothing more was moved.");
+            return;
+        };
+        app().update(|s| {
+            s.acting = false;
+            s.history = Arc::new(runs);
+            // The outcome cards offer Undo, so they follow what it did.
+            s.results_rev += 1;
+            let Some(outcome) = outcome else {
+                s.status = "That clean-up is no longer in the history.".to_string();
+                return;
+            };
+            let back = outcome.restored.len() as u64;
+            let stayed: Vec<&file_actions::PlannedItem> = outcome
+                .items
+                .iter()
+                .filter(|item| {
+                    !matches!(
+                        item.verdict,
+                        file_actions::Verdict::Restored | file_actions::Verdict::AlreadyBack
+                    )
+                })
+                .collect();
+            let mut status = if back == 0 {
+                "Nothing came back".to_string()
+            } else {
+                format!(
+                    "Put back {} ({})",
+                    counted(back, "file", "files"),
+                    util::human_bytes(outcome.bytes)
+                )
+            };
+            if let Some(first) = stayed.first() {
+                status.push_str(&format!(
+                    "; {} stayed where {} — {}: {}",
+                    counted(stayed.len() as u64, "file", "files"),
+                    if stayed.len() == 1 {
+                        "it is"
+                    } else {
+                        "they are"
+                    },
+                    file_name(&first.path),
+                    first.verdict.says()
+                ));
+            }
+            if back > 0 && s.last_run == Some(id) {
+                status.push_str(". Scan again to see them in the list");
+                if s.cleared.is_some() {
+                    s.cleared = Some(Cleared::Restored { files: back });
+                }
+                if s.findings_done.is_some() {
+                    s.findings_done = Some(FindingsDone {
+                        items: back,
+                        bytes: 0,
+                        went: FindingsWent::Restored,
+                    });
+                }
+            }
+            status.push('.');
+            s.status = status;
+            let failed = back == 0
+                || stayed
+                    .iter()
+                    .any(|item| matches!(item.verdict, file_actions::Verdict::Failed(_)));
+            crate::ui::toast::notify(s.status.clone(), failed);
         });
-    }
+    });
 }
 
 // --- Consolidate ------------------------------------------------------------
@@ -2023,22 +2194,32 @@ pub(crate) fn confirm_consolidate() {
         });
         return;
     }
-    let hash = state.with_untracked(|s| s.last_hash);
+    let (hash, roots) = state.with_untracked(|s| (s.last_hash, s.last_paths.clone()));
     let Some(generation) = begin_act("Moving keepers…") else {
         return;
     };
     app_spawn(async move {
-        let outcome = blocking(move || {
+        let done = blocking(move || {
             let engine = hashing::HashEngine::new(hash);
-            file_actions::move_targets(&targets, &engine)
+            let mut outcome = file_actions::move_targets(&targets, &engine);
+            let recorded = record(
+                RunKind::Consolidate,
+                Method::Moved,
+                &roots,
+                hash,
+                outcome.bytes_moved,
+                std::mem::take(&mut outcome.items),
+            );
+            (outcome, recorded)
         })
         .await;
-        let Ok(outcome) = outcome else {
+        let Ok((outcome, recorded)) = done else {
             worker_stopped("Consolidate failed: worker stopped.");
             return;
         };
         app().update(|s| {
             s.acting = false;
+            take_recorded(s, recorded);
             // A scan (or Back) since the move started: these results are not
             // the ones it moved, so only the status says what happened.
             let moved = if s.scan_gen == generation {
@@ -2189,8 +2370,14 @@ pub(crate) fn confirm_findings_act() {
     let Some(result) = state.with_untracked(|s| s.mode_result.clone()) else {
         return;
     };
-    let (trash, hash, protected) =
-        state.with_untracked(|s| (s.trash, s.last_hash, s.last_ref_dirs.clone()));
+    let (trash, hash, protected, roots) = state.with_untracked(|s| {
+        (
+            s.trash,
+            s.last_hash,
+            s.last_ref_dirs.clone(),
+            s.last_paths.clone(),
+        )
+    });
     match findings_act(result.mode) {
         FindingsAct::ReportOnly => {}
         FindingsAct::Delete => {
@@ -2203,18 +2390,27 @@ pub(crate) fn confirm_findings_act() {
                 return;
             };
             app_spawn(async move {
-                let outcome = blocking(move || {
+                let done = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
-                    file_actions::remove_findings(
+                    let mut outcome = file_actions::remove_findings(
                         &result.findings,
                         &result.groups,
                         disposition,
                         &protected,
                         &engine,
-                    )
+                    );
+                    let recorded = record(
+                        RunKind::Findings,
+                        disposition.into(),
+                        &roots,
+                        hash,
+                        outcome.bytes_freed,
+                        std::mem::take(&mut outcome.items),
+                    );
+                    (outcome, recorded)
                 })
                 .await;
-                let Ok(outcome) = outcome else {
+                let Ok((outcome, recorded)) = done else {
                     worker_stopped("The delete stopped unexpectedly; nothing more was removed.");
                     return;
                 };
@@ -2240,6 +2436,7 @@ pub(crate) fn confirm_findings_act() {
                     went,
                     status,
                     !outcome.failures.is_empty(),
+                    recorded,
                 );
             });
         }
@@ -2248,12 +2445,22 @@ pub(crate) fn confirm_findings_act() {
                 return;
             };
             app_spawn(async move {
-                let outcome = blocking(move || {
+                let done = blocking(move || {
                     let engine = hashing::HashEngine::new(hash);
-                    crate::modes::strip_metadata(&result.findings, &protected, &engine)
+                    let mut outcome =
+                        crate::modes::strip_metadata(&result.findings, &protected, &engine);
+                    let recorded = record(
+                        RunKind::StripMetadata,
+                        Method::Rewritten,
+                        &roots,
+                        hash,
+                        outcome.bytes_saved,
+                        std::mem::take(&mut outcome.items),
+                    );
+                    (outcome, recorded)
                 })
                 .await;
-                let Ok(outcome) = outcome else {
+                let Ok((outcome, recorded)) = done else {
                     worker_stopped(
                         "Removing metadata stopped unexpectedly; nothing more was changed.",
                     );
@@ -2273,6 +2480,7 @@ pub(crate) fn confirm_findings_act() {
                         "Removed the metadata from {photos} ({bytes} freed){changed}{failed}{kept}."
                     ),
                     !outcome.failures.is_empty(),
+                    recorded,
                 );
             });
         }
@@ -2298,16 +2506,14 @@ fn apply_findings_done(
     went: FindingsWent,
     status: String,
     failed: bool,
+    recorded: Recorded,
 ) {
     let gone: HashSet<&PathBuf> = done.iter().collect();
     app().update(|s| {
         s.acting = false;
-        // The trash receipt holds whatever page is up now.
-        match went {
-            FindingsWent::Trash => s.last_trashed = done.to_vec(),
-            FindingsWent::Deleted => s.last_trashed.clear(),
-            FindingsWent::Stripped | FindingsWent::Restored => {}
-        }
+        // Whatever page is up now, the History page lists the run and Undo
+        // offers it.
+        take_recorded(s, recorded);
         s.status = status;
         crate::ui::toast::notify(s.status.clone(), failed);
         // A scan (or Back) since the act started: these findings are not the

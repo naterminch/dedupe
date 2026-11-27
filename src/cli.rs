@@ -31,7 +31,8 @@ fn cli_styles() -> Styles {
 )]
 pub struct Cli {
     /// Paths to scan (files or directories). Run with no arguments (or
-    /// --gui) to open the desktop app instead.
+    /// --gui) to open the desktop app instead. With --restore: the files or
+    /// folders of that clean-up to put back (all of it when none are given).
     #[arg(value_name = "PATH", num_args = 1..)]
     pub paths: Vec<String>,
 
@@ -239,6 +240,22 @@ pub struct Cli {
     /// `*.log`, `**/node_modules/**`). `*` does not cross `/` or `\`.
     #[arg(long, value_name = "GLOB", action = clap::ArgAction::Append)]
     pub ignore: Vec<String>,
+
+    /// List the clean-ups dedupe has run — deletes, moves, hard links,
+    /// consolidations and metadata removal, from the desktop app and the
+    /// command line — newest first, with the ID that --restore takes. The
+    /// newest 200 are kept in `~/.dedupe/history.json`.
+    #[arg(long, conflicts_with = "restore")]
+    pub history: bool,
+
+    /// Put back clean-up ID (see --history): trashed files come back from
+    /// the trash (Windows and Linux), moved and consolidated ones from their
+    /// folder. Nothing is overwritten: a file whose place is taken now, or
+    /// that is gone from the trash or its folder, stays where it is and is
+    /// reported. Files deleted for good, hard links and removed metadata
+    /// cannot come back. Asks first unless --yes; --dry-run only lists.
+    #[arg(long, value_name = "ID")]
+    pub restore: Option<u64>,
 }
 
 /// Content-hash algorithm behind `--hash`.

@@ -3,9 +3,9 @@
 //!
 //! The engine tests drive the production [`DedupeApp`] root through the
 //! steps a user takes (press, type, submit) and assert on what the screen
-//! shows. Prefs are pointed at a temp file under [`ENV_LOCK`] (the env var
-//! is process-global), so nothing here touches the real
-//! `~/.dedupe/dedupe.json`.
+//! shows. Prefs and the clean-up history are pointed at temp files under
+//! [`ENV_LOCK`] (the env vars are process-global), so nothing here touches
+//! the real `~/.dedupe/dedupe.json` or `~/.dedupe/history.json`.
 
 use std::path::{Path, PathBuf};
 use std::sync::{MutexGuard, PoisonError};
@@ -24,9 +24,15 @@ use crate::ui::actions;
 use crate::ui::root::DedupeApp;
 use crate::ui::state::{AppState, Cleared, FolderEntry, Went};
 
-/// One headless engine on a temp prefs file, holding [`ENV_LOCK`] for the
-/// whole test (bootstrap loads prefs on mount).
+/// One headless engine on temp prefs and history files, holding [`ENV_LOCK`]
+/// for the whole test (bootstrap loads both on mount).
 fn start() -> (Headless, PrefsGuard) {
+    start_with(|| {})
+}
+
+/// [`start`], running `prepare` once the temp files are in place and before
+/// the app mounts and reads them.
+fn start_with(prepare: impl FnOnce()) -> (Headless, PrefsGuard) {
     let lock = ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let path = std::env::temp_dir().join(format!(
         "dedupe-ui-prefs-{}-{}.json",
@@ -39,6 +45,9 @@ fn start() -> (Headless, PrefsGuard) {
     // SAFETY: ENV_LOCK is held for the whole test, so no other test thread
     // reads or writes the environment meanwhile.
     unsafe { std::env::set_var("DEDUPE_PREFS", &path) };
+    // SAFETY: as above.
+    unsafe { std::env::set_var("DEDUPE_HISTORY", path.with_extension("history.json")) };
+    prepare();
     let config = EngineConfig {
         viewport: Size::new(px(1120.0), px(640.0)),
         ..EngineConfig::new(Root::of::<DedupeApp>())
@@ -56,6 +65,9 @@ impl Drop for PrefsGuard {
     fn drop(&mut self) {
         // SAFETY: `_lock` drops after this, so the lock is still held.
         unsafe { std::env::remove_var("DEDUPE_PREFS") };
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("DEDUPE_HISTORY") };
+        let _ = std::fs::remove_file(self.path.with_extension("history.json"));
         let _ = std::fs::remove_file(&self.path);
     }
 }
@@ -998,6 +1010,56 @@ fn cleanup_findings_delete_after_confirmation() {
     })();
     let _ = std::fs::remove_dir_all(&dir);
     result.expect("cleanup findings delete after confirmation");
+}
+
+/// A clean-up from an earlier session (copies moved aside) is listed on the
+/// History page, and Put back… brings it home only after a confirmation that
+/// says what comes back.
+#[test]
+fn history_lists_a_past_run_and_puts_it_back() {
+    use crate::history::{Method, NewRun, RunKind, record};
+    let dir = fixture_dir("history-fixture");
+    let copy = dir.join("copy.txt");
+    std::fs::write(&copy, b"same bytes").expect("fixture file");
+    let (mut app, _guard) = start_with(|| {
+        let engine = crate::hashing::HashEngine::new(crate::cli::HashAlgo::Blake3);
+        let mut moved = crate::actions::move_targets(
+            &[crate::actions::MoveTarget {
+                from: copy.clone(),
+                to: dir.join("aside").join("copy.txt"),
+                expected_hash: engine.full(&copy).expect("fixture hash"),
+                size: 10,
+            }],
+            &engine,
+        );
+        record(NewRun {
+            kind: RunKind::MoveAside,
+            method: Method::Moved,
+            roots: &[&dir],
+            hash_algo: "blake3",
+            bytes: moved.bytes_moved,
+            items: std::mem::take(&mut moved.items),
+        })
+        .expect("the run is recorded");
+    });
+    let result = (|| {
+        app.wait_for("label:History")?;
+        app.press("label:History")?;
+        app.wait_for("text:/Moved 1 duplicate copy to/")?;
+        app.press("text:Put back…")?;
+        app.wait_for("text:Put back 1 file?")?;
+        if copy.exists() {
+            return Err("nothing may move before the restore is confirmed".to_string());
+        }
+        app.press("text:Put back 1")?;
+        app.wait_for_within("text:All back", std::time::Duration::from_secs(30))?;
+        if std::fs::read(&copy).map_err(|e| e.to_string())? != b"same bytes" {
+            return Err("the copy should be back at its own path".to_string());
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result.expect("History puts a past run back");
 }
 
 /// The report's file type decides its format, so a CSV export is CSV.

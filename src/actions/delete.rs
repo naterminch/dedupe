@@ -1,7 +1,8 @@
 use super::guard::prompt;
-use super::guard::verify_expected;
+use super::guard::{known_hash, verify_expected};
 use super::{ActionError, DeleteOutcome, DeleteTarget, DeletionStats, Disposition};
 use crate::hashing::HashEngine;
+use crate::history::Item;
 use crate::matching::Group;
 use crate::util::human_bytes;
 use console::style;
@@ -38,6 +39,12 @@ pub fn delete_targets(
                     Ok(()) => {
                         outcome.deleted.push(target.path.clone());
                         outcome.bytes_freed += target.size;
+                        outcome.items.push(Item::new(
+                            target.path.clone(),
+                            target.size,
+                            disposition.into(),
+                            known_hash(&target.expected_hash),
+                        ));
                     }
                     Err(err) => {
                         eprintln!(
@@ -140,6 +147,7 @@ pub fn delete_duplicates(
         stats.bytes_freed += outcome.bytes_freed;
         stats.files_skipped += outcome.skipped.len() as u64;
         stats.failures.extend(outcome.failures);
+        stats.items.extend(outcome.items);
     }
 
     stats

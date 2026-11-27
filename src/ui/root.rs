@@ -1,9 +1,10 @@
 //! Root component: nav rail, body and status bar.
 //!
-//! The rail is shared by every view: Home (the scan workspace) and Settings,
-//! with the theme switch at the bottom. The body swaps between the scan
-//! workspace (sidebar + results) and the Settings page. Preferences are
-//! restored once, on the first frame, through `actions::bootstrap`.
+//! The rail is shared by every view: Home (the scan workspace), History and
+//! Settings, with the theme switch at the bottom. The body swaps between the
+//! scan workspace (sidebar + results), the History page and the Settings
+//! page. Preferences are restored once, on the first frame, through
+//! `actions::bootstrap`.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -16,7 +17,7 @@ use crate::ui::widgets::{
     RAIL_GAP, RAIL_PAD, caption, drop_sheet, entering, ground, icon_ghost_button, icons,
     move_rail_marker, rail_button, rail_marker, status_strip, theme_dissolve,
 };
-use crate::ui::{actions, results, settings, shell, toast};
+use crate::ui::{actions, history, results, settings, shell, toast};
 use crate::ui_helpers::counted;
 use crate::util;
 
@@ -24,8 +25,9 @@ use crate::util;
 pub fn DedupeApp() -> impl IntoElement {
     effect(|| untracked(actions::bootstrap));
     // Escape first closes the keyboard (fires even inside inputs);
-    // outside an input it is navigation: leave the Settings page. The
-    // bindings live under the root component's owner: the whole app.
+    // outside an input it is navigation: close a confirmation, or leave the
+    // History or Settings page. The bindings live under the root
+    // component's owner: the whole app.
     on_key_with(
         "escape",
         KeyOptions {
@@ -44,7 +46,7 @@ pub fn DedupeApp() -> impl IntoElement {
             pass_through: false,
             for_focus: false,
         },
-        |_| actions::escape_leaves_settings(),
+        |_| actions::escape_leaves_page(),
     );
     // A drag of folders over the window lays the drop sheet over the work.
     let dragging = signal(false);
@@ -97,16 +99,21 @@ pub fn DedupeApp() -> impl IntoElement {
                         // on its own flag.
                         s.removal,
                         s.confirm_findings,
+                        // The restore dialog opens once its plan is read, and
+                        // follows the files left out of it.
+                        s.restore.as_ref().map(|r| (r.run.id, r.left_out.len())),
                     )
                 })
             });
-            let (deleting, _, consolidating, _, _, _, _, findings) = open.get();
+            let (deleting, _, consolidating, _, _, _, _, findings, restoring) = open.get();
             if deleting {
                 results::delete_confirm()
             } else if consolidating {
                 results::consolidate_confirm()
             } else if findings {
                 results::findings_confirm()
+            } else if restoring.is_some() {
+                history::restore_confirm()
             } else {
                 view()
             }
@@ -122,7 +129,11 @@ const RAIL_WIDTH: f32 = 56.0;
 /// of the body; the vermilion marker outlives the slots' rebuilds, so it
 /// travels to the new slot instead of reappearing there.
 fn nav_rail() -> View {
-    let slot_of = |view: AppView| usize::from(view == AppView::Settings);
+    let slot_of = |view: AppView| match view {
+        AppView::Main => 0,
+        AppView::History => 1,
+        AppView::Settings => 2,
+    };
     let travel = nsh_core::element::motion();
     let first = app().with_untracked(|s| slot_of(s.view));
     let shown = Rc::new(Cell::new(first));
@@ -151,7 +162,13 @@ fn nav_rail() -> View {
                     icons::HOME,
                     "Scan workspace",
                     view_now == AppView::Main,
-                    actions::leave_settings,
+                    actions::open_workspace,
+                ))
+                .child(rail_button(
+                    icons::HISTORY,
+                    "History",
+                    view_now == AppView::History,
+                    actions::open_history,
                 ))
                 .child(rail_button(
                     icons::SLIDERS,
@@ -185,24 +202,28 @@ fn body() -> impl IntoElement {
             let page = computed(|| app().with(|s| s.view));
             // Each page rises in as it mounts: the rail says where you are and
             // the page arriving says you moved, without a wipe between them.
-            if page.get() == AppView::Settings {
-                let enter = entering();
-                view()
+            let enter = entering();
+            match page.get() {
+                AppView::Settings => view()
                     .flex_1()
                     .h_full()
                     .min_w(px(0.0))
                     .child(settings::settings_page())
-                    .bind_motion(&enter)
-            } else {
-                let enter = entering();
-                view()
+                    .bind_motion(&enter),
+                AppView::History => view()
+                    .flex_1()
+                    .h_full()
+                    .min_w(px(0.0))
+                    .child(history::history_page())
+                    .bind_motion(&enter),
+                AppView::Main => view()
                     .flex_row()
                     .flex_1()
                     .h_full()
                     .min_w(px(0.0))
                     .child(shell::sidebar())
                     .child(results::results())
-                    .bind_motion(&enter)
+                    .bind_motion(&enter),
             }
         }))
 }

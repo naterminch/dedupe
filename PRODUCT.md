@@ -70,8 +70,12 @@ chosen.
   and are never deleted.
 - FFmpeg is optional. It adds media info, video comparison and audio
   fingerprints.
-- Settings and light/dark mode persist between runs. Caches live in
-  `~/.dedupe/`.
+- Every clean-up (delete, move, hard link, consolidate, metadata removal),
+  from the GUI or the CLI, is recorded in a history. The History page and
+  `--history` list the runs; a run, or some of its files, can be put back
+  after a confirmation that says what comes back and what cannot.
+- Settings, light/dark mode and the clean-up history persist between runs.
+  Caches and the history live in `~/.dedupe/`.
 
 ## Capabilities and Constraints
 
@@ -80,11 +84,13 @@ chosen.
 - Nothing inside a protected folder or `--reference-dir` is ever deleted, in any
   mode.
 - Ways to clean up without losing data: dry run, move-aside, hard links,
-  consolidate.
+  consolidate, and putting a clean-up back from History. A restore never
+  overwrites a file that is at the original place now.
 - Terms used across the UI: **Keeping** (the badge on the copy that stays,
   followed by why it stays), **Delete** / **Keep too** (a copy ticked /
   unticked for deletion), **Reclaimable** (the space a delete frees),
-  **protected** folder, **Consolidate**, cleanup scan / findings.
+  **protected** folder, **Consolidate**, cleanup scan / findings, **History**
+  (the past clean-ups) and **Put back** (a restore).
 - One binary per OS. The GUI never opens a terminal window.
 
 ## Brand Commitments

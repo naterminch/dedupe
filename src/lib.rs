@@ -17,6 +17,8 @@ pub mod cli;
 pub mod glob;
 /// Content hashing (full file and partial) with an in-run cache.
 pub mod hashing;
+/// The clean-up history: every run that changed files, and what came back.
+pub mod history;
 /// Turning hashed and fingerprinted entries into duplicate groups.
 pub mod matching;
 /// Optional ffprobe lookups for image and video metadata.

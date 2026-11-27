@@ -323,6 +323,8 @@ mod tests {
             hardlink: false,
             strip_exif: false,
             ignore: vec![],
+            history: false,
+            restore: None,
         }
     }
 }

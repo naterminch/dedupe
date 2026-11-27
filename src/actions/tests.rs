@@ -1067,3 +1067,54 @@ fn move_targets_never_replace_a_file_that_appeared_after_planning() {
     assert!(!dup.exists());
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A moved copy goes back to its own place; one edited after the move is
+/// never carried back over the user's work, and a second restore finds the
+/// first file already back.
+#[test]
+fn restore_moves_back_only_unchanged_copies() {
+    let _lock = crate::prefs::ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tmpdir("restore");
+    // SAFETY: ENV_LOCK is held, so no other test thread touches the
+    // environment meanwhile.
+    unsafe { std::env::set_var("DEDUPE_HISTORY", dir.join("history.json")) };
+    let alpha = dir.join("alpha.txt");
+    let bravo = dir.join("bravo.txt");
+    fs::write(&alpha, b"alpha").unwrap();
+    fs::write(&bravo, b"bravo").unwrap();
+    let aside = dir.join("aside");
+    let mut moved = move_targets(
+        &[
+            move_target_for(&alpha, aside.join("alpha.txt")),
+            move_target_for(&bravo, aside.join("bravo.txt")),
+        ],
+        &engine(),
+    );
+    let id = crate::history::record(crate::history::NewRun {
+        kind: crate::history::RunKind::MoveAside,
+        method: crate::history::Method::Moved,
+        roots: &[&dir],
+        hash_algo: "blake3",
+        bytes: moved.bytes_moved,
+        items: std::mem::take(&mut moved.items),
+    })
+    .expect("the run is recorded");
+    fs::write(aside.join("bravo.txt"), b"edited after the move").unwrap();
+
+    let first = restore_run(id, |_| true).expect("the run is in the history");
+    let second = restore_run(id, |_| true).expect("the run is in the history");
+    // SAFETY: as above; the lock is still held.
+    unsafe { std::env::remove_var("DEDUPE_HISTORY") };
+
+    assert_eq!(first.restored, std::slice::from_ref(&alpha));
+    assert_eq!(fs::read(&alpha).unwrap(), b"alpha");
+    assert!(!bravo.exists(), "a changed copy stays where it was moved");
+    assert_eq!(
+        first.items[1].verdict,
+        Verdict::Changed(aside.join("bravo.txt"))
+    );
+    assert_eq!(second.items[0].verdict, Verdict::AlreadyBack);
+    let _ = fs::remove_dir_all(&dir);
+}
