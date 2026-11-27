@@ -8,23 +8,26 @@ look; everything visual is the app's own, and it lives in two places:
   `radius`, `space` and `size` scales.
 - `src/ui/widgets.rs` — the app's `ui` layer: the only module that imports
   `nsh_base` controls or writes a colour, radius or font size. Feature files
-  (`root`, `shell`, `results`, `settings`) compose these and layout primitives,
-  passing meanings (`BadgeTone`, `Decision`, `Ink`, enabled/active flags), never
-  looks:
+  (`root`, `shell`, `results`, `compare`, `settings`) compose these and layout
+  primitives, passing meanings (`BadgeTone`, `Decision`, `Ink`, enabled/active
+  flags), never looks:
   - text roles: `heading`, `section_title`, `panel_title`, `name`, `body`,
     `amount`, `figure`, `caption`, `description`, `field_label`, `wordmark`,
     and `title_block` (a running head, a title and its line);
   - buttons: `primary_button`, `secondary_button`, `icon_secondary_button`,
     `ghost_button`, `danger_button`, `quiet_button`, `icon_button`,
     `icon_ghost_button`, `rail_button`, `row_button`, `row_icon_button`;
-  - choices and inputs: `segmented`, `icon_segmented`, `radio_segmented`,
+  - choices and inputs: `segmented` (and `segmented_names` for names known
+    only at run time), `icon_segmented`, `radio_segmented`,
     `option_select` + `dropdown_trigger`, `number_field`, `field`,
-    `toggle_switch`, `tick`;
+    `toggle_switch`, `tick`, `scrubber`;
   - surfaces and regions: `ground`, `side_pane`, `status_strip`, `card`,
-    `notice`, `error_notice`, `tile`, `list_row`, `disclosure`, `alert_dialog`,
-    `action_bar` + `action_group`, `divider`;
+    `notice`, `error_notice`, `tile` + `live_tile`, `list_row`, `disclosure`
+    (with an optional action beside its trigger), `alert_dialog`,
+    `window_sheet`, `action_bar` + `action_group`, `divider`;
   - media and status: `preview_frame`, `preview_image`, `clip_glyph`,
-    `kind_preview`, `press_to_play`, `video_player`, `progress_bar`, `badge`
+    `kind_preview`, `press_to_play`, `video_player`, `viewer_frame` +
+    `viewer_image`, `synced_player`, `progress_bar`, `badge`
     (`BadgeTone::Kind(Kind)` for a dyed kind tag), `keeper_badge`, `glyph`,
     `logo`, `hint`;
   - the brush marks: `seal` + `pressed_seal`, `turning_enso`, `rail_marker`
@@ -92,6 +95,7 @@ Each screen answers one question with its largest element:
 | New scan | What will this scan look at, and how will it decide? | The setup form: folders, what to find, keep rule, similarity, where deletes go, video support; **Scan** is the one primary action in the title row |
 | Review duplicates | How much space can I get back, and which copies go? | The **Reclaimable** figure (36 pt Light, vermilion) beside the title — the ticked copies, the same set Delete counts, with "of N found" under it while the two differ — then one card per group with the keeper (a matcha "Keeping" badge, why it stays beside it as a caption) and the ticked copies (an ochre tick reading "Delete", an unticked one "Keep too") marked. Once a delete clears every group the figure reads **Freed** for a permanent delete, **In the trash** for a trashed one (with the way to the space back under it), and a card says where the copies went, with the settled seal pressed beside it |
 | Cleanup findings | What did the cleanup scan find, and how much space does it hold? | The same title row and figure; one toolbar (Delete N, or Remove metadata for photo metadata; Export report…); the findings as one ruled list |
+| Compare copies | Which of these copies should stay? | The two copies themselves, side by side at the same zoom over a details table that sets what differs in ink and names the copy with **More detail** (or the **Longer** clip); the group's share of Reclaimable is the figure, moving as the keeper and the ticks do |
 | Settings | What does each default do? | Two columns: each section's title and purpose beside a panel of rows that say what they change |
 | History | What did dedupe change, and what can come back? | One ruled card of runs, newest first: what happened over when, where and what is back, its size on the right edge, and **Put back…** or the reason there is no way back. Put back… opens a confirmation that lists, file by file, what comes back and what cannot, and why |
 
@@ -139,7 +143,7 @@ Scales are finite:
   Cards and floating surfaces take 6, controls 4, and anything inset inside a
   card or a control (a segment in its groove, a group header's hover, a
   preview in its tile) takes 2, so nested curves stay concentric.
-  `rounded_full` is for the switch and the seal alone.
+  `rounded_full` is for the switch, the scrubber's thumb and the seal alone.
 - `space::{XXS..XXL}` = 2, 4, 8, 12, 16, 24, 32, and `MA` = 48, the margin
   either side of the work area and a settings page.
 - `size::{CONTROL, COMPACT}` = 32, 26 pt. Every button, field, select and
@@ -222,6 +226,21 @@ so "What to find" is an `option_select`.
 - Settings: a 200 pt nav, then sections split by full-width rules: a 240 pt
   label column (title and purpose) beside a panel whose rows show their own
   descriptions.
+- Compare: a `window_sheet` over the whole window (the same ground and
+  grain, no rail, no folder pane: the pictures get the width). The title row
+  ("Compare copies", the group's kind and copies, the group's Reclaimable
+  figure); one toolbar — Previous group / Next group with "Group 2 of 7", then
+  Zoom out / Fit / 100% / Zoom in for photos or Play both, a scrubber and the
+  time for clips, then, in a group of three or more, a `segmented_names` of the
+  copies that can sit beside the keeper, and Close. Under it one card: two
+  `live_tile` panes, the keeper on the left, each with its name, its decision
+  (the list's own `decision_mark` and Keep this one instead) and a
+  `viewer_frame`; then a rule and the details, each line's name in a 120 pt
+  middle column with the left copy's value running toward it from the left and
+  the right copy's from the right. The details scroll past 168 pt so the panes
+  keep the window. One lens drives both panes: zoom as a multiple of "fit" and
+  the centre as fractions of the picture, so copies of different sizes show
+  the same region; limits and 100% are read against the keeper's pane.
 
 ## Interaction states
 
@@ -291,6 +310,13 @@ nsh lands them at their end state when reduce-motion is on.
 | Cleared card's seal meeting the paper | `seal_bleed()`: a faint vermilion ring under the seal widens and fades, as the seal's ink soaks into the fibres (`Scale` 1→1.4→2, `Opacity` 0→0.5→0); once per clean-up. Reduce-motion: never shown | 680 ms, from the press's contact (1000 ms delay) |
 | Light ⇄ dark | `theme_dissolve()`: a `screen_transition` (`assets/shaders/theme_soak.wgsl`); the new sheet soaks into the old one as a wash runs across washi, from the top-left corner, its front softened by pulp clouds. No GPU: cross-fade | 520 ms |
 | Folders dragged over the window | `drop_sheet()`: a card-paper sheet with a dashed `MUTED` edge over the work, "Drop to add folders"; it takes no pointer, so the drop lands beneath it | opacity, `BASE` |
+| Compare opening and closing | `window_sheet`: nsh's dialog layer with `ModalAnimation::Fade`; the page does not slide, the whole window is the sheet | platform fade |
+| Compare stepping to another group or copy | `fading_in()` on the page; the sheet and the focus stay | `FadeIn`, 300 ms |
+| Compare zoom by key or button (`+`, `-`, Fit, 100%) | `transition_transform` on the picture's shift and scale, in both panes at once | `BASE`, ease-out |
+| Compare zoom by wheel, pan by drag | none: the picture follows the pointer 1:1 (the glide is switched off for these), so the point under the pointer stays under it | — |
+| Compare keeper swap, tick | the pane's edge crosses over (`live_tile`), the decision's wash soaks in — the list's own tile and tag motion | `FAST` edge; `BASE` soak |
+| Compare clips playing | Play both ⇄ Pause both glyph swap; the scrubber's range follows the left clip's progress events (no easing: it is a live value) and its thumb grows 10% under the pointer | thumb `transition-transform` |
+| Compare details arriving | none: "Reading the details…" gives way to the table in place once the headers are read, a value that lands once | — |
 
 With reduce-motion on, every line above lands at its end state: the
 transitions take 0 ms through `motion(ms)` and the presets land without

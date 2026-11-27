@@ -65,6 +65,157 @@ fn without_metadata(data: &[u8]) -> Option<Vec<u8>> {
     strip_jpeg_metadata(data).or_else(|| strip_png_metadata(data))
 }
 
+/// What a photo says about itself: its size in pixels, and the camera and the
+/// moment its EXIF block records, for a side-by-side look at two copies.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PhotoInfo {
+    pub width: u32,
+    pub height: u32,
+    /// The camera's make and model, as one name ("Canon EOS R6").
+    pub camera: Option<String>,
+    /// When the picture was taken, as the camera wrote it: `YYYY:MM:DD
+    /// HH:MM:SS` in the camera's own local time.
+    pub taken: Option<String>,
+}
+
+/// Read a photo's header and EXIF block without decoding its pixels. `None`
+/// when the file is not an image the decoder knows; a photo without EXIF
+/// still reports its size.
+#[must_use]
+pub fn photo_info(path: &Path) -> Option<PhotoInfo> {
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_decoder()
+        .ok()?;
+    let (width, height) = decoder.dimensions();
+    let (camera, taken) = decoder
+        .exif_metadata()
+        .ok()
+        .flatten()
+        .map(|exif| camera_and_taken(&exif))
+        .unwrap_or_default();
+    Some(PhotoInfo {
+        width,
+        height,
+        camera,
+        taken,
+    })
+}
+
+/// IFD0's make, model and the pointer to the EXIF sub-IFD, and the EXIF
+/// sub-IFD's original date.
+const TAG_MAKE: u16 = 0x010F;
+const TAG_MODEL: u16 = 0x0110;
+const TAG_EXIF_IFD: u16 = 0x8769;
+const TAG_DATE_TAKEN: u16 = 0x9003;
+
+/// The camera name and the date taken from a raw EXIF block: a TIFF
+/// structure, optionally behind JPEG's `Exif\0\0` marker. Anything malformed
+/// reads as absent, never as an error: these are details, not decisions.
+pub(crate) fn camera_and_taken(exif: &[u8]) -> (Option<String>, Option<String>) {
+    let tiff = exif.strip_prefix(b"Exif\0\0").unwrap_or(exif);
+    let Some(reader) = Tiff::new(tiff) else {
+        return (None, None);
+    };
+    let Some(ifd0) = reader.u32_at(4) else {
+        return (None, None);
+    };
+    let make = reader.ascii(ifd0, TAG_MAKE);
+    let model = reader.ascii(ifd0, TAG_MODEL);
+    let camera = match (make, model) {
+        // Most models already start with the maker's name ("Canon EOS R6").
+        (Some(make), Some(model))
+            if !model
+                .to_ascii_lowercase()
+                .starts_with(&make.to_ascii_lowercase()) =>
+        {
+            Some(format!("{make} {model}"))
+        }
+        (_, Some(model)) => Some(model),
+        (make, None) => make,
+    };
+    let taken = reader
+        .long(ifd0, TAG_EXIF_IFD)
+        .and_then(|sub| reader.ascii(sub, TAG_DATE_TAKEN));
+    (camera, taken)
+}
+
+/// A TIFF structure in either byte order.
+struct Tiff<'a> {
+    data: &'a [u8],
+    little: bool,
+}
+
+impl<'a> Tiff<'a> {
+    fn new(data: &'a [u8]) -> Option<Self> {
+        let little = match data.get(..4)? {
+            [b'I', b'I', 42, 0] => true,
+            [b'M', b'M', 0, 42] => false,
+            _ => return None,
+        };
+        Some(Self { data, little })
+    }
+
+    fn u16_at(&self, at: usize) -> Option<u16> {
+        let bytes: [u8; 2] = self.data.get(at..at + 2)?.try_into().ok()?;
+        Some(if self.little {
+            u16::from_le_bytes(bytes)
+        } else {
+            u16::from_be_bytes(bytes)
+        })
+    }
+
+    fn u32_at(&self, at: usize) -> Option<usize> {
+        let bytes: [u8; 4] = self.data.get(at..at + 4)?.try_into().ok()?;
+        let value = if self.little {
+            u32::from_le_bytes(bytes)
+        } else {
+            u32::from_be_bytes(bytes)
+        };
+        usize::try_from(value).ok()
+    }
+
+    /// The 12-byte entry for `tag` in the IFD at `ifd`.
+    fn entry(&self, ifd: usize, tag: u16) -> Option<usize> {
+        let count = usize::from(self.u16_at(ifd)?);
+        (0..count)
+            .map(|i| ifd + 2 + i * 12)
+            .find(|&at| self.u16_at(at) == Some(tag))
+    }
+
+    /// A LONG (type 4) value: an offset to another IFD.
+    fn long(&self, ifd: usize, tag: u16) -> Option<usize> {
+        let at = self.entry(ifd, tag)?;
+        if self.u16_at(at + 2)? != 4 {
+            return None;
+        }
+        self.u32_at(at + 8)
+    }
+
+    /// An ASCII (type 2) value, trimmed of its NULs and padding; `None`
+    /// when it is empty.
+    fn ascii(&self, ifd: usize, tag: u16) -> Option<String> {
+        let at = self.entry(ifd, tag)?;
+        if self.u16_at(at + 2)? != 2 {
+            return None;
+        }
+        let len = self.u32_at(at + 4)?;
+        // Up to four bytes sit in the entry itself; longer ones elsewhere.
+        let start = if len <= 4 {
+            at + 8
+        } else {
+            self.u32_at(at + 8)?
+        };
+        let bytes = self.data.get(start..start.checked_add(len)?)?;
+        let text = String::from_utf8_lossy(bytes);
+        let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+        (!text.is_empty()).then(|| text.to_string())
+    }
+}
+
 /// Strip EXIF and XMP metadata from the JPEG and PNG files under the scan
 /// roots.
 ///

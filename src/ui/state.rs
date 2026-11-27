@@ -202,6 +202,19 @@ pub(crate) struct RestoreAsk {
     pub(crate) left_out: HashSet<PathBuf>,
 }
 
+/// The pair the compare view shows: two copies of one group side by side.
+/// The panes are fixed by path, so swapping the keeper inside the view moves
+/// its marks and never its pictures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Comparing {
+    /// The group's [`Group::index`].
+    pub(crate) group: usize,
+    /// The left pane: the group's keeper when the pair was chosen.
+    pub(crate) left: PathBuf,
+    /// The right pane: the copy set beside it.
+    pub(crate) right: PathBuf,
+}
+
 /// Owned report data carried into the async save task.
 pub(crate) struct ReportSnapshot {
     pub(crate) paths: Vec<String>,
@@ -337,6 +350,10 @@ pub(crate) struct AppState {
     /// The delete confirmation dialog is open: the ticked duplicates are
     /// shown as a dry run and nothing is removed until it is confirmed.
     pub(crate) confirm_delete: bool,
+    /// The compare view is open on this pair. A review aid only: every
+    /// decision taken inside it goes through the same keeper and tick
+    /// actions as the results list.
+    pub(crate) comparing: Option<Comparing>,
     /// What the confirmation does with the ticked copies; remembered, and
     /// named by the toolbar button that opens it.
     pub(crate) removal: Removal,
@@ -435,6 +452,7 @@ impl Default for AppState {
             consolidate_dest: None,
             consolidating: false,
             confirm_delete: false,
+            comparing: None,
             removal: Removal::Delete,
             move_dest: None,
             confirm_findings: false,

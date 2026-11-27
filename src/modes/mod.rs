@@ -19,7 +19,7 @@ use crate::scan::FileEntry;
 use std::path::{Path, PathBuf};
 
 pub use crate::glob::glob_match;
-pub use exif::{ExifReport, StripOutcome, strip_exif, strip_metadata};
+pub use exif::{ExifReport, PhotoInfo, StripOutcome, photo_info, strip_exif, strip_metadata};
 pub use names::{MatchBucket, match_entries, name_similarity};
 
 /// Extensions the music mode treats as audio, lowercase and without the dot.

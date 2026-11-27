@@ -51,8 +51,12 @@ chosen.
 ## Operating Context
 
 - GUI flow: add folders (Browse, paste a path, or drop on the window), choose
-  what to find, scan, review groups with the Reclaimable figure, then delete,
-  consolidate, or export.
+  what to find, scan, review groups with the Reclaimable figure (opening
+  **Compare** on a photo or video group to look at its copies side by side,
+  zoomed together), then delete, consolidate, or export.
+- Compare is a review aid of the GUI only, with no CLI flag: it decides
+  nothing of its own, and every keeper swap or tick inside it is the results
+  list's own action, so GUI/CLI parity of what can be done is unchanged.
 - Delete follows the Trash setting: on, files go to the system trash; off, they
   are deleted permanently. A confirmation dialog lists what will go first, and
   can instead move the copies into a folder or replace identical ones with
@@ -89,8 +93,9 @@ chosen.
 - Terms used across the UI: **Keeping** (the badge on the copy that stays,
   followed by why it stays), **Delete** / **Keep too** (a copy ticked /
   unticked for deletion), **Reclaimable** (the space a delete frees),
-  **protected** folder, **Consolidate**, cleanup scan / findings, **History**
-  (the past clean-ups) and **Put back** (a restore).
+  **protected** folder, **Consolidate**, **Compare** (copies side by side),
+  cleanup scan / findings, **History** (the past clean-ups) and **Put back**
+  (a restore).
 - One binary per OS. The GUI never opens a terminal window.
 
 ## Brand Commitments

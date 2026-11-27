@@ -14,10 +14,10 @@ use nsh_core::prelude::*;
 
 use crate::actions as file_actions;
 use crate::history::{self, Method, RunKind};
-use crate::matching::{GroupMember, KeepReason};
+use crate::matching::{Group, GroupMember, KeepReason};
 use crate::ui::state::{
-    AppState, AppView, Cleared, FindingsDone, FindingsWent, FolderEntry, Removal, ReportSnapshot,
-    RestoreAsk, ScanStatus, SettingsTab, Went, app, scan_status,
+    AppState, AppView, Cleared, Comparing, FindingsDone, FindingsWent, FolderEntry, Removal,
+    ReportSnapshot, RestoreAsk, ScanStatus, SettingsTab, Went, app, scan_status,
 };
 use crate::ui::window_state;
 use crate::ui_helpers::{bar_pos, counted, find_mode, image_hash_algo, is_no_limit, match_mode};
@@ -209,12 +209,19 @@ pub(crate) fn drop_folders(uris: &[String]) {
 }
 
 /// Escape outside a text input: close the open confirmation (delete,
-/// consolidate, the findings' act or a restore), otherwise leave the History
-/// or Settings page for the workspace.
+/// consolidate, the findings' act or a restore), then the compare view,
+/// otherwise leave the History or Settings page for the workspace.
 pub(crate) fn escape_leaves_page() {
-    let confirming = app().with_untracked(|s| {
-        s.confirm_delete || s.consolidating || s.confirm_findings || s.restore.is_some()
+    let (confirming, comparing) = app().with_untracked(|s| {
+        (
+            s.confirm_delete || s.consolidating || s.confirm_findings || s.restore.is_some(),
+            s.comparing.is_some(),
+        )
     });
+    if comparing && !confirming {
+        close_compare();
+        return;
+    }
     if !confirming {
         open_workspace();
         return;
@@ -1282,6 +1289,128 @@ pub(crate) fn toggle_play(path: &Path) {
     app().update(|s| {
         let same = s.playing.as_deref() == Some(path);
         s.playing = if same { None } else { Some(path.to_path_buf()) };
+    });
+}
+
+// --- Compare ----------------------------------------------------------------
+
+/// Whether a group has pictures to put side by side: its copies are photos
+/// or clips. Byte-identical documents and archives look the same in any
+/// viewer, so their groups offer no Compare.
+pub(crate) fn comparable(group: &Group) -> bool {
+    group.members.len() >= 2
+        && group
+            .members
+            .iter()
+            .all(|m| media::classify(&m.path) != media::MediaKind::Other)
+}
+
+/// The pair a group opens on: its keeper on the left (the first copy when
+/// none is kept) and `beside` on the right, or the first other copy.
+pub(crate) fn compare_pair(group: &Group, beside: Option<&Path>) -> Option<Comparing> {
+    let left = group
+        .members
+        .iter()
+        .find(|m| m.keep)
+        .or_else(|| group.members.first())?
+        .path
+        .clone();
+    let right = beside
+        .filter(|p| *p != left && group.members.iter().any(|m| m.path == *p))
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            group
+                .members
+                .iter()
+                .find(|m| m.path != left)
+                .map(|m| m.path.clone())
+        })?;
+    Some(Comparing {
+        group: group.index,
+        left,
+        right,
+    })
+}
+
+/// Open the compare view on a group. The card's inline clip stops: one
+/// video engine at a time, and the compare view brings its own.
+pub(crate) fn open_compare(group_index: usize) {
+    app().update(|s| open_compare_in(s, group_index));
+}
+
+/// [`open_compare`] on plain state.
+pub(crate) fn open_compare_in(s: &mut AppState, group_index: usize) {
+    let Some(pair) = s
+        .groups
+        .iter()
+        .find(|g| g.index == group_index)
+        .and_then(|g| compare_pair(g, None))
+    else {
+        return;
+    };
+    s.playing = None;
+    s.comparing = Some(pair);
+}
+
+pub(crate) fn close_compare() {
+    app().update(|s| s.comparing = None);
+}
+
+/// Left and Right in the compare view: the previous or next group in the
+/// list's own order that has pictures to compare. At either end it stays.
+pub(crate) fn compare_step_group(delta: isize) {
+    app().update(|s| step_compare_group_in(s, delta));
+}
+
+/// [`compare_step_group`] on plain state.
+pub(crate) fn step_compare_group_in(s: &mut AppState, delta: isize) {
+    let Some(current) = s.comparing.as_ref().map(|c| c.group) else {
+        return;
+    };
+    let Some(at) = s.groups.iter().position(|g| g.index == current) else {
+        return;
+    };
+    let next = if delta < 0 {
+        s.groups[..at].iter().rev().find(|g| comparable(g))
+    } else {
+        s.groups[at + 1..].iter().find(|g| comparable(g))
+    };
+    if let Some(pair) = next.and_then(|g| compare_pair(g, None)) {
+        s.comparing = Some(pair);
+    }
+}
+
+/// Where the compared group sits among the groups that can be compared:
+/// `(position, count)`, 1-based, for "Group 2 of 7".
+pub(crate) fn compare_position(s: &AppState) -> Option<(usize, usize)> {
+    let current = s.comparing.as_ref()?.group;
+    let mut count = 0;
+    let mut position = None;
+    for g in s.groups.iter().filter(|g| comparable(g)) {
+        count += 1;
+        if g.index == current {
+            position = Some(count);
+        }
+    }
+    position.map(|p| (p, count))
+}
+
+/// Put another copy of the compared group beside the keeper. The left pane
+/// becomes the group's keeper as it stands now, so each pair reads "the copy
+/// that stays, and one that may go".
+pub(crate) fn compare_beside(path: &Path) {
+    app().update(|s| {
+        let Some(group) = s.comparing.as_ref().map(|c| c.group) else {
+            return;
+        };
+        if let Some(pair) = s
+            .groups
+            .iter()
+            .find(|g| g.index == group)
+            .and_then(|g| compare_pair(g, Some(path)))
+        {
+            s.comparing = Some(pair);
+        }
     });
 }
 

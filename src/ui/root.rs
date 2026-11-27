@@ -17,7 +17,7 @@ use crate::ui::widgets::{
     RAIL_GAP, RAIL_PAD, caption, drop_sheet, entering, ground, icon_ghost_button, icons,
     move_rail_marker, rail_button, rail_marker, status_strip, theme_dissolve,
 };
-use crate::ui::{actions, history, results, settings, shell, toast};
+use crate::ui::{actions, compare, history, results, settings, shell, toast};
 use crate::ui_helpers::counted;
 use crate::util;
 
@@ -73,6 +73,16 @@ pub fn DedupeApp() -> impl IntoElement {
                 .child(drop_sheet(move || dragging.get())),
         )
         .child(theme_dissolve())
+        // The compare view covers the work while a pair is open. Rebuilt only
+        // when it opens or closes: stepping between pairs swaps its page.
+        .child(dynamic(|| {
+            let open = computed(|| app().with(|s| s.comparing.is_some()));
+            if open.get() {
+                compare::compare_layer()
+            } else {
+                view()
+            }
+        }))
         .child(toast::toast_layer())
         // Above the panes and the toasts: a confirmation must not be buried.
         .child(dynamic(|| {
